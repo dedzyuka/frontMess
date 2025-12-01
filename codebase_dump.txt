@@ -1,0 +1,3437 @@
+./FrontDip/MessengerApp/App/AppConfig.swift
+
+
+./FrontDip/MessengerApp/App/AppState.swift
+
+import Foundation
+import Combine
+
+class AppState: ObservableObject {
+    static let shared = AppState()
+    
+    @Published var isLoading = false
+    @Published var isAuthenticated = false
+    @Published var errorMessage: String?
+    @Published var currentUser: User?
+    
+    private init() {}
+    
+    func setup() {
+        print("App initialized")
+    }
+    
+    func login() {
+        isAuthenticated = true
+    }
+    
+    func logout() {
+        isAuthenticated = false
+        currentUser = nil
+    }
+    
+    func showError(_ message: String) {
+        errorMessage = message
+    }
+}
+
+
+./FrontDip/MessengerApp/App/MessengerApp.swift
+import SwiftUI
+
+@main
+struct MessengerApp: App {
+    @StateObject private var appState = AppState.shared
+    
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environmentObject(appState)
+                .onAppear {
+                    appState.setup()
+                }
+        }
+    }
+}
+
+// В ContentView.swift
+struct ContentView: View {
+    @EnvironmentObject var appState: AppState
+    @StateObject private var authViewModel = AuthViewModel()
+    @StateObject private var webSocketService = WebSocketService.shared
+    @State private var isCheckingAutoLogin = true
+    
+    var body: some View {
+        Group {
+            if isCheckingAutoLogin {
+                LoadingView()
+            } else if appState.isAuthenticated {
+                ChatListView()
+                    .environmentObject(webSocketService)
+                    .environmentObject(authViewModel) // Добавляем
+            } else {
+                LoginView()
+                    .environmentObject(authViewModel)
+            }
+        }
+        .alert("Ошибка", isPresented: .constant(appState.errorMessage != nil)) {
+            Button("OK") {
+                appState.errorMessage = nil
+            }
+        } message: {
+            Text(appState.errorMessage ?? "")
+        }
+        .onAppear {
+            // Проверяем автологин при запуске
+            checkAutoLogin()
+        }
+    }
+    
+    private func checkAutoLogin() {
+        print("🚀 Запуск приложения...")
+        
+        // Проверяем, есть ли сохраненный пользователь
+        if authViewModel.hasSavedUser() {
+            print("👤 Найден сохраненный пользователь, пытаемся войти...")
+            authViewModel.autoLogin()
+            
+            // Даем 2 секунды на попытку автологина
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                isCheckingAutoLogin = false
+                if !appState.isAuthenticated {
+                    print("⏱️ Автологин не удался, показываем экран входа")
+                }
+            }
+        } else {
+            print("👤 Сохраненный пользователь не найден, показываем экран входа")
+            isCheckingAutoLogin = false
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Chat/Chat.swift
+// ./FrontDip/MessengerApp/Models/Chat/Chat.swift
+import Foundation
+
+struct Chat: Identifiable, Codable {
+    let id: UUID
+    let name: String
+    let creatorId: UUID
+    let createdAt: Date
+    let memberCount: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "chat_id"
+        case name
+        case creatorId = "creator_id"
+        case createdAt = "created_at"
+        case memberCount = "member_count"
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Chat/ChatDTO.swift
+
+
+./FrontDip/MessengerApp/Models/Chat/ChatInviteResponse.swift
+// ./FrontDip/MessengerApp/Models/Chat/ChatInviteResponse.swift
+import Foundation
+
+struct ChatInviteResponse: Codable {
+    let chatId: UUID
+    let inviteKey: String
+    let createdAt: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case chatId = "chat_id"
+        case inviteKey = "invite_key"
+        case createdAt = "created_at"
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Chat/ChatMember.swift
+
+
+./FrontDip/MessengerApp/Models/Enums/ChatType.swift
+
+
+./FrontDip/MessengerApp/Models/Enums/MessageType.swift
+
+
+./FrontDip/MessengerApp/Models/Message/Message.swift
+// ./FrontDip/MessengerApp/Models/Message/Message.swift
+import Foundation
+
+enum MessageType: String, Codable {
+    case text
+    case image
+    case file
+}
+
+struct Message: Identifiable, Codable {
+    let id: UUID?
+    let chatId: UUID
+    let senderId: UUID
+    let content: String
+    let type: MessageType
+    let timestamp: Date
+    let isEncrypted: Bool
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "message_id"
+        case chatId = "chat_id"
+        case senderId = "sender_id"
+        case content
+        case type = "message_type"
+        case timestamp
+        case isEncrypted = "encrypted"
+    }
+    
+    init(id: UUID? = nil, chatId: UUID, senderId: UUID, content: String,
+         type: MessageType = .text, timestamp: Date = Date(), isEncrypted: Bool = true) {
+        self.id = id
+        self.chatId = chatId
+        self.senderId = senderId
+        self.content = content
+        self.type = type
+        self.timestamp = timestamp
+        self.isEncrypted = isEncrypted
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Message/MessageDTO.swift
+
+
+./FrontDip/MessengerApp/Models/User/User.swift
+// ./FrontDip/MessengerApp/Models/User/User.swift
+import Foundation
+
+struct User: Identifiable, Codable {
+    let id: UUID
+    let nickname: String
+    let publicKey: String
+    let deviceId: String
+    let createdAt: String?  // Изменяем на опциональное
+    
+    enum CodingKeys: String, CodingKey {
+        case id = "user_id"
+        case nickname
+        case publicKey = "public_key"
+        case deviceId = "device_id"
+        case createdAt = "created_at"
+    }
+    
+    // Кастомный инициализатор для обработки отсутствующего created_at
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        nickname = try container.decode(String.self, forKey: .nickname)
+        publicKey = try container.decode(String.self, forKey: .publicKey)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/User/UserDTO.swift
+
+
+./FrontDip/MessengerApp/Models/User/UserResponse.swift
+
+
+./FrontDip/MessengerApp/Services/Auth/AuthService.swift
+
+
+./FrontDip/MessengerApp/Services/Auth/UserManager.swift
+
+
+
+./FrontDip/MessengerApp/Services/Auth/UserSession.swift
+
+
+./FrontDip/MessengerApp/Services/Database/ChatRepository.swift
+
+
+./FrontDip/MessengerApp/Services/Database/LocalDatabase.swift
+import Foundation
+import SQLite
+
+class LocalDatabase {
+    static let shared = LocalDatabase()
+    
+    private var db: Connection?
+    private let messagesTable = Table("messages")
+    
+    private let id = Expression<UUID>("id")
+    private let chatId = Expression<UUID>("chat_id")
+    private let senderId = Expression<UUID>("sender_id")
+    private let content = Expression<String>("content")
+    private let type = Expression<String>("type")
+    private let timestamp = Expression<Date>("timestamp")
+    private let isEncrypted = Expression<Bool>("is_encrypted")
+    
+    
+    private let chatsTable = Table("chats")
+
+    private let chatID = Expression<UUID>("id")
+    private let chatName = Expression<String>("name")
+    private let chatCreatorId = Expression<UUID>("creator_id")
+    private let chatCreatedAt = Expression<Date>("created_at")
+    private let chatMemberCount = Expression<Int>("member_count")
+
+    
+
+    private init() {
+        setupDatabase()
+    }
+
+    private func setupDatabase() {
+        do {
+            let path = NSSearchPathForDirectoriesInDomains(
+                .documentDirectory, .userDomainMask, true
+            ).first!
+            
+            db = try Connection("\(path)/messenger.sqlite3")
+            
+            // Таблица сообщений (уже есть)
+            try db?.run(messagesTable.create(ifNotExists: true) { t in
+                t.column(id, primaryKey: true)
+                t.column(chatId)
+                t.column(senderId)
+                t.column(content)
+                t.column(type)
+                t.column(timestamp)
+                t.column(isEncrypted)
+                t.column(isSent, defaultValue: false)
+                t.column(isDelivered, defaultValue: false)
+            })
+            
+            // Новая таблица чатов
+            try db?.run(chatsTable.create(ifNotExists: true) { t in
+                t.column(chatId, primaryKey: true)
+                t.column(chatName)
+                t.column(chatCreatorId)
+                t.column(chatCreatedAt)
+                t.column(chatMemberCount)
+            })
+            
+            print("✅ Database setup complete with chats table")
+        } catch {
+            print("❌ Database setup error: \(error)")
+        }
+    }
+
+    // MARK: - Chat Operations
+    func saveChat(_ chat: Chat) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let insert = chatsTable.insert(
+                chatId <- chat.id,
+                chatName <- chat.name,
+                chatCreatorId <- chat.creatorId,
+                chatCreatedAt <- chat.createdAt,
+                chatMemberCount <- chat.memberCount
+            )
+            
+            try db.run(insert)
+            return true
+        } catch {
+            print("Save chat error: \(error)")
+            return false
+        }
+    }
+
+    func getChats() -> [Chat] {
+        guard let db = db else { return [] }
+        
+        do {
+            let query = chatsTable.order(chatCreatedAt.desc)
+            
+            var chats: [Chat] = []
+            for row in try db.prepare(query) {
+                let chat = Chat(
+                    id: row[chatId],
+                    name: row[chatName],
+                    creatorId: row[chatCreatorId],
+                    createdAt: row[chatCreatedAt],
+                    memberCount: row[chatMemberCount]
+                )
+                chats.append(chat)
+            }
+            
+            return chats
+        } catch {
+            print("Get chats error: \(error)")
+            return []
+        }
+    }
+
+    func deleteAllChats() {
+        guard let db = db else { return }
+        
+        do {
+            try db.run(chatsTable.delete())
+            print("All chats cleared from database")
+        } catch {
+            print("Error clearing chats: \(error)")
+        }
+    }
+
+    // MARK: - Chat Operations
+
+
+
+
+
+    
+    private let isSent = Expression<Bool>("is_sent")
+    private let isDelivered = Expression<Bool>("is_delivered")
+
+    
+
+    // MARK: - CRUD Operations
+    
+    func saveMessage(_ message: Message) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let insert = messagesTable.insert(
+                id <- message.id ?? UUID(),
+                chatId <- message.chatId,
+                senderId <- message.senderId,
+                content <- message.content,
+                type <- message.type.rawValue,
+                timestamp <- message.timestamp,
+                isEncrypted <- message.isEncrypted
+            )
+            
+            try db.run(insert)
+            return true
+        } catch {
+            print("Save message error: \(error)")
+            return false
+        }
+    }
+    
+    func getMessages(for chatUUID: UUID) -> [Message] {
+        guard let db = db else { return [] }
+        
+        do {
+            let query = messagesTable.filter(self.chatId == chatUUID)
+                .order(timestamp.asc)
+            
+            var messages: [Message] = []
+            
+            for row in try db.prepare(query) {
+                guard let messageType = MessageType(rawValue: row[type]) else { continue }
+                
+                let message = Message(
+                    id: row[id],
+                    chatId: row[chatId],
+                    senderId: row[senderId],
+                    content: row[content],
+                    type: messageType,
+                    timestamp: row[timestamp],
+                    isEncrypted: row[isEncrypted]
+                )
+                
+                messages.append(message)
+            }
+            
+            return messages
+        } catch {
+            print("Get messages error: \(error)")
+            return []
+        }
+    }
+    
+    func deleteMessages(for chatId: UUID) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let query = messagesTable.filter(self.chatId == chatId)
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("Delete messages error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Clear Methods
+    
+    func clearAllData() {
+        guard let db = db else { return }
+        
+        do {
+            // Удаляем все сообщения
+            try db.run(messagesTable.delete())
+            print("All messages cleared from database")
+        } catch {
+            print("Error clearing database: \(error)")
+        }
+    }
+    
+    func clearMessages(for chatId: UUID) {
+        guard let db = db else { return }
+        
+        do {
+            let query = messagesTable.filter(self.chatId == chatId)
+            try db.run(query.delete())
+            print("Messages cleared for chat: \(chatId)")
+        } catch {
+            print("Error clearing messages: \(error)")
+        }
+    }
+    
+    
+    // MARK: - Статус сообщений (реализация или удаление)
+    
+    // Вариант 1: Удаляем неиспользуемый метод
+    // func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
+    //     // Не реализовано
+    //     return false
+    // }
+    
+    // Вариант 2: Добавляем поля в таблицу и реализуем метод
+    // В текущей схеме нет полей для статуса, поэтому:
+    func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let message = messagesTable.filter(id == messageId)
+            try db.run(message.update(
+                self.isSent <- isSent,
+                self.isDelivered <- isDelivered
+            ))
+            return true
+        } catch {
+            print("Error updating message status: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Migration Helpers
+    
+    func getDatabasePath() -> String? {
+        let path = NSSearchPathForDirectoriesInDomains(
+            .documentDirectory, .userDomainMask, true
+        ).first!
+        
+        return "\(path)/messenger.sqlite3"
+    }
+    
+    func getDatabaseSize() -> Int64? {
+        guard let path = getDatabasePath() else { return nil }
+        
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            return attributes[.size] as? Int64
+        } catch {
+            print("Error getting database size: \(error)")
+            return nil
+        }
+    }
+    func messageExists(_ messageId: UUID) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let query = messagesTable.filter(id == messageId)
+            let count = try db.scalar(query.count)
+            return count > 0
+        } catch {
+            print("Error checking message existence: \(error)")
+            return false
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Services/Database/MessageRepository.swift
+
+
+./FrontDip/MessengerApp/Services/KeyManagement/ChatKeyManager.swift
+
+
+
+./FrontDip/MessengerApp/Services/Message/MessageService.swift
+import Foundation
+import Combine
+
+class MessageService: ObservableObject {
+    static let shared = MessageService()
+    
+    private let webSocketService = WebSocketService.shared
+    private let database = LocalDatabase.shared
+    private let keychainService = KeychainService.shared
+    
+    @Published var unreadMessagesCount: Int = 0
+    
+    private var pendingMessages: [UUID: Message] = [:] // messageId: Message
+    private var retryTimers: [UUID: Timer] = [:] // Таймеры для повторной отправки
+    private var cancellables = Set<AnyCancellable>()
+    
+    private init() {
+        setupWebSocketHandlers()
+    }
+    
+    private func setupWebSocketHandlers() {
+        // Подписываемся на входящие сообщения
+        webSocketService.$receivedMessages
+            .sink { [weak self] messages in
+                self?.handleIncomingMessages(messages)
+            }
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - Отправка сообщений
+    
+    func sendMessage(_ message: Message, to chatId: UUID) {
+        guard let messageId = message.id else {
+            print("❌ Ошибка: у сообщения нет ID")
+            return
+        }
+        
+        print("📤 Отправка сообщения в чат \(chatId.uuidString.prefix(8))...")
+        
+        // 1. Проверяем, нет ли уже такого сообщения в базе
+        if database.messageExists(messageId) {
+            print("⚠️ Сообщение уже существует в базе, пропускаем сохранение")
+        } else {
+            // 2. Сохраняем в локальную БД
+            _ = database.saveMessage(message)
+        }
+        
+        // 3. Добавляем в очередь ожидания
+        pendingMessages[messageId] = message
+        
+        // 4. Отправляем через WebSocket
+        sendViaWebSocket(message: message, chatId: chatId)
+        
+        // 5. Запускаем таймер для повторной отправки
+        startRetryTimer(for: messageId, chatId: chatId)
+    }
+    
+    private func sendViaWebSocket(message: Message, chatId: UUID) {
+        let webSocketMessage = WebSocketMessage(
+            type: "chat_message",
+            chatId: chatId,
+            content: message.content,
+            messageId: message.id,
+            timestamp: message.timestamp
+        )
+        
+        webSocketService.sendMessage(webSocketMessage)
+    }
+    
+    private func startRetryTimer(for messageId: UUID, chatId: UUID) {
+        // Отменяем старый таймер, если есть
+        retryTimers[messageId]?.invalidate()
+        
+        // Создаем новый таймер
+        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            
+            // Проверяем, все ли еще сообщение в очереди
+            guard let message = self.pendingMessages[messageId] else {
+                print("✅ Сообщение \(messageId.uuidString.prefix(8)) удалено из очереди")
+                timer.invalidate()
+                self.retryTimers.removeValue(forKey: messageId)
+                return
+            }
+            
+            print("🔄 Повторная отправка сообщения \(messageId.uuidString.prefix(8))...")
+            self.sendViaWebSocket(message: message, chatId: chatId)
+        }
+        
+        retryTimers[messageId] = timer
+    }
+    
+    private func stopRetryTimer(for messageId: UUID) {
+        retryTimers[messageId]?.invalidate()
+        retryTimers.removeValue(forKey: messageId)
+    }
+    
+    // MARK: - Обработка входящих сообщений
+    
+    func handleIncomingMessages(_ messages: [Message]) {
+        for message in messages {
+            // 1. Проверяем, нет ли уже такого сообщения
+            if let messageId = message.id, database.messageExists(messageId) {
+                print("⚠️ Сообщение \(messageId.uuidString.prefix(8)) уже есть в базе")
+                continue
+            }
+            
+            // 2. Сохраняем в локальную БД
+            _ = database.saveMessage(message)
+            
+            // 3. Отправляем подтверждение получения
+            sendMessageAck(for: message)
+            
+            // 4. Уведомляем UI о новом сообщении
+            NotificationCenter.default.post(
+                name: .newMessageReceived,
+                object: message
+            )
+            
+            // 5. Увеличиваем счетчик непрочитанных
+            unreadMessagesCount += 1
+            
+            print("📩 Сообщение сохранено: \(message.content.prefix(30))...")
+        }
+    }
+    
+    private func sendMessageAck(for message: Message) {
+        guard let messageId = message.id,
+              let currentUser = AppState.shared.currentUser else { return }
+        
+        let ackMessage = WebSocketMessage(
+            type: "message_ack",
+            chatId: message.chatId,
+            recipientId: currentUser.id,
+            messageId: messageId,
+            timestamp: Date()
+        )
+        
+        webSocketService.sendMessage(ackMessage)
+    }
+    
+    // MARK: - Обработка подтверждений
+    
+    func handleMessageAck(messageId: UUID, from recipientId: UUID) {
+        print("✅ Подтверждение получения сообщения \(messageId.uuidString.prefix(8)) от \(recipientId.uuidString.prefix(8))")
+        
+        // 1. Удаляем из очереди ожидания
+        pendingMessages.removeValue(forKey: messageId)
+        
+        // 2. Останавливаем таймер
+        stopRetryTimer(for: messageId)
+        
+        // 3. Обновляем статус в локальной БД
+        database.updateMessageStatus(
+            messageId: messageId,
+            isSent: true,
+            isDelivered: true
+        )
+    }
+    
+    // MARK: - Получение сообщений
+    
+    func getMessages(for chatId: UUID) -> [Message] {
+        return database.getMessages(for: chatId)
+    }
+    
+    func clearChatMessages(for chatId: UUID) {
+        database.clearMessages(for: chatId)
+    }
+    
+    // MARK: - Очистка
+    
+    func clearAll() {
+        // Останавливаем все таймеры
+        for timer in retryTimers.values {
+            timer.invalidate()
+        }
+        retryTimers.removeAll()
+        
+        // Очищаем очередь
+        pendingMessages.removeAll()
+        
+        // Сбрасываем счетчик
+        unreadMessagesCount = 0
+    }
+}
+
+// Расширение для Notification
+extension Notification.Name {
+    static let newMessageReceived = Notification.Name("newMessageReceived")
+}
+
+
+./FrontDip/MessengerApp/Services/Network/APIEndpoints.swift
+
+
+./FrontDip/MessengerApp/Services/Network/APIService.swift
+import Foundation
+
+class APIService {
+    static let shared = APIService()
+    
+    private let baseURL = "http://172.20.10.4:8000/api/v1"
+    private let decoder = JSONDecoder.iso8601WithMilliseconds
+    
+    private init() {}
+    
+    // MARK: - User Endpoints
+    
+    func registerUser(nickname: String, publicKey: String, deviceId: String) async throws -> User {
+        let url = URL(string: "\(baseURL)/users/register")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "nickname": nickname,
+            "public_key": publicKey,
+            "device_id": deviceId
+        ]
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            // Логирование для отладки
+            if let jsonString = String(data: request.httpBody!, encoding: .utf8) {
+                print("Отправляем JSON: \(jsonString)")
+            }
+            
+        } catch {
+            print("Ошибка сериализации JSON: \(error)")
+            throw error
+        }
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("Статус код: \(httpResponse.statusCode)")
+        
+        // Всегда логируем ответ
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Ответ сервера: \(responseString)")
+        }
+        
+        switch httpResponse.statusCode {
+        case 201:
+            // Используем кастомный декодер
+            return try decoder.decode(User.self, from: data)
+        case 400, 422:
+            if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = errorDict["detail"] as? String {
+                throw NSError(domain: "API", code: httpResponse.statusCode,
+                            userInfo: [NSLocalizedDescriptionKey: detail])
+            } else {
+                throw URLError(.badServerResponse)
+            }
+        default:
+            throw URLError(.badServerResponse)
+        }
+    }
+    
+    func getUser(userId: UUID) async throws -> User {
+        let url = URL(string: "\(baseURL)/users/\(userId.uuidString)")!
+        
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try decoder.decode(User.self, from: data)
+    }
+    
+    // MARK: - Chat Endpoints
+    
+    // В ChatAPIService.swift
+    // В APIService.swift измените метод createChat:
+    // В APIService.swift
+    // В APIService.swift
+    // Альтернативный метод createChat (проще)
+    func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {
+        let url = URL(string: "\(baseURL)/chats/")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "name": name,
+            "creator_id": creatorId.uuidString
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("Статус создания чата: \(httpResponse.statusCode)")
+        
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Ответ сервера: \(responseString)")
+        }
+        
+        if httpResponse.statusCode == 201 {
+            // Парсим вручную
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let chatIdString = json["chat_id"] as? String,
+                  let chatId = UUID(uuidString: chatIdString),
+                  let inviteKey = json["invite_key"] as? String,
+                  let createdAtString = json["created_at"] as? String else {
+                throw URLError(.cannotParseResponse)
+            }
+            
+            // Конвертируем строку в дату
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let createdAt = formatter.date(from: createdAtString) ?? Date()
+            
+            print("✅ Создан чат: \(name), ID: \(chatId)")
+            
+            return Chat(
+                id: chatId,
+                name: name,
+                creatorId: creatorId,
+                createdAt: createdAt,
+                memberCount: 1
+            )
+        } else {
+            throw URLError(.badServerResponse)
+        }
+    }
+    
+    func getUserChats(userId: UUID, deviceId: String) async throws -> [Chat] {
+        let url = URL(string: "\(baseURL)/chats/?user_id=\(userId.uuidString)")!
+        
+        var request = URLRequest(url: url)
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try decoder.decode([Chat].self, from: data)
+    }
+    
+    // MARK: - Message Endpoints
+    
+    func sendMessage(chatId: UUID, content: String, deviceId: String) async throws -> Message {
+        guard let userId = AppState.shared.currentUser?.id else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        
+        let url = URL(string: "\(baseURL)/messages/")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "chat_id": chatId.uuidString,
+            "sender_id": userId.uuidString,
+            "content": content,
+            "encrypted": true
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try decoder.decode(Message.self, from: data)
+    }
+    
+    func getChatMessages(chatId: UUID) async throws -> [Message] {
+        let url = URL(string: "\(baseURL)/messages/\(chatId.uuidString)")!
+        
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try decoder.decode([Message].self, from: data)
+    }
+}
+
+
+./FrontDip/MessengerApp/Services/Network/ChatAPIService.swift
+// ./FrontDip/MessengerApp/Services/Network/ChatAPIService.swift
+import Foundation
+
+class ChatAPIService {
+    static let shared = ChatAPIService()
+    
+    private let baseURL = "http://localhost:8000/api/v1"
+    private let decoder = JSONDecoder.iso8601WithMilliseconds
+    
+    // Создать чат
+    func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {
+        let url = URL(string: "\(baseURL)/chats/")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "name": name,
+            "creator_id": creatorId.uuidString
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("Статус создания чата: \(httpResponse.statusCode)")
+        
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Ответ от сервера: \(responseString)")
+        }
+        
+        if httpResponse.statusCode == 201 {
+            return try decoder.decode(Chat.self, from: data)
+        } else {
+            throw URLError(.badServerResponse)
+        }
+    }
+    
+    // Получить чаты пользователя
+    func getUserChats(userId: UUID, deviceId: String) async throws -> [Chat] {
+        let url = URL(string: "\(baseURL)/chats/?user_id=\(userId.uuidString)")!
+        
+        var request = URLRequest(url: url)
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try decoder.decode([Chat].self, from: data)
+    }
+}
+
+
+./FrontDip/MessengerApp/Services/Network/NetworkManager.swift
+
+
+./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
+
+
+./FrontDip/MessengerApp/Services/Security/CryptoService.swift
+import Foundation
+import UIKit
+import CryptoKit
+
+class CryptoService {
+    static let shared = CryptoService()
+    
+    private init() {}
+    
+        // MARK: - Device ID Generation
+        
+        func generateDeviceId() -> String {
+            print("🔧 Генерация Device_ID...")
+            
+            // 1. Пробуем загрузить сохраненный Device_ID из UserDefaults
+            if let savedId = UserDefaults.standard.string(forKey: "persistent_device_id") {
+                print("📱 Device_ID загружен из UserDefaults: \(savedId.prefix(8))...")
+                return savedId
+            }
+            
+            // 2. Если нет - генерируем новый на основе параметров устройства
+            var deviceComponents: [String] = []
+            
+            #if os(iOS)
+            // Для iOS используем UIDevice
+            let device = UIDevice.current
+            deviceComponents.append("iOS")
+            deviceComponents.append(device.systemName)
+            deviceComponents.append(device.systemVersion)
+            deviceComponents.append(device.model)
+            if let identifier = device.identifierForVendor?.uuidString {
+                deviceComponents.append(identifier)
+            }
+            #elseif os(macOS)
+            // Для macOS
+            deviceComponents.append("macOS")
+            if let serialNumber = getMacSerialNumber() {
+                deviceComponents.append(serialNumber)
+            }
+            #endif
+            
+            // 3. Добавляем Bundle Identifier
+            if let bundleId = Bundle.main.bundleIdentifier {
+                deviceComponents.append(bundleId)
+            }
+            
+            // 4. Добавляем случайную часть для безопасности
+            let randomPart = UUID().uuidString
+            deviceComponents.append(randomPart)
+            
+            // 5. Объединяем и хэшируем
+            let combinedString = deviceComponents.joined(separator: "_")
+            let data = Data(combinedString.utf8)
+            let hash = SHA256.hash(data: data)
+            let deviceId = hash.compactMap { String(format: "%02x", $0) }.joined()
+            
+            // 6. Сохраняем навсегда в UserDefaults
+            UserDefaults.standard.set(deviceId, forKey: "persistent_device_id")
+            print("✅ Новый Device_ID сгенерирован и сохранен: \(deviceId.prefix(8))...")
+            
+            return deviceId
+        }
+        
+        #if os(macOS)
+        private func getMacSerialNumber() -> String? {
+            let platformExpert = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                             IOServiceMatching("IOPlatformExpertDevice"))
+            guard platformExpert > 0 else { return nil }
+            
+            defer { IOObjectRelease(platformExpert) }
+            
+            guard let serialNumber = IORegistryEntryCreateCFProperty(platformExpert,
+                                                                    kIOPlatformSerialNumberKey as CFString,
+                                                                    kCFAllocatorDefault, 0).takeRetainedValue() as? String
+            else {
+                return nil
+            }
+            
+            return serialNumber
+        }
+        #endif
+    
+    // MARK: - Key Pair Generation (P-256)
+    
+    func generateKeyPair() -> (privateKey: Data, publicKey: Data) {
+        let privateKey = P256.KeyAgreement.PrivateKey()
+        let publicKey = privateKey.publicKey
+        
+        return (privateKey.rawRepresentation, publicKey.rawRepresentation)
+    }
+    
+    // MARK: - PEM Format Conversion
+    
+    func publicKeyToPEM(publicKey: Data) -> String {
+        let base64Key = publicKey.base64EncodedString()
+        
+        // Формат PEM для EC публичного ключа
+        let pem = """
+        -----BEGIN PUBLIC KEY-----
+        \(base64Key)
+        -----END PUBLIC KEY-----
+        """
+        
+        return pem
+    }
+    
+    // MARK: - Symmetric Key Operations
+    
+    func generateSymmetricKey() -> SymmetricKey {
+        return SymmetricKey(size: .bits256)
+    }
+    
+    func encryptMessage(_ text: String, with symmetricKey: SymmetricKey) throws -> Data {
+        let textData = Data(text.utf8)
+        let sealedBox = try AES.GCM.seal(textData, using: symmetricKey)
+        
+        guard let combined = sealedBox.combined else {
+            throw CryptoError.encryptionFailed
+        }
+        
+        return combined
+    }
+    
+    func decryptMessage(_ data: Data, with symmetricKey: SymmetricKey) throws -> String {
+        let sealedBox = try AES.GCM.SealedBox(combined: data)
+        let decryptedData = try AES.GCM.open(sealedBox, using: symmetricKey)
+        
+        guard let text = String(data: decryptedData, encoding: .utf8) else {
+            throw CryptoError.decryptionFailed
+        }
+        
+        return text
+    }
+    
+    // MARK: - Key Wrapping (Encrypt symmetric key with asymmetric)
+    
+    func encryptSymmetricKey(_ symmetricKey: SymmetricKey,
+                           with publicKey: P256.KeyAgreement.PublicKey) throws -> Data {
+        // Генерируем эфемерную пару ключей для ECDH
+        let ephemeralPrivateKey = P256.KeyAgreement.PrivateKey()
+        
+        // Вычисляем общий секрет
+        let sharedSecret = try ephemeralPrivateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        
+        // Деривируем ключ для шифрования
+        let derivedKey = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: Data(),
+            sharedInfo: Data("ChatKeyExchange".utf8),
+            outputByteCount: 32
+        )
+        
+        // Конвертируем симметричный ключ в Data
+        let symmetricKeyData = symmetricKey.withUnsafeBytes { Data($0) }
+        
+        // Шифруем симметричный ключ
+        let sealedBox = try AES.GCM.seal(symmetricKeyData, using: derivedKey)
+        
+        // Комбинируем: эфемерный публичный ключ + зашифрованный симметричный ключ
+        var result = Data()
+        result.append(ephemeralPrivateKey.publicKey.rawRepresentation)
+        result.append(sealedBox.combined!)
+        
+        return result
+    }
+    
+    func decryptSymmetricKey(_ encryptedData: Data,
+                           with privateKey: P256.KeyAgreement.PrivateKey) throws -> SymmetricKey {
+        // Первые 65 байт - эфемерный публичный ключ (P-256 uncompressed)
+        let ephemeralPublicKeyData = encryptedData.prefix(65)
+        let encryptedSymmetricKey = encryptedData.dropFirst(65)
+        
+        let ephemeralPublicKey = try P256.KeyAgreement.PublicKey(
+            rawRepresentation: ephemeralPublicKeyData
+        )
+        
+        // Вычисляем общий секрет
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: ephemeralPublicKey)
+        
+        // Деривируем ключ для дешифрования
+        let derivedKey = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: Data(),
+            sharedInfo: Data("ChatKeyExchange".utf8),
+            outputByteCount: 32
+        )
+        
+        // Дешифруем симметричный ключ
+        let sealedBox = try AES.GCM.SealedBox(combined: encryptedSymmetricKey)
+        let symmetricKeyData = try AES.GCM.open(sealedBox, using: derivedKey)
+        
+        // Восстанавливаем SymmetricKey
+        return symmetricKeyData.withUnsafeBytes { SymmetricKey(data: $0) }
+    }
+    
+    // MARK: - Data to Key Conversions
+    
+    func dataToSymmetricKey(_ data: Data) -> SymmetricKey {
+        return data.withUnsafeBytes { SymmetricKey(data: $0) }
+    }
+    
+    func symmetricKeyToData(_ key: SymmetricKey) -> Data {
+        return key.withUnsafeBytes { Data($0) }
+    }
+    
+    // MARK: - Errors
+    
+    enum CryptoError: Error {
+        case encryptionFailed
+        case decryptionFailed
+        case invalidKey
+        case keyDerivationFailed
+    }
+    // MARK: - Device ID Management
+        
+    func resetDeviceId() {
+        print("🔄 Сброс Device_ID...")
+        
+        // 1. Удаляем из UserDefaults
+        UserDefaults.standard.removeObject(forKey: "persistent_device_id")
+        
+        // 2. Удаляем из Keychain
+        let keychainService = KeychainService.shared
+        keychainService.delete(key: "device_id")
+        
+        print("✅ Device_ID сброшен. При следующем запуске будет сгенерирован новый.")
+    }
+
+    func getCurrentDeviceId() -> String? {
+        return UserDefaults.standard.string(forKey: "persistent_device_id")
+    }
+
+    func printDeviceInfo() {
+        #if os(iOS)
+        let device = UIDevice.current
+        print("📱 Информация об устройстве:")
+        print("   Система: \(device.systemName) \(device.systemVersion)")
+        print("   Модель: \(device.model)")
+        print("   Имя: \(device.name)")
+        if let identifier = device.identifierForVendor {
+            print("   Vendor ID: \(identifier.uuidString)")
+        }
+        #endif
+        
+        if let deviceId = getCurrentDeviceId() {
+            print("   Device_ID: \(deviceId.prefix(16))...")
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Services/Security/KeyManager.swift
+
+
+./FrontDip/MessengerApp/Services/Security/KeychainService.swift
+import Foundation
+import Security
+
+class KeychainService {
+    static let shared = KeychainService()
+    
+    private let serviceIdentifier = "com.anonymous.messenger"
+    
+    private init() {}
+    
+    // Добавляем в существующий класс KeychainService
+    func savePersistentDeviceId(_ deviceId: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: "persistent_device_id",
+            kSecValueData as String: Data(deviceId.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly // Сохраняется даже после перезагрузки
+        ]
+        
+        // Удаляем старый если есть
+        SecItemDelete(query as CFDictionary)
+        
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+
+    func loadPersistentDeviceId() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: "persistent_device_id",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var data: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &data)
+        
+        if status == errSecSuccess, let data = data as? Data {
+            return String(data: data, encoding: .utf8)
+        }
+        return nil
+    }
+    // MARK: - Generic Methods
+    
+    @discardableResult
+    func save(key: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        
+        // Удаляем если уже существует
+        SecItemDelete(query as CFDictionary)
+        
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+    
+    func load(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: kCFBooleanTrue!,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var dataTypeRef: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
+        
+        if status == errSecSuccess, let data = dataTypeRef as? Data {
+            return String(data: data, encoding: .utf8)
+        }
+        
+        return nil
+    }
+    
+    @discardableResult
+    func saveData(key: String, value: Data) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: value,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        
+        SecItemDelete(query as CFDictionary)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        return status == errSecSuccess
+    }
+    
+    func loadData(key: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: kCFBooleanTrue!,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var dataTypeRef: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &dataTypeRef)
+        
+        if status == errSecSuccess, let data = dataTypeRef as? Data {
+            return data
+        }
+        
+        return nil
+    }
+    
+    @discardableResult
+    func delete(key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecAttrAccount as String: key
+        ]
+        
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess
+    }
+    
+    // MARK: - Specific Methods (добавляем по необходимости)
+    
+    
+    
+    // Для ключей пользователя
+    @discardableResult
+    func savePrivateKey(_ privateKey: Data, userId: UUID) -> Bool {
+        saveData(key: "private_key_\(userId.uuidString)", value: privateKey)
+    }
+    
+    func loadPrivateKey(userId: UUID) -> Data? {
+        loadData(key: "private_key_\(userId.uuidString)")
+    }
+    
+    @discardableResult
+    func savePublicKey(_ publicKey: Data, userId: UUID) -> Bool {
+        saveData(key: "public_key_\(userId.uuidString)", value: publicKey)
+    }
+    
+    func loadPublicKey(userId: UUID) -> Data? {
+        loadData(key: "public_key_\(userId.uuidString)")
+    }
+    
+    // Для ключей чатов
+    @discardableResult
+    func saveChatKey(_ chatKey: Data, chatId: UUID) -> Bool {
+        saveData(key: "chat_key_\(chatId.uuidString)", value: chatKey)
+    }
+    
+    func loadChatKey(chatId: UUID) -> Data? {
+        loadData(key: "chat_key_\(chatId.uuidString)")
+    }
+    
+    @discardableResult
+    func deleteChatKey(chatId: UUID) -> Bool {
+        delete(key: "chat_key_\(chatId.uuidString)")
+    }
+    
+    // Для очистки всех данных
+    func wipeAllData() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier
+        ]
+        
+        SecItemDelete(query as CFDictionary)
+        print("✅ Keychain очищен")
+    }
+    
+    // Вспомогательные методы
+    func getAllKeys() -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceIdentifier,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        
+        var items: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &items)
+        
+        guard status == errSecSuccess, let itemsArray = items as? [[String: Any]] else {
+            return []
+        }
+        
+        return itemsArray.compactMap { $0[kSecAttrAccount as String] as? String }
+    }
+    
+    func printAllStoredKeys() {
+        let keys = getAllKeys()
+        print("=== КЛЮЧИ В KEYCHAIN ===")
+        if keys.isEmpty {
+            print("(пусто)")
+        } else {
+            for key in keys.sorted() {
+                print("🔑 \(key)")
+            }
+        }
+        print("========================")
+    }
+    // Добавляем в существующий класс KeychainService
+
+    // MARK: - Device ID Management (для обратной совместимости)
+
+    @discardableResult
+    func saveDeviceId(_ deviceId: String) -> Bool {
+        // Для обратной совместимости сохраняем и в Keychain тоже
+        // Но основной Device_ID теперь в UserDefaults
+        return save(key: "device_id", value: deviceId)
+    }
+
+    func loadDeviceId() -> String? {
+        // Проверяем сначала UserDefaults (новый способ)
+        if let userDefaultsId = UserDefaults.standard.string(forKey: "persistent_device_id") {
+            return userDefaultsId
+        }
+        // Затем Keychain (старый способ для миграции)
+        return load(key: "device_id")
+    }
+
+    func migrateOldDeviceId() {
+        // Миграция старых Device_ID из Keychain в UserDefaults
+        if let oldDeviceId = load(key: "device_id") {
+            if UserDefaults.standard.string(forKey: "persistent_device_id") == nil {
+                UserDefaults.standard.set(oldDeviceId, forKey: "persistent_device_id")
+                print("✅ Старый Device_ID мигрирован в UserDefaults")
+            }
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Services/WebSocket/WebSocketManager.swift
+
+
+./FrontDip/MessengerApp/Services/WebSocket/WebSocketService.swift
+
+import Foundation
+import Combine
+
+class WebSocketService: ObservableObject {
+    static let shared = WebSocketService()
+    
+    @Published var isConnected = false
+    @Published var receivedMessages: [Message] = []
+    
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var urlSession: URLSession!
+    private let baseURL = "ws://localhost:8000"
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    private init() {
+        setupURLSession()
+        setupBindings()
+    }
+    
+    private func setupURLSession() {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        
+        urlSession = URLSession(configuration: configuration)
+    }
+    
+    private func setupBindings() {
+        // Подписка на изменения статуса пользователя
+//        AppState.shared.$currentUser
+//            .sink { [weak self] user in
+//                if let user = user {
+//                    self?.connect(userId: user.id)
+//                } else {
+//                    self?.disconnect()
+//                }
+//            }
+//            .store(in: &cancellables)
+    }
+    
+    func connect(userId: UUID) {
+        guard let url = URL(string: "\(baseURL)/ws/\(userId)") else {
+            print("❌ Неверный URL WebSocket")
+            return
+        }
+        
+        webSocketTask = urlSession.webSocketTask(with: url)
+        webSocketTask?.resume()
+        
+        listenForMessages()
+        startHeartbeat()
+        
+        print("✅ WebSocket подключен к: \(url)")
+        isConnected = true
+    }
+    
+    func disconnect() {
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        isConnected = false
+        print("🔌 WebSocket отключен")
+    }
+    
+    private func listenForMessages() {
+        webSocketTask?.receive { [weak self] result in
+            switch result {
+            case .success(let message):
+                self?.handleMessage(message)
+                self?.listenForMessages() // Продолжаем слушать
+            case .failure(let error):
+                print("❌ Ошибка получения сообщения: \(error)")
+                self?.isConnected = false
+                self?.reconnect()
+            }
+        }
+    }
+    
+    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+        switch message {
+        case .string(let text):
+            processStringMessage(text)
+        case .data(let data):
+            if let text = String(data: data, encoding: .utf8) {
+                processStringMessage(text)
+            }
+        @unknown default:
+            break
+        }
+    }
+    
+    private func processStringMessage(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            print("❌ Невалидный JSON")
+            return
+        }
+        
+        guard let type = json["type"] as? String else {
+            print("❌ Сообщение без типа")
+            return
+        }
+        
+        switch type {
+        case "message":
+            handlePrivateMessage(json)
+        case "chat_message":
+            handleChatMessage(json)
+        case "message_ack":
+            handleMessageAck(json)
+        case "user_status":
+            handleUserStatus(json)
+        case "pong":
+            print("❤️ Понг получен")
+        default:
+            print("❓ Неизвестный тип сообщения: \(type)")
+        }
+    }
+    
+    private func handlePrivateMessage(_ data: [String: Any]) {
+        print("📩 Приватное сообщение: \(data)")
+        // TODO: Обработка приватных сообщений
+    }
+    
+    func handleChatMessage(_ data: [String: Any]) {
+        guard let chatIdString = data["chat_id"] as? String,
+              let chatId = UUID(uuidString: chatIdString),
+              let senderIdString = data["sender_id"] as? String,
+              let senderId = UUID(uuidString: senderIdString),
+              let content = data["content"] as? String,
+              let messageIdString = data["message_id"] as? String,
+              let messageId = UUID(uuidString: messageIdString),
+              let timestampString = data["timestamp"] as? String else {
+            return
+        }
+        
+        // Парсим timestamp
+        let formatter = ISO8601DateFormatter()
+        let timestamp = formatter.date(from: timestampString) ?? Date()
+        
+        // Создаем объект сообщения
+        let message = Message(
+            id: messageId,
+            chatId: chatId,
+            senderId: senderId,
+            content: content,
+            type: .text,
+            timestamp: timestamp,
+            isEncrypted: data["encrypted"] as? Bool ?? true
+        )
+        
+        // Сохраняем в локальную БД через MessageService
+        _ = LocalDatabase.shared.saveMessage(message)
+        
+        // Уведомляем MessageService о новом сообщении
+        MessageService.shared.handleIncomingMessages([message])
+        
+        print("📩 Новое сообщение в чате \(chatIdString.prefix(8)) от \(senderIdString.prefix(8))")
+    }
+    
+    private func handleMessageAck(_ data: [String: Any]) {
+        guard let messageIdString = data["message_id"] as? String,
+              let messageId = UUID(uuidString: messageIdString),
+              let recipientIdString = data["recipient_id"] as? String,
+              let recipientId = UUID(uuidString: recipientIdString) else {
+            return
+        }
+        
+        // Уведомляем MessageService о подтверждении
+        MessageService.shared.handleMessageAck(messageId: messageId, from: recipientId)
+    }
+    
+    private func handleUserStatus(_ data: [String: Any]) {
+        guard let userId = data["user_id"] as? String,
+              let isOnline = data["is_online"] as? Bool else {
+            return
+        }
+        
+        print("👤 Пользователь \(userId) теперь \(isOnline ? "онлайн" : "офлайн")")
+    }
+    
+    func sendMessage(_ message: WebSocketMessage) {
+        guard isConnected else {
+            print("❌ WebSocket не подключен")
+            return
+        }
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            
+            let data = try encoder.encode(message)
+            
+            if let jsonString = String(data: data, encoding: .utf8) {
+                let wsMessage = URLSessionWebSocketTask.Message.string(jsonString)
+                
+                webSocketTask?.send(wsMessage) { error in
+                    if let error = error {
+                        print("❌ Ошибка отправки: \(error)")
+                    }
+                }
+            }
+        } catch {
+            print("❌ Ошибка кодирования: \(error)")
+        }
+    }
+    
+    private func startHeartbeat() {
+        Timer.publish(every: 30, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.sendHeartbeat()
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func sendHeartbeat() {
+        let heartbeat = WebSocketMessage(type: "ping")
+        sendMessage(heartbeat)
+    }
+    
+    private func reconnect() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let userId = AppState.shared.currentUser?.id else { return }
+            print("🔄 Переподключение WebSocket...")
+            self?.connect(userId: userId)
+        }
+    }
+    
+    private func decryptMessage(_ encryptedContent: String, chatId: UUID) async -> String? {
+        // TODO: Реализовать дешифрование с использованием ключей из Keychain
+        return encryptedContent // Пока возвращаем как есть
+    }
+}
+
+// MARK: - WebSocket Message Model
+struct WebSocketMessage: Codable {
+    let type: String
+    var chatId: UUID?
+    var recipientId: UUID?
+    var content: String?
+    var messageId: UUID?
+    var timestamp: Date?
+    
+    init(type: String, chatId: UUID? = nil, recipientId: UUID? = nil,
+         content: String? = nil, messageId: UUID? = nil, timestamp: Date? = nil) {
+        self.type = type
+        self.chatId = chatId
+        self.recipientId = recipientId
+        self.content = content
+        self.messageId = messageId
+        self.timestamp = timestamp
+    }
+}
+
+
+./FrontDip/MessengerApp/Utils/Constants/AppColors.swift
+
+
+./FrontDip/MessengerApp/Utils/Constants/AppConstants.swift
+
+import Foundation
+
+struct AppConstants {
+    static let baseURL = "http://localhost:8000/api/v1"
+    static let deviceIdKey = "messenger_device_id"
+    static let userIdKey = "messenger_user_id"
+    
+    struct API {
+        static let users = "/users"
+        static let chats = "/chats"
+        static let messages = "/messages"
+    }
+}
+
+
+./FrontDip/MessengerApp/Utils/Extensions/Color+Extensions.swift
+
+
+./FrontDip/MessengerApp/Utils/Extensions/Date+Extensions.swift
+
+
+./FrontDip/MessengerApp/Utils/Extensions/View+Extensions.swift
+import SwiftUI
+
+extension View {
+    func placeholder<Content: View>(
+        when shouldShow: Bool,
+        alignment: Alignment = .leading,
+        @ViewBuilder placeholder: () -> Content
+    ) -> some View {
+        ZStack(alignment: alignment) {
+            placeholder().opacity(shouldShow ? 1 : 0)
+            self
+        }
+    }
+    
+    func endEditing() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                       to: nil, from: nil, for: nil)
+    }
+}
+
+
+./FrontDip/MessengerApp/Utils/Formatters/DateFormatter.swift
+
+
+./FrontDip/MessengerApp/Utils/Formatters/MessageFormatter.swift
+
+
+./FrontDip/MessengerApp/Utils/JSONDecoder+ISO8601.swift
+import Foundation
+
+extension JSONDecoder {
+    static let iso8601WithMilliseconds: JSONDecoder = {
+        let decoder = JSONDecoder()
+        
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            
+            // Пробуем разные форматы дат
+            let formatters: [DateFormatter] = [
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS" // 6 цифр микросекунд
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }(),
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS" // 3 цифры миллисекунд
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }(),
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }()
+            ]
+            
+            for formatter in formatters {
+                if let date = formatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // Если ничего не сработало, пробуем ISO8601DateFormatter
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            
+            if let date = isoFormatter.date(from: dateString) {
+                return date
+            }
+            
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Cannot decode date string \(dateString)"
+            )
+        }
+        
+        return decoder
+    }()
+}
+
+
+./FrontDip/MessengerApp/Utils/Validators/InputValidator.swift
+
+
+./FrontDip/MessengerApp/ViewModels/Auth/AuthViewModel.swift
+import Foundation
+import CryptoKit
+import Combine
+
+class AuthViewModel: ObservableObject {
+    @Published var nickname = ""
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var currentUser: User?
+    
+    private let apiService = APIService.shared
+    private let cryptoService = CryptoService.shared
+    private let keychainService = KeychainService.shared
+    
+    var deviceId: String {
+        // Просто вызываем метод из CryptoService
+        // Теперь он сам управляет сохранением в UserDefaults
+        return cryptoService.generateDeviceId()
+    }
+    
+    var canRegister: Bool {
+        !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    func logout() {
+        print("🚪 Выход из аккаунта...")
+        
+        // 1. НЕ удаляем user_id из Keychain - сохраняем для будущих входов
+        // _ = keychainService.delete(key: "user_id") // УБИРАЕМ ЭТУ СТРОКУ
+        
+        // 2. Сохраняем список чатов в UserDefaults
+        if let userId = currentUser?.id {
+            let chatKeys = keychainService.getAllKeys()
+                .filter { $0.hasPrefix("chat_key_") }
+                .map { $0.replacingOccurrences(of: "chat_key_", with: "") }
+            
+            UserDefaults.standard.set(chatKeys, forKey: "user_chats_\(userId.uuidString)")
+            print("💾 Сохранено \(chatKeys.count) чатов для пользователя \(userId)")
+        }
+        
+        // 3. Очищаем только состояние
+        currentUser = nil
+        nickname = ""
+        AppState.shared.logout()
+        
+        print("✅ Выполнен выход. Данные сохранены.")
+    }
+    func restoreChatsOnLogin(userId: UUID) {
+        print("🔄 Восстановление чатов после входа...")
+        
+        // 1. Проверяем, есть ли временные данные
+        let key = "temp_chat_data_\(userId.uuidString)"
+        guard let chatData = UserDefaults.standard.dictionary(forKey: key) as? [String: Data] else {
+            print("❌ Нет сохраненных чатов для восстановления")
+            return
+        }
+        
+        // 2. Восстанавливаем каждый ключ чата
+        for (chatKey, encryptedData) in chatData {
+            _ = keychainService.saveData(key: chatKey, value: encryptedData)
+            print("✅ Восстановлен ключ: \(chatKey)")
+        }
+        
+        // 3. Очищаем временные данные
+        UserDefaults.standard.removeObject(forKey: key)
+        print("✅ Чаты успешно восстановлены")
+    }
+
+    func completeWipe() {
+        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
+        
+        // Полностью очищаем Keychain
+        keychainService.wipeAllData()
+        
+        // Очищаем локальную базу сообщений
+        LocalDatabase.shared.clearAllData()
+        
+        // Очищаем все синглтоны
+        ChatKeyManager.shared.clearAllKeys()
+        
+        // Сбрасываем состояние
+        currentUser = nil
+        nickname = ""
+        
+        // Обновляем состояние приложения
+        AppState.shared.logout()
+        
+        print("✅ Все данные полностью очищены")
+    }
+    
+    private func restoreUserChats(userId: UUID) async {
+        print("🔄 Восстановление чатов пользователя...")
+        
+        // 1. Загружаем список ID чатов из UserDefaults
+        let key = "user_chats_\(userId.uuidString)"
+        guard let chatIds = UserDefaults.standard.array(forKey: key) as? [String] else {
+            print("Нет сохраненных чатов")
+            return
+        }
+        
+        print("📋 Найдено \(chatIds.count) сохраненных чатов")
+        
+        // 2. Загружаем каждый чат с сервера
+        for chatIdString in chatIds {
+            guard let chatId = UUID(uuidString: chatIdString) else { continue }
+            
+            // Проверяем, есть ли ключ чата в Keychain
+            if keychainService.loadChatKey(chatId: chatId) != nil {
+                print("✅ Чат \(chatIdString.prefix(8)) уже имеет ключ")
+                continue
+            }
+            
+            // TODO: Загрузить информацию о чате с сервера и восстановить ключ
+            print("⚠️ Чат \(chatIdString.prefix(8)) требует восстановления ключа")
+        }
+    }
+    
+    // Добавьте метод для восстановления пользователя
+    func restoreUser() async {
+        print("🔄 Восстановление пользователя...")
+        
+        // 1. Проверяем, есть ли сохраненный user_id
+        guard let userIdString = keychainService.load(key: "user_id"),
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Нет сохраненного пользователя")
+            return
+        }
+        
+        print("🔑 Найден сохраненный user_id: \(userId)")
+        
+        // 2. Проверяем, есть ли приватный ключ
+        guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
+            print("❌ Нет приватного ключа для восстановления")
+            return
+        }
+        
+        // 3. Загружаем пользователя с сервера
+        do {
+            let user = try await APIService.shared.getUser(userId: userId)
+            print("✅ Пользователь загружен: \(user.nickname)")
+            
+            await MainActor.run {
+                currentUser = user
+                AppState.shared.currentUser = user
+                AppState.shared.login()
+                print("🎉 ПОЛЬЗОВАТЕЛЬ ВОССТАНОВЛЕН!")
+            }
+            
+        } catch {
+            print("❌ Ошибка восстановления: \(error)")
+            // Если пользователь не найден, удаляем сохраненные данные
+            if (error as NSError).domain == NSURLErrorDomain,
+               (error as NSError).code == NSURLErrorBadServerResponse {
+                print("⚠️ Пользователь не найден на сервере, очищаем данные")
+                await MainActor.run {
+                    completeWipe()
+                }
+            }
+        }
+    }
+    // Регистрация пользователя
+    func register() async {
+        guard canRegister else {
+            await MainActor.run {
+                errorMessage = "Введите никнейм"
+                isLoading = false
+            }
+            return
+        }
+        
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
+        do {
+            print("=== НАЧИНАЕМ РЕГИСТРАЦИЮ ===")
+            print("Device ID: \(deviceId)")
+            print("Nickname: \(nickname)")
+            
+            // 1. Генерируем пару ключей
+            let (privateKeyData, publicKeyData) = cryptoService.generateKeyPair()
+            print("✅ Ключи сгенерированы")
+            
+            // 2. Конвертируем публичный ключ в PEM
+            let publicKeyPEM = cryptoService.publicKeyToPEM(publicKey: publicKeyData)
+            print("✅ PEM ключ создан")
+            
+            // 3. Регистрируем пользователя
+            print("📤 Отправляем запрос на сервер...")
+            let user = try await apiService.registerUser(
+                nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+                publicKey: publicKeyPEM,
+                deviceId: deviceId
+            )
+            
+            print("✅ Пользователь создан: \(user.id)")
+            print("✅ Nickname: \(user.nickname)")
+            print("✅ Created at: \(user.createdAt)")
+            
+            // 4. Сохраняем приватный ключ
+            let privateSaved = keychainService.savePrivateKey(privateKeyData, userId: user.id)
+            print("🔐 Приватный ключ сохранен: \(privateSaved)")
+            
+            let publicSaved = keychainService.savePublicKey(publicKeyData, userId: user.id)
+            print("🔐 Публичный ключ сохранен: \(publicSaved)")
+            
+            // 5. Сохраняем user_id для автовхода
+            let userSaved = keychainService.save(key: "user_id", value: user.id.uuidString)
+            print("💾 User ID сохранен в Keychain: \(userSaved)")
+            
+            // 6. Отладочная печать всех ключей
+            keychainService.printAllStoredKeys()
+            
+            await MainActor.run {
+                currentUser = user
+                isLoading = false
+                AppState.shared.login()
+                AppState.shared.currentUser = user
+                print("🎉 РЕГИСТРАЦИЯ УСПЕШНА!")
+            }
+            
+        } catch {
+            await MainActor.run {
+                errorMessage = "Ошибка регистрации: \(error.localizedDescription)"
+                isLoading = false
+                print("❌ Ошибка регистрации: \(error)")
+            }
+        }
+    }
+    
+    // Автоматический вход если есть сохраненный пользователь
+    func autoLogin() {
+        print("🔄 Пытаемся выполнить автоматический вход...")
+        
+        guard let userIdString = keychainService.load(key: "user_id"),
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Нет сохраненного пользователя")
+            return
+        }
+        
+        Task {
+            do {
+                let user = try await APIService.shared.getUser(userId: userId)
+                
+                // Восстанавливаем сохраненные чаты
+                await restoreUserChats(userId: userId)
+                
+                await MainActor.run {
+                    currentUser = user
+                    AppState.shared.currentUser = user
+                    AppState.shared.login()
+                    print("🎉 АВТОМАТИЧЕСКИЙ ВХОД ВЫПОЛНЕН!")
+                }
+                
+            } catch {
+                print("❌ Ошибка автоматического входа: \(error)")
+            }
+        }
+    }
+
+    // Добавьте метод для восстановления ключей чатов
+    private func restoreChatKeys(userId: UUID) async {
+        print("🔄 Восстановление ключей чатов...")
+        
+        let allKeys = keychainService.getAllKeys()
+        let chatKeyPrefix = "chat_key_"
+        
+        for key in allKeys {
+            if key.hasPrefix(chatKeyPrefix) {
+                let chatIdString = key.replacingOccurrences(of: chatKeyPrefix, with: "")
+                guard let chatId = UUID(uuidString: chatIdString) else { continue }
+                
+                do {
+                    // Загружаем зашифрованный ключ чата
+                    guard let encryptedChatKey = keychainService.loadChatKey(chatId: chatId),
+                          let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
+                        continue
+                    }
+                    
+                    let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+                    let cryptoService = CryptoService.shared
+                    
+                    // Расшифровываем ключ чата
+                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
+                    let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                    
+                    // Сохраняем в менеджер ключей
+                    ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+                    
+                    print("🔑 Восстановлен ключ для чата: \(chatId)")
+                    
+                } catch {
+                    print("❌ Ошибка восстановления ключа для чата \(chatId): \(error)")
+                }
+            }
+        }
+        
+        print("✅ Восстановление ключей чатов завершено")
+    }
+    
+    // Полная очистка всех данных
+    func wipeAllData() {
+        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
+        keychainService.wipeAllData()
+        LocalDatabase.shared.clearAllData()
+        currentUser = nil
+        nickname = ""
+        AppState.shared.logout()
+        print("✅ Все данные очищены")
+    }
+    
+    // Проверяем, есть ли сохраненный пользователь
+    func hasSavedUser() -> Bool {
+        let hasUser = keychainService.load(key: "user_id") != nil
+        print("🔍 Проверка сохраненного пользователя: \(hasUser ? "ДА" : "НЕТ")")
+        return hasUser
+    }
+}
+
+
+./FrontDip/MessengerApp/ViewModels/Auth/RegistrationViewModel.swift
+
+
+./FrontDip/MessengerApp/ViewModels/Chat/ChatListViewModel.swift
+// ./FrontDip/MessengerApp/ViewModels/Chat/ChatListViewModel.swift
+import Foundation
+import Combine
+import CryptoKit
+
+class ChatListViewModel: ObservableObject {
+    @Published var chats: [Chat] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var showingCreateChat = false
+    
+    // Сделаем currentUser публичным для установки извне
+    var currentUser: User? {
+        didSet {
+            print("ChatListViewModel: текущий пользователь обновлен: \(currentUser?.nickname ?? "nil")")
+        }
+    }
+    
+    private let apiService = APIService.shared
+    private let keychainService = KeychainService.shared
+    
+    var deviceId: String? {
+        keychainService.loadDeviceId()
+    }
+    
+    func loadChats() async {
+        // 1. Сначала показываем чаты из локальной базы
+        let localChats = LocalDatabase.shared.getChats()
+        
+        await MainActor.run {
+            self.chats = localChats
+            self.isLoading = true
+        }
+        
+        guard let userId = currentUser?.id,
+              let deviceId = deviceId else {
+            await MainActor.run {
+                isLoading = false
+            }
+            return
+        }
+        
+        do {
+            print("📡 Загружаем чаты с сервера...")
+            let serverChats = try await apiService.getUserChats(
+                userId: userId,
+                deviceId: deviceId
+            )
+            
+            print("✅ Получено \(serverChats.count) чатов с сервера")
+            
+            // Сохраняем каждый чат в локальную базу
+            for chat in serverChats {
+                _ = LocalDatabase.shared.saveChat(chat)
+            }
+            
+            // Восстанавливаем ключи
+            await restoreChatKeys(for: serverChats, userId: userId)
+            
+            await MainActor.run {
+                // Обновляем список чатов
+                chats = serverChats
+                isLoading = false
+                print("✅ Всего чатов: \(chats.count)")
+            }
+            
+        } catch {
+            print("❌ Ошибка загрузки чатов: \(error)")
+            
+            // Если сервер недоступен, показываем локальные чаты
+            await MainActor.run {
+                isLoading = false
+                if localChats.isEmpty {
+                    errorMessage = "Нет доступных чатов. Проверьте подключение к серверу."
+                }
+            }
+        }
+    }
+    
+    // Добавьте метод восстановления ключей
+    private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
+        for chat in chats {
+            // Проверяем, есть ли ключ чата в Keychain
+            if let encryptedChatKey = keychainService.loadChatKey(chatId: chat.id) {
+                do {
+                    // Получаем наш приватный ключ
+                    guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
+                        print("❌ ChatListViewModel: Нет приватного ключа для чата \(chat.name)")
+                        continue
+                    }
+                    
+                    let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+                    let cryptoService = CryptoService.shared
+                    
+                    // Расшифровываем ключ чата
+                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
+                    let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                    
+                    // Сохраняем в менеджер ключей
+                    ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
+                    
+                    print("🔑 ChatListViewModel: Ключ восстановлен для чата: \(chat.name)")
+                    
+                } catch {
+                    print("❌ ChatListViewModel: Ошибка восстановления ключа для чата \(chat.name): \(error)")
+                }
+            }
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/ViewModels/Chat/ChatViewModel.swift
+import Foundation
+import Combine
+
+class ChatViewModel: ObservableObject {
+    @Published var messages: [Message] = []
+    @Published var newMessage = ""
+    @Published var isLoading = false
+    
+    private let messageService = MessageService.shared
+    private let database = LocalDatabase.shared
+    private var cancellables = Set<AnyCancellable>() // ДОБАВЛЯЕМ ЭТУ СТРОКУ
+    
+    let chat: Chat
+    
+    init(chat: Chat) {
+        self.chat = chat
+        setupNotifications()
+        loadLocalMessages()
+    }
+    
+    private func setupNotifications() {
+        // Подписываемся на новые сообщения
+        NotificationCenter.default.publisher(for: .newMessageReceived)
+            .sink { [weak self] notification in
+                if let message = notification.object as? Message,
+                   message.chatId == self?.chat.id {
+                    self?.addNewMessage(message)
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func loadLocalMessages() {
+        // Загружаем из локальной БД
+        messages = database.getMessages(for: chat.id)
+            .sorted(by: { $0.timestamp < $1.timestamp })
+    }
+    
+    private func addNewMessage(_ message: Message) {
+        DispatchQueue.main.async {
+            // Проверяем, нет ли уже такого сообщения
+            if !self.messages.contains(where: { $0.id == message.id }) {
+                self.messages.append(message)
+                self.messages.sort(by: { $0.timestamp < $1.timestamp })
+            }
+        }
+    }
+    
+    func sendMessage() {
+        guard !newMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let currentUser = AppState.shared.currentUser else {
+            return
+        }
+        
+        let content = newMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        newMessage = ""
+        
+        // Создаем сообщение
+        let message = Message(
+            id: UUID(),
+            chatId: chat.id,
+            senderId: currentUser.id,
+            content: content,
+            type: .text,
+            timestamp: Date(),
+            isEncrypted: true
+        )
+        
+        // Отправляем через MessageService
+        messageService.sendMessage(message, to: chat.id)
+        
+        // Немедленно добавляем в UI
+        addNewMessage(message)
+    }
+    
+    func isCurrentUser(senderId: UUID) -> Bool {
+        return senderId == AppState.shared.currentUser?.id
+    }
+    
+}
+
+
+./FrontDip/MessengerApp/ViewModels/Chat/CreateChatViewModel.swift
+
+import Foundation
+import Combine
+import CryptoKit
+
+class CreateChatViewModel: ObservableObject {
+    @Published var chatName = ""
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    @Published var inviteKey: String?
+    @Published var showInviteSheet = false
+    
+    private let apiService = APIService.shared
+    private let cryptoService = CryptoService.shared
+    private let keychainService = KeychainService.shared
+    
+    var canCreateChat: Bool {
+        !chatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    func createChat() async -> Bool {
+        guard canCreateChat,
+              let userId = AppState.shared.currentUser?.id,
+              let deviceId = keychainService.loadDeviceId() else {
+            await MainActor.run {
+                errorMessage = "Невозможно создать чат"
+            }
+            return false
+        }
+        
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
+        do {
+            // 1. Создаем чат на сервере
+            let chat = try await apiService.createChat(
+                name: chatName.trimmingCharacters(in: .whitespacesAndNewlines),
+                creatorId: userId,
+                deviceId: deviceId
+            )
+            
+            // 2. Генерируем симметричный ключ для чата
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            // 3. Получаем наш публичный ключ
+            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                throw NSError(domain: "ChatError", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Публичный ключ не найден"])
+            }
+            
+            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+            
+            // 4. Шифруем симметричный ключ нашим публичным ключом
+            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+            
+            // 5. Сохраняем зашифрованный ключ в Keychain
+            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chat.id)
+            
+            // 6. Сохраняем симметричный ключ в памяти (для текущей сессии)
+            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
+            
+            await MainActor.run {
+                inviteKey = chat.id.uuidString
+                showInviteSheet = true
+                isLoading = false
+                chatName = ""
+            }
+            
+            return true
+            
+        } catch {
+            await MainActor.run {
+                errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+                isLoading = false
+            }
+            return false
+        }
+    }
+}
+
+
+
+./FrontDip/MessengerApp/ViewModels/Message/MessageViewModel.swift
+
+
+./FrontDip/MessengerApp/ViewModels/Profile/ProfileViewModel.swift
+
+
+./FrontDip/MessengerApp/Views/Auth/LoginView.swift
+import SwiftUI
+
+struct LoginView: View {
+    @StateObject private var viewModel = AuthViewModel()
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Spacer()
+                
+                VStack(spacing: 10) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.blue)
+                    
+                    Text("Anonymous Messenger")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                    
+                    Text("Secure end-to-end encrypted messaging")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.bottom, 40)
+                
+                VStack(spacing: 16) {
+                    TextField("Enter your nickname", text: $viewModel.nickname)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .padding(.horizontal)
+                    
+                    Button(action: {
+                        Task {
+                            await viewModel.register()
+                        }
+                    }) {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        } else {
+                            Text("Start Messaging")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(viewModel.canRegister ? Color.blue : Color.gray)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .disabled(!viewModel.canRegister || viewModel.isLoading)
+                }
+                
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .font(.caption)
+                        .padding(.horizontal)
+                }
+                
+                Text("Your messages are encrypted and never stored on our servers")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .padding(.top, 20)
+                
+                Spacer()
+                
+                // Добавляем кнопку для отладки
+                Button("Debug: Auto Login") {
+                    viewModel.autoLogin()
+                }
+                .font(.caption)
+                .foregroundColor(.gray)
+                .padding(.bottom)
+            }
+            .padding()
+            .navigationBarHidden(true)
+            .onAppear {
+                // Убираем отсюда вызов метода - переносим в ContentView
+            }
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Auth/RegisterView.swift
+
+
+./FrontDip/MessengerApp/Views/Auth/WelcomeView.swift
+
+
+./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
+// ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
+import SwiftUI
+import CryptoKit
+
+struct ChatListView: View {
+    @StateObject private var viewModel = ChatListViewModel() // Убираем параметр
+    @EnvironmentObject var appState: AppState
+    @StateObject private var authViewModel = AuthViewModel() // Создаем здесь
+    
+    @State private var newChatName = ""
+    @State private var isLoadingChat = false
+    @State private var showInviteSheet = false
+    @State private var inviteKey: String?
+    
+    // Для бокового меню
+    @State private var showSideMenu = false
+    @State private var showCreateChatAlert = false
+    @State private var showJoinChatAlert = false
+    @State private var joinChatKey = ""
+    
+    var body: some View {
+        ZStack {
+            NavigationView {
+                Group {
+                    if viewModel.isLoading && viewModel.chats.isEmpty {
+                        LoadingView()
+                    } else if viewModel.chats.isEmpty {
+                        emptyStateView
+                    } else {
+                        List(viewModel.chats) { chat in
+                            NavigationLink(destination: ChatView(chat: chat)) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(chat.name)
+                                        .font(.headline)
+                                    
+                                    Text("\(chat.memberCount) участников")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    
+                                    Text(formatDate(chat.createdAt))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.vertical, 8)
+                            }
+                        }
+                        .listStyle(PlainListStyle())
+                    }
+                }
+                .navigationTitle("Чаты")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button(action: {
+                            withAnimation(.spring()) {
+                                showCreateChatAlert = true
+                            }
+                        }) {
+                            Image(systemName: "square.and.pencil")
+                        }
+                    }
+                    
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button(action: {
+                            withAnimation(.spring()) {
+                                showSideMenu = true
+                            }
+                        }) {
+                            Circle()
+                                .fill(Color.blue.opacity(0.8))
+                                .frame(width: 32, height: 32)
+                                .overlay(
+                                    Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                )
+                        }
+                    }
+                }
+                .refreshable {
+                    await viewModel.loadChats()
+                }
+                .onAppear {
+                    Task {
+                        // Обновляем пользователя в viewModel
+                        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
+                        await viewModel.loadChats()
+                    }
+                }
+            }
+            .blur(radius: showSideMenu ? 3 : 0)
+            .disabled(showSideMenu)
+            
+            // Боковое меню
+            SideMenuView(
+                authViewModel: authViewModel,
+                isShowing: $showSideMenu
+            )
+            .environmentObject(appState)
+        }
+        .alert("Создать чат", isPresented: $showCreateChatAlert) {
+            TextField("Название чата", text: $newChatName)
+            
+            Button("Отмена", role: .cancel) {
+                newChatName = ""
+            }
+            
+            Button("Создать") {
+                Task {
+                    await createChat()
+                }
+            }
+            .disabled(newChatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите название для нового чата")
+        }
+        .alert("Присоединиться к чату", isPresented: $showJoinChatAlert) {
+            TextField("Ключ приглашения", text: $joinChatKey)
+            
+            Button("Отмена", role: .cancel) {
+                joinChatKey = ""
+            }
+            
+            Button("Присоединиться") {
+                Task {
+                    await joinChat()
+                }
+            }
+            .disabled(joinChatKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите ключ приглашения для присоединения к чату")
+        }
+        .sheet(isPresented: $showInviteSheet) {
+            if let inviteKey = inviteKey {
+                InviteShareView(inviteKey: inviteKey)
+            }
+        }
+    }
+    
+    private func createChat() async {
+        // Используем authViewModel для получения пользователя
+        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
+              let deviceId = KeychainService.shared.loadDeviceId() else {
+            return
+        }
+        
+        isLoadingChat = true
+        
+        do {
+            let chat = try await APIService.shared.createChat(
+                name: newChatName,
+                creatorId: userId,
+                deviceId: deviceId
+            )
+            
+            // Генерируем и сохраняем ключ чата
+            await saveChatKey(for: chat.id, userId: userId)
+            
+            await MainActor.run {
+                inviteKey = chat.id.uuidString
+                showInviteSheet = true
+                newChatName = ""
+                isLoadingChat = false
+                
+                // Обновляем список чатов
+                viewModel.chats.insert(chat, at: 0)
+            }
+            
+        } catch {
+            await MainActor.run {
+                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+                isLoadingChat = false
+            }
+        }
+    }
+    
+    private func saveChatKey(for chatId: UUID, userId: UUID) async {
+        do {
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                print("❌ Публичный ключ не найден")
+                return
+            }
+            
+            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+            
+            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
+            
+            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+            
+        } catch {
+            print("❌ Ошибка сохранения ключа чата: \(error)")
+        }
+    }
+    
+    private func joinChat() {
+        // TODO: Реализовать присоединение к чату
+        print("Присоединяемся к чату с ключом: \(joinChatKey)")
+        joinChatKey = ""
+    }
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 70))
+                .foregroundColor(.gray.opacity(0.5))
+            
+            VStack(spacing: 8) {
+                Text("Нет чатов")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                
+                Text("Создайте первый чат или присоединитесь к существующему")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            
+            VStack(spacing: 12) {
+                Button(action: {
+                    showCreateChatAlert = true
+                }) {
+                    HStack {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Создать чат")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal, 40)
+                
+                Button(action: {
+                    showJoinChatAlert = true
+                }) {
+                    HStack {
+                        Image(systemName: "person.badge.plus")
+                        Text("Присоединиться к чату")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.green)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal, 40)
+            }
+            .padding(.top, 20)
+            
+            Spacer()
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.string(from: date)
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Chat/ChatRow.swift
+
+
+./FrontDip/MessengerApp/Views/Chat/ChatView.swift
+// ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
+import SwiftUI
+
+struct ChatView: View {
+    let chat: Chat
+    @StateObject private var viewModel: ChatViewModel
+    @Environment(\.presentationMode) var presentationMode
+    @State private var messageText = ""
+    @State private var isCurrentUser: Bool = true // Временно, нужно будет определять по senderId
+    
+    // Инициализатор для передачи чата во ViewModel
+    init(chat: Chat) {
+        self.chat = chat
+        _viewModel = StateObject(wrappedValue: ChatViewModel(chat: chat))
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Заголовок чата (как в Telegram)
+            HStack {
+                Button(action: {
+                    presentationMode.wrappedValue.dismiss()
+                }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.blue)
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(chat.name)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Text("\(chat.memberCount) участников")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    // TODO: Действия с чатом
+                }) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(.blue)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            .background(Color(.systemBackground))
+            
+            // Сообщения
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.messages) { message in
+                            MessageBubbleView(
+                                message: message,
+                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId)
+                            )
+                            .id(message.id)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                }
+                .onChange(of: viewModel.messages.count) { _ in
+                    if let lastMessage = viewModel.messages.last {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            
+            // Поле ввода (как в Telegram)
+            HStack(spacing: 12) {
+                Button(action: {
+                    // Прикрепление файла
+                }) {
+                    Image(systemName: "paperclip")
+                        .font(.system(size: 20))
+                        .foregroundColor(.gray)
+                }
+                
+                TextField("Сообщение", text: $viewModel.newMessage)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(18)
+                
+                Button(action: {
+                    viewModel.sendMessage()
+                }) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(viewModel.newMessage.isEmpty ? .gray : .blue)
+                }
+                .disabled(viewModel.newMessage.isEmpty)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color(.systemBackground))
+        }
+        .navigationBarHidden(true)
+        .onAppear {
+            // ViewModel уже загрузила сообщения в init
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Chat/CreateChatView.swift
+// ./FrontDip/MessengerApp/Services/KeyManagement/ChatKeyManager.swift
+import Foundation
+
+class ChatKeyManager {
+    static let shared = ChatKeyManager()
+    
+    private var chatKeys: [UUID: Data] = [:]
+    
+    private init() {}
+    
+    func saveChatKey(_ key: Data, for chatId: UUID) {
+        chatKeys[chatId] = key
+        print("🔐 Ключ чата сохранен в памяти для \(chatId)")
+    }
+    
+    func getChatKey(for chatId: UUID) -> Data? {
+        return chatKeys[chatId]
+    }
+    
+    func removeChatKey(for chatId: UUID) {
+        chatKeys.removeValue(forKey: chatId)
+    }
+    
+    func hasKey(for chatId: UUID) -> Bool {
+        return chatKeys[chatId] != nil
+    }
+    
+    func clearAllKeys() {
+        chatKeys.removeAll()
+        print("🧹 Все ключи чатов очищены из памяти")
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Chat/InviteShareView.swift
+// ./FrontDip/MessengerApp/Views/Chat/InviteShareView.swift
+import SwiftUI
+
+struct InviteShareView: View {
+    let inviteKey: String
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 30) {
+                Spacer()
+                
+                VStack(spacing: 15) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.blue)
+                    
+                    Text("Chat Created!")
+                        .font(.title)
+                        .fontWeight(.bold)
+                    
+                    Text("Share this invite key with friends:")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                }
+                
+                // Invite Key
+                VStack(spacing: 10) {
+                    Text("Invite Key:")
+                        .font(.headline)
+                    
+                    Text(inviteKey)
+                        .font(.system(.body, design: .monospaced))
+                        .padding()
+                        .background(Color.gray.opacity(0.1))
+                        .cornerRadius(10)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal)
+                
+                // Share button
+                Button(action: {
+                    shareInviteKey()
+                }) {
+                    Label("Share Invite Key", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                
+                Spacer()
+                
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                .padding(.bottom)
+            }
+            .padding()
+            .navigationTitle("Invite Friends")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+    
+    private func shareInviteKey() {
+        let activityVC = UIActivityViewController(
+            activityItems: [inviteKey],
+            applicationActivities: nil
+        )
+        
+        // Для iOS
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            rootVC.present(activityVC, animated: true)
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Common/EmptyStateView.swift
+
+
+./FrontDip/MessengerApp/Views/Common/ErrorView.swift
+
+
+./FrontDip/MessengerApp/Views/Common/LoadingView.swift
+
+import SwiftUI
+
+struct LoadingView: View {
+    var body: some View {
+        VStack {
+            ProgressView()
+                .scaleEffect(1.5)
+                .padding()
+            
+            Text("Loading...")
+                .font(.headline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
+// ./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
+import SwiftUI
+
+struct SideMenuView: View {
+    @EnvironmentObject var appState: AppState
+    @ObservedObject var authViewModel: AuthViewModel
+    @Binding var isShowing: Bool
+    @State private var showWipeAlert = false
+    @State private var showLogoutAlert = false
+    
+    // Для анимации
+    @State private var offset: CGFloat = UIScreen.main.bounds.width
+    @State private var opacity: Double = 0
+    
+    var body: some View {
+        ZStack {
+            // Полупрозрачный фон
+            if isShowing {
+                Color.black
+                    .opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring()) {
+                            isShowing = false
+                        }
+                    }
+                    .transition(.opacity)
+            }
+            
+            // Само меню
+            HStack {
+                Spacer()
+                
+                VStack(alignment: .leading, spacing: 0) {
+                    // Заголовок с аватаркой
+                    VStack(alignment: .leading, spacing: 12) {
+                        Circle()
+                            .fill(Color.blue.opacity(0.8))
+                            .frame(width: 60, height: 60)
+                            .overlay(
+                                Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                                    .font(.title)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                            )
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(authViewModel.currentUser?.nickname ?? "Пользователь")
+                                .font(.title2)
+                                .fontWeight(.semibold)
+                            
+                            if let userId = authViewModel.currentUser?.id {
+                                Text("ID: \(userId.uuidString.prefix(8))...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 60)
+                    .padding(.bottom, 32)
+                    
+                    // Пункты меню
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            MenuItem(
+                                icon: "person.2",
+                                title: "Контакты",
+                                color: .blue
+                            ) {
+                                // TODO: Реализовать контакты
+                                print("Контакты")
+                                withAnimation(.spring()) {
+                                    isShowing = false
+                                }
+                            }
+                            
+                            MenuItem(
+                                icon: "gear",
+                                title: "Настройки",
+                                color: .gray
+                            ) {
+                                // TODO: Реализовать настройки
+                                print("Настройки")
+                                withAnimation(.spring()) {
+                                    isShowing = false
+                                }
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 24)
+                            
+                            MenuItem(
+                                icon: "rectangle.portrait.and.arrow.right",
+                                title: "Выйти",
+                                color: .orange,
+                                isDestructive: false
+                            ) {
+                                showLogoutAlert = true
+                            }
+                            
+                            MenuItem(
+                                icon: "trash",
+                                title: "Очистить все",
+                                color: .red,
+                                isDestructive: true
+                            ) {
+                                showWipeAlert = true
+                            }
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    // Версия приложения
+                    Text("Версия 1.0.0")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.bottom, 20)
+                }
+                .frame(width: UIScreen.main.bounds.width * 0.9)
+                .background(Color(.systemBackground))
+                .offset(x: offset)
+                .shadow(color: Color.black.opacity(0.1), radius: 5, x: -3, y: 0)
+            }
+            .ignoresSafeArea()
+        }
+        .onChange(of: isShowing) { newValue in
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                offset = newValue ? 0 : UIScreen.main.bounds.width
+                opacity = newValue ? 1 : 0
+            }
+        }
+        .onAppear {
+            offset = UIScreen.main.bounds.width
+            opacity = 0
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.1)) {
+                offset = isShowing ? 0 : UIScreen.main.bounds.width
+                opacity = isShowing ? 1 : 0
+            }
+        }
+        .alert("Выйти из аккаунта", isPresented: $showLogoutAlert) {
+            Button("Отмена", role: .cancel) { }
+            Button("Выйти", role: .destructive) {
+                authViewModel.logout()
+                withAnimation(.spring()) {
+                    isShowing = false
+                }
+            }
+        } message: {
+            Text("Вы уверены, что хотите выйти из аккаунта? Ваши чаты останутся сохраненными.")
+        }
+        .alert("Очистить все данные", isPresented: $showWipeAlert) {
+            Button("Отмена", role: .cancel) { }
+            Button("Очистить", role: .destructive) {
+                authViewModel.completeWipe()
+                withAnimation(.spring()) {
+                    isShowing = false
+                }
+            }
+        } message: {
+            Text("Все данные будут удалены: аккаунт, чаты, сообщения. Это действие нельзя отменить.")
+        }
+    }
+}
+
+// Компонент пункта меню
+struct MenuItem: View {
+    let icon: String
+    let title: String
+    let color: Color
+    let isDestructive: Bool
+    let action: () -> Void
+    
+    init(icon: String, title: String, color: Color, isDestructive: Bool = false, action: @escaping () -> Void) {
+        self.icon = icon
+        self.title = title
+        self.color = color
+        self.isDestructive = isDestructive
+        self.action = action
+    }
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .frame(width: 24, height: 24)
+                    .foregroundColor(isDestructive ? .red : color)
+                
+                Text(title)
+                    .font(.body)
+                    .foregroundColor(isDestructive ? .red : .primary)
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .background(Color(.systemBackground))
+        .contentShape(Rectangle())
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Message/MessageBubbleView.swift
+
+import SwiftUI
+
+struct MessageBubbleView: View {
+    let message: Message
+    let isCurrentUser: Bool
+    
+    init(message: Message, isCurrentUser: Bool = false) {
+        self.message = message
+        self.isCurrentUser = isCurrentUser
+    }
+    
+    var body: some View {
+        HStack {
+            if isCurrentUser {
+                Spacer()
+            }
+            
+            VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
+                // Текст сообщения
+                Text(message.content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(18)
+                    .contextMenu {
+                        Button("Копировать") {
+                            UIPasteboard.general.string = message.content
+                        }
+                        
+                        Button("Переслать") {
+                            // TODO: Реализовать пересылку
+                        }
+                        
+                        if isCurrentUser {
+                            Button("Удалить", role: .destructive) {
+                                // TODO: Реализовать удаление
+                            }
+                        }
+                    }
+                
+                // Время и статус
+                HStack(spacing: 4) {
+                    Text(formatTime(message.timestamp))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    
+                    if isCurrentUser {
+                        if message.isEncrypted {
+                            Image(systemName: "lock.fill")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        // Статус доставки
+                        Image(systemName: "checkmark")
+                            .font(.caption2)
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+            
+            if !isCurrentUser {
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+    }
+    
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Message/MessageInputView.swift
+
+
+./FrontDip/MessengerApp/Views/Message/MessageListView.swift
+
+
+./FrontDip/MessengerApp/Views/Profile/ProfileView.swift
+
+
+./FrontDip/MessengerApp/Views/Profile/SettingsView.swift
+
+

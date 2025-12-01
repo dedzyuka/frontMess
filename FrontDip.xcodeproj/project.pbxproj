@@ -1,0 +1,698 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1E081FDA2EDDB486002C6FD5 /* CombineExt in Frameworks */ = {isa = PBXBuildFile; productRef = 1E081FD92EDDB486002C6FD5 /* CombineExt */; };
+		1E081FDD2EDDB496002C6FD5 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 1E081FDC2EDDB496002C6FD5 /* KeychainAccess */; };
+		1E081FE02EDDB4A0002C6FD5 /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = 1E081FDF2EDDB4A0002C6FD5 /* SQLite */; };
+		1E0B45EB2EE44B7F00BFD58D /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E12EE44B7F00BFD58D /* Alamofire */; };
+		1E0B45EC2EE44B7F00BFD58D /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E72EE44B7F00BFD58D /* SQLite */; };
+		1E0B45ED2EE44B7F00BFD58D /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E52EE44B7F00BFD58D /* KeychainAccess */; };
+		1E0B45EE2EE44B7F00BFD58D /* CombineExt in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E32EE44B7F00BFD58D /* CombineExt */; };
+		1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 1E2DC4072EDD9E780067EDAA /* Alamofire */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1E0B45F02EE44B7F00BFD58D /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1E54FA752EE44500006D551F /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		1E081FD62EDDB45A002C6FD5 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		1E0B45F42EE44B7F00BFD58D /* FrontDipUser2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FrontDipUser2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1E2DC35C2EDD995F0067EDAA /* FrontDip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FrontDip.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1E0B45F52EE44B7F00BFD58D /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets.xcassets,
+				MessengerApp/App/AppConfig.swift,
+				MessengerApp/App/AppState.swift,
+				MessengerApp/Models/Chat/Chat.swift,
+				MessengerApp/Models/Chat/ChatDTO.swift,
+				MessengerApp/Models/Chat/ChatInviteResponse.swift,
+				MessengerApp/Models/Chat/ChatMember.swift,
+				MessengerApp/Models/Chat/ChatMemberDetailed.swift,
+				MessengerApp/Models/Chat/ChatMembersResponse.swift,
+				MessengerApp/Models/Enums/ChatType.swift,
+				MessengerApp/Models/Enums/MessageType.swift,
+				MessengerApp/Models/Message/Message.swift,
+				MessengerApp/Models/Message/MessageDTO.swift,
+				MessengerApp/Models/User/User.swift,
+				MessengerApp/Models/User/UserDTO.swift,
+				MessengerApp/Resources/Assets.xcassets,
+				MessengerApp/Resources/Localizable.strings,
+				MessengerApp/Services/Auth/AuthService.swift,
+				MessengerApp/Services/Auth/UserManager.swift,
+				MessengerApp/Services/Auth/UserSession.swift,
+				MessengerApp/Services/Database/ChatRepository.swift,
+				MessengerApp/Services/Database/LocalDatabase.swift,
+				MessengerApp/Services/Database/MessageRepository.swift,
+				MessengerApp/Services/KeyManagement/ChatKeyManager.swift,
+				MessengerApp/Services/Message/MessageService.swift,
+				MessengerApp/Services/Network/APIEndpoints.swift,
+				MessengerApp/Services/Network/APIService.swift,
+				MessengerApp/Services/Network/ChatAPIService.swift,
+				MessengerApp/Services/Network/ContactService.swift,
+				MessengerApp/Services/Network/NetworkManager.swift,
+				MessengerApp/Services/Notification/NotificationService.swift,
+				MessengerApp/Services/Security/CryptoService.swift,
+				MessengerApp/Services/Security/KeychainService.swift,
+				MessengerApp/Services/Security/KeyManager.swift,
+				MessengerApp/Services/WebSocket/WebSocketManager.swift,
+				MessengerApp/Services/WebSocket/WebSocketService.swift,
+				MessengerApp/Utils/Constants/AppColors.swift,
+				MessengerApp/Utils/Constants/AppConstants.swift,
+				"MessengerApp/Utils/Extensions/Color+Extensions.swift",
+				"MessengerApp/Utils/Extensions/Date+Extensions.swift",
+				"MessengerApp/Utils/Extensions/View+Extensions.swift",
+				MessengerApp/Utils/Formatters/DateFormatter.swift,
+				MessengerApp/Utils/Formatters/MessageFormatter.swift,
+				"MessengerApp/Utils/JSONDecoder+ISO8601.swift",
+				MessengerApp/Utils/Validators/InputValidator.swift,
+				MessengerApp/ViewModels/Auth/AuthViewModel.swift,
+				MessengerApp/ViewModels/Auth/RegistrationViewModel.swift,
+				MessengerApp/ViewModels/Chat/ChatListViewModel.swift,
+				MessengerApp/ViewModels/Chat/ChatSelectionViewModel.swift,
+				MessengerApp/ViewModels/Chat/ChatSidebarViewModel.swift,
+				MessengerApp/ViewModels/Chat/ChatViewModel.swift,
+				MessengerApp/ViewModels/Chat/CreateChatViewModel.swift,
+				MessengerApp/ViewModels/Message/MessageViewModel.swift,
+				MessengerApp/ViewModels/Profile/ProfileViewModel.swift,
+				MessengerApp/Views/Auth/LoginView.swift,
+				MessengerApp/Views/Auth/RegisterView.swift,
+				MessengerApp/Views/Auth/WelcomeView.swift,
+				MessengerApp/Views/Chat/AddContactToChatView.swift,
+				MessengerApp/Views/Chat/ChatListView.swift,
+				MessengerApp/Views/Chat/ChatRow.swift,
+				MessengerApp/Views/Chat/ChatSidebarView.swift,
+				MessengerApp/Views/Chat/ChatView.swift,
+				MessengerApp/Views/Chat/CreateChatView.swift,
+				MessengerApp/Views/Chat/InviteShareView.swift,
+				MessengerApp/Views/Common/EmptyStateView.swift,
+				MessengerApp/Views/Common/ErrorView.swift,
+				MessengerApp/Views/Common/LoadingView.swift,
+				MessengerApp/Views/Common/SearchView.swift,
+				MessengerApp/Views/Common/SideMenuView.swift,
+				MessengerApp/Views/Message/MessageBubbleView.swift,
+				MessengerApp/Views/Message/MessageInputView.swift,
+				MessengerApp/Views/Message/MessageListView.swift,
+				MessengerApp/Views/Profile/ProfileView.swift,
+				MessengerApp/Views/Profile/SettingsView.swift,
+			);
+			target = 1E0B45E02EE44B7F00BFD58D /* FrontDipUser2 */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1E2DC35E2EDD995F0067EDAA /* FrontDip */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1E0B45F52EE44B7F00BFD58D /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */,
+			);
+			path = FrontDip;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1E0B45EA2EE44B7F00BFD58D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1E0B45EB2EE44B7F00BFD58D /* Alamofire in Frameworks */,
+				1E0B45EC2EE44B7F00BFD58D /* SQLite in Frameworks */,
+				1E0B45ED2EE44B7F00BFD58D /* KeychainAccess in Frameworks */,
+				1E0B45EE2EE44B7F00BFD58D /* CombineExt in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1E2DC3592EDD995F0067EDAA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */,
+				1E081FE02EDDB4A0002C6FD5 /* SQLite in Frameworks */,
+				1E081FDD2EDDB496002C6FD5 /* KeychainAccess in Frameworks */,
+				1E081FDA2EDDB486002C6FD5 /* CombineExt in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1E081FD52EDDB433002C6FD5 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				1E081FD62EDDB45A002C6FD5 /* libsqlite3.tbd */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		1E2DC3532EDD995F0067EDAA = {
+			isa = PBXGroup;
+			children = (
+				1E2DC35E2EDD995F0067EDAA /* FrontDip */,
+				1E081FD52EDDB433002C6FD5 /* Frameworks */,
+				1E2DC35D2EDD995F0067EDAA /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1E2DC35D2EDD995F0067EDAA /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1E2DC35C2EDD995F0067EDAA /* FrontDip.app */,
+				1E0B45F42EE44B7F00BFD58D /* FrontDipUser2.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1E0B45E02EE44B7F00BFD58D /* FrontDipUser2 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1E0B45F12EE44B7F00BFD58D /* Build configuration list for PBXNativeTarget "FrontDipUser2" */;
+			buildPhases = (
+				1E0B45E92EE44B7F00BFD58D /* Sources */,
+				1E0B45EA2EE44B7F00BFD58D /* Frameworks */,
+				1E0B45EF2EE44B7F00BFD58D /* Resources */,
+				1E0B45F02EE44B7F00BFD58D /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1E2DC35E2EDD995F0067EDAA /* FrontDip */,
+			);
+			name = FrontDipUser2;
+			packageProductDependencies = (
+				1E0B45E12EE44B7F00BFD58D /* Alamofire */,
+				1E0B45E32EE44B7F00BFD58D /* CombineExt */,
+				1E0B45E52EE44B7F00BFD58D /* KeychainAccess */,
+				1E0B45E72EE44B7F00BFD58D /* SQLite */,
+			);
+			productName = FrontDip;
+			productReference = 1E0B45F42EE44B7F00BFD58D /* FrontDipUser2.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1E2DC35B2EDD995F0067EDAA /* FrontDip */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1E2DC3692EDD99610067EDAA /* Build configuration list for PBXNativeTarget "FrontDip" */;
+			buildPhases = (
+				1E2DC3582EDD995F0067EDAA /* Sources */,
+				1E2DC3592EDD995F0067EDAA /* Frameworks */,
+				1E2DC35A2EDD995F0067EDAA /* Resources */,
+				1E54FA752EE44500006D551F /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1E2DC35E2EDD995F0067EDAA /* FrontDip */,
+			);
+			name = FrontDip;
+			packageProductDependencies = (
+				1E2DC4072EDD9E780067EDAA /* Alamofire */,
+				1E081FD92EDDB486002C6FD5 /* CombineExt */,
+				1E081FDC2EDDB496002C6FD5 /* KeychainAccess */,
+				1E081FDF2EDDB4A0002C6FD5 /* SQLite */,
+			);
+			productName = FrontDip;
+			productReference = 1E2DC35C2EDD995F0067EDAA /* FrontDip.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1E2DC3542EDD995F0067EDAA /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1640;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					1E2DC35B2EDD995F0067EDAA = {
+						CreatedOnToolsVersion = 16.4;
+					};
+				};
+			};
+			buildConfigurationList = 1E2DC3572EDD995F0067EDAA /* Build configuration list for PBXProject "FrontDip" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1E2DC3532EDD995F0067EDAA;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1E2DC4062EDD9E780067EDAA /* XCRemoteSwiftPackageReference "Alamofire" */,
+				1E081FD82EDDB486002C6FD5 /* XCRemoteSwiftPackageReference "CombineExt" */,
+				1E081FDB2EDDB496002C6FD5 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
+				1E081FDE2EDDB4A0002C6FD5 /* XCRemoteSwiftPackageReference "SQLite.swift" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1E2DC35D2EDD995F0067EDAA /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1E2DC35B2EDD995F0067EDAA /* FrontDip */,
+				1E0B45E02EE44B7F00BFD58D /* FrontDipUser2 */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1E0B45EF2EE44B7F00BFD58D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1E2DC35A2EDD995F0067EDAA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1E0B45E92EE44B7F00BFD58D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1E2DC3582EDD995F0067EDAA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1E0B45F22EE44B7F00BFD58D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip.user2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1E0B45F32EE44B7F00BFD58D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip.user2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		1E2DC3672EDD99610067EDAA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		1E2DC3682EDD99610067EDAA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		1E2DC36A2EDD99610067EDAA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		1E2DC36B2EDD99610067EDAA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1E0B45F12EE44B7F00BFD58D /* Build configuration list for PBXNativeTarget "FrontDipUser2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E0B45F22EE44B7F00BFD58D /* Debug */,
+				1E0B45F32EE44B7F00BFD58D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1E2DC3572EDD995F0067EDAA /* Build configuration list for PBXProject "FrontDip" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E2DC3672EDD99610067EDAA /* Debug */,
+				1E2DC3682EDD99610067EDAA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1E2DC3692EDD99610067EDAA /* Build configuration list for PBXNativeTarget "FrontDip" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E2DC36A2EDD99610067EDAA /* Debug */,
+				1E2DC36B2EDD99610067EDAA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1E081FD82EDDB486002C6FD5 /* XCRemoteSwiftPackageReference "CombineExt" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/CombineCommunity/CombineExt.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.8.1;
+			};
+		};
+		1E081FDB2EDDB496002C6FD5 /* XCRemoteSwiftPackageReference "KeychainAccess" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kishikawakatsumi/KeychainAccess.git";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
+		};
+		1E081FDE2EDDB4A0002C6FD5 /* XCRemoteSwiftPackageReference "SQLite.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stephencelis/SQLite.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.4;
+			};
+		};
+		1E0B45E22EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "Alamofire" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Alamofire/Alamofire.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.10.2;
+			};
+		};
+		1E0B45E42EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "CombineExt" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/CombineCommunity/CombineExt.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.8.1;
+			};
+		};
+		1E0B45E62EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "KeychainAccess" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kishikawakatsumi/KeychainAccess.git";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
+		};
+		1E0B45E82EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "SQLite.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stephencelis/SQLite.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.4;
+			};
+		};
+		1E2DC4062EDD9E780067EDAA /* XCRemoteSwiftPackageReference "Alamofire" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Alamofire/Alamofire.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.10.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1E081FD92EDDB486002C6FD5 /* CombineExt */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E081FD82EDDB486002C6FD5 /* XCRemoteSwiftPackageReference "CombineExt" */;
+			productName = CombineExt;
+		};
+		1E081FDC2EDDB496002C6FD5 /* KeychainAccess */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E081FDB2EDDB496002C6FD5 /* XCRemoteSwiftPackageReference "KeychainAccess" */;
+			productName = KeychainAccess;
+		};
+		1E081FDF2EDDB4A0002C6FD5 /* SQLite */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E081FDE2EDDB4A0002C6FD5 /* XCRemoteSwiftPackageReference "SQLite.swift" */;
+			productName = SQLite;
+		};
+		1E0B45E12EE44B7F00BFD58D /* Alamofire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E0B45E22EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "Alamofire" */;
+			productName = Alamofire;
+		};
+		1E0B45E32EE44B7F00BFD58D /* CombineExt */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E0B45E42EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "CombineExt" */;
+			productName = CombineExt;
+		};
+		1E0B45E52EE44B7F00BFD58D /* KeychainAccess */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E0B45E62EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "KeychainAccess" */;
+			productName = KeychainAccess;
+		};
+		1E0B45E72EE44B7F00BFD58D /* SQLite */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E0B45E82EE44B7F00BFD58D /* XCRemoteSwiftPackageReference "SQLite.swift" */;
+			productName = SQLite;
+		};
+		1E2DC4072EDD9E780067EDAA /* Alamofire */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1E2DC4062EDD9E780067EDAA /* XCRemoteSwiftPackageReference "Alamofire" */;
+			productName = Alamofire;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 1E2DC3542EDD995F0067EDAA /* Project object */;
+}
