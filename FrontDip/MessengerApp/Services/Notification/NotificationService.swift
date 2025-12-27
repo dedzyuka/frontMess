@@ -1,6 +1,18 @@
-// ./FrontDip/MessengerApp/Services/NotificationService.swift
+// ./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
 import Foundation
 import SwiftUI
+
+// Все Notification.Name в одном месте
+extension Notification.Name {
+    static let showNotification = Notification.Name("showNotification")
+    static let newContactRequest = Notification.Name("newContactRequest")
+    static let contactRequestAccepted = Notification.Name("contactRequestAccepted")
+    static let userLoggedIn = Notification.Name("userLoggedIn")
+    static let newMessageReceived = Notification.Name("newMessageReceived")
+    static let websocketConnected = Notification.Name("websocketConnected")
+    static let websocketDisconnected = Notification.Name("websocketDisconnected")
+    static let websocketError = Notification.Name("websocketError")
+}
 
 class NotificationService {
     static let shared = NotificationService()
@@ -9,9 +21,8 @@ class NotificationService {
     
     func showSuccess(_ message: String) {
         DispatchQueue.main.async {
-            // Используем NotificationCenter для отправки уведомления
             NotificationCenter.default.post(
-                name: .showNotification,  // Используем уже объявленное в ContactService.swift
+                name: .showNotification,
                 object: NotificationData(type: .success, message: message)
             )
         }
@@ -41,9 +52,16 @@ struct NotificationData {
         case success
         case error
         case info
+        
+        var title: String {
+            switch self {
+            case .success: return "Успех"
+            case .error: return "Ошибка"
+            case .info: return "Информация"
+            }
+        }
     }
     
     let type: NotificationType
     let message: String
 }
-

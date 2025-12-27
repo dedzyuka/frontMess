@@ -76,11 +76,6 @@ class APIService {
     
     // MARK: - Chat Endpoints
     
-    // В ChatAPIService.swift
-    // В APIService.swift измените метод createChat:
-    // В APIService.swift
-    // В APIService.swift
-    // Альтернативный метод createChat (проще)
     func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {
         let url = URL(string: "\(baseURL)/chats/")!
         
@@ -109,7 +104,7 @@ class APIService {
         }
         
         if httpResponse.statusCode == 201 {
-            // Парсим вручную
+            // Парсим вручную как ChatCreateResponse (а не ChatInviteResponse)
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let chatIdString = json["chat_id"] as? String,
                   let chatId = UUID(uuidString: chatIdString),
@@ -132,6 +127,13 @@ class APIService {
                 createdAt: createdAt,
                 memberCount: 1
             )
+        } else if httpResponse.statusCode == 400 {
+            // Пробуем другой формат ответа
+            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = errorJson["detail"] as? String {
+                print("❌ Ошибка сервера: \(detail)")
+            }
+            throw URLError(.badServerResponse)
         } else {
             throw URLError(.badServerResponse)
         }

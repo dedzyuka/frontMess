@@ -24,103 +24,13 @@ struct ChatListView: View {
     @State private var showingContactsView = false
     @State private var showingNotificationsView = false
     
-    @State private var notificationMessage: String?
-    @State private var showingNotification = false
-    @State private var notificationType: NotificationType = .info
-
-    enum NotificationType {
-        case success, error, info
-    }
+    // Для уведомлений
+    @State private var notificationData: NotificationData?
     
     var body: some View {
         ZStack {
             NavigationView {
-                Group {
-                    if viewModel.isLoading && viewModel.chats.isEmpty {
-                        LoadingView()
-                    } else if viewModel.chats.isEmpty {
-                        emptyStateView
-                    } else {
-                        List(viewModel.chats) { chat in
-                            NavigationLink(destination: ChatView(chat: chat)) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(chat.name)
-                                        .font(.headline)
-                                    
-                                    Text("\(chat.memberCount) участников")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    
-                                    Text(formatDate(chat.createdAt))
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(.vertical, 8)
-                            }
-                        }
-                        .listStyle(PlainListStyle())
-                    }
-                }
-                .navigationTitle("Чаты")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button(action: {
-                            withAnimation(.spring()) {
-                                showCreateChatAlert = true
-                            }
-                        }) {
-                            Image(systemName: "square.and.pencil")
-                        }
-                    }
-                    
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(action: {
-                            withAnimation(.spring()) {
-                                showSideMenu = true
-                            }
-                        }) {
-                            ZStack(alignment: .topTrailing) {
-                                Circle()
-                                    .fill(Color.blue.opacity(0.8))
-                                    .frame(width: 32, height: 32)
-                                    .overlay(
-                                        Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
-                                            .font(.caption)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.white)
-                                    )
-                                
-                                // Бейдж с количеством уведомлений
-                                if !contactService.pendingRequests.isEmpty {
-                                    Circle()
-                                        .fill(Color.red)
-                                        .frame(width: 12, height: 12)
-                                        .overlay(
-                                            Text("\(contactService.pendingRequests.count)")
-                                                .font(.system(size: 8, weight: .bold))
-                                                .foregroundColor(.white)
-                                        )
-                                        .offset(x: 4, y: -4)
-                                }
-                            }
-                        }
-                    }
-                }
-                .refreshable {
-                    await viewModel.loadChats()
-                }
-                .onAppear {
-                    Task {
-                        // Обновляем пользователя в viewModel
-                        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
-                        await viewModel.loadChats()
-                        
-                        // Обновляем контакты
-                        contactService.loadContacts()
-                        contactService.loadPendingRequests()
-                    }
-                }
+                chatListContent
             }
             .blur(radius: showSideMenu ? 3 : 0)
             .disabled(showSideMenu)
@@ -135,37 +45,14 @@ struct ChatListView: View {
             )
             .environmentObject(appState)
             .environmentObject(contactService)
-        }.onAppear {
-            // Подписываемся на уведомления
-            NotificationCenter.default.addObserver(forName: .showNotification, object: nil, queue: .main) { notification in
-                if let data = notification.object as? NotificationData {
-                    notificationMessage = data.message
-                    // Преобразуем тип уведомления
-                    switch data.type {
-                    case .success:
-                        notificationType = .success
-                    case .error:
-                        notificationType = .error
-                    case .info:
-                        notificationType = .info
-                    }
-                    showingNotification = true
-                } else if let message = notification.object as? String {
-                    // Для обратной совместимости с старыми уведомлениями
-                    notificationMessage = message
-                    notificationType = .info
-                    showingNotification = true
-                }
+        }
+        .onAppear {
+            setupNotificationObserver()
+            Task {
+                await initializeView()
             }
         }
-        .alert(isPresented: $showingNotification) {
-            Alert(
-                title: Text(notificationType.title),
-                message: Text(notificationMessage ?? ""),
-                dismissButton: .default(Text("OK"))
-            )
-        }
-        // Sheet модификаторы для новых View
+        // ✅ ВОТ СЮДА ДОБАВИМ SHEET МОДИФИКАТОРЫ:
         .sheet(isPresented: $showingSearchView) {
             SearchView()
                 .environmentObject(contactService)
@@ -178,117 +65,123 @@ struct ChatListView: View {
             NotificationsView()
                 .environmentObject(contactService)
         }
-        .alert("Создать чат", isPresented: $showCreateChatAlert) {
-            TextField("Название чата", text: $newChatName)
-            
-            Button("Отмена", role: .cancel) {
-                newChatName = ""
-            }
-            
-            Button("Создать") {
-                Task {
-                    await createChat()
+        // Существующие модификаторы
+        .notificationAlert(notificationData: $notificationData)
+        .createChatAlert(
+            showCreateChatAlert: $showCreateChatAlert,
+            newChatName: $newChatName,
+            createChat: createChat
+        )
+        .joinChatAlert(
+            showJoinChatAlert: $showJoinChatAlert,
+            joinChatKey: $joinChatKey,
+            joinChat: joinChat
+        )
+        .inviteSheet(showInviteSheet: $showInviteSheet, inviteKey: inviteKey)
+    }
+    
+    // MARK: - Subviews
+    
+    private var chatListContent: some View {
+        Group {
+            if viewModel.isLoading && viewModel.chats.isEmpty {
+                LoadingView()
+            } else if viewModel.chats.isEmpty {
+                emptyStateView
+            } else {
+                List(viewModel.chats) { chat in
+                    NavigationLink(destination: ChatView(chat: chat)) {
+                        ChatRow(chat: chat)
+                    }
                 }
+                .listStyle(PlainListStyle())
             }
-            .disabled(newChatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите название для нового чата")
         }
-        .alert("Присоединиться к чату", isPresented: $showJoinChatAlert) {
-            TextField("Ключ приглашения", text: $joinChatKey)
-            
-            Button("Отмена", role: .cancel) {
-                joinChatKey = ""
+        .navigationTitle("Чаты")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                createChatButton
             }
             
-            Button("Присоединиться") {
-                Task {
-                    await joinChat()
-                }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                menuButton
             }
-            .disabled(joinChatKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите ключ приглашения для присоединения к чату")
         }
-        .sheet(isPresented: $showInviteSheet) {
-            if let inviteKey = inviteKey {
-                InviteShareView(inviteKey: inviteKey)
-            }
-        }.alert(isPresented: $showingNotification) {
-            Alert(
-                title: Text(notificationType == .success ? "Успех" :
-                           notificationType == .error ? "Ошибка" : "Информация"),
-                message: Text(notificationMessage ?? ""),
-                dismissButton: .default(Text("OK"))
-            )
+        .refreshable {
+            await viewModel.loadChats()
         }
     }
     
-    private func createChat() async {
-        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
-              let deviceId = KeychainService.shared.loadDeviceId() else {
-            return
-        }
+    private struct ChatRow: View {
+        let chat: Chat
         
-        isLoadingChat = true
-        
-        do {
-            let chat = try await APIService.shared.createChat(
-                name: newChatName,
-                creatorId: userId,
-                deviceId: deviceId
-            )
-            
-            // Генерируем и сохраняем ключ чата
-            await saveChatKey(for: chat.id, userId: userId)
-            
-            await MainActor.run {
-                inviteKey = chat.id.uuidString
-                showInviteSheet = true
-                newChatName = ""
-                isLoadingChat = false
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chat.name)
+                    .font(.headline)
                 
-                // Обновляем список чатов
-                viewModel.chats.insert(chat, at: 0)
+                Text("\(chat.memberCount) участников")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Text(formatDate(chat.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
-            
-        } catch {
-            await MainActor.run {
-                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
-                isLoadingChat = false
-            }
+            .padding(.vertical, 8)
+        }
+        
+        private func formatDate(_ date: Date) -> String {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            formatter.locale = Locale(identifier: "ru_RU")
+            return formatter.string(from: date)
         }
     }
     
-    private func saveChatKey(for chatId: UUID, userId: UUID) async {
-        do {
-            let cryptoService = CryptoService.shared
-            let keychainService = KeychainService.shared
-            
-            let chatKey = cryptoService.generateSymmetricKey()
-            
-            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
-                print("❌ Публичный ключ не найден")
-                return
+    private var createChatButton: some View {
+        Button(action: {
+            withAnimation(.spring()) {
+                showCreateChatAlert = true
             }
-            
-            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-            
-            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
-            
-            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
-            
-        } catch {
-            print("❌ Ошибка сохранения ключа чата: \(error)")
+        }) {
+            Image(systemName: "square.and.pencil")
         }
     }
     
-    private func joinChat() {
-        // TODO: Реализовать присоединение к чату
-        print("Присоединяемся к чату с ключом: \(joinChatKey)")
-        joinChatKey = ""
+    private var menuButton: some View {
+        Button(action: {
+            withAnimation(.spring()) {
+                showSideMenu = true
+            }
+        }) {
+            ZStack(alignment: .topTrailing) {
+                Circle()
+                    .fill(Color.blue.opacity(0.8))
+                    .frame(width: 32, height: 32)
+                    .overlay(
+                        Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                    )
+                
+                // Бейдж с количеством уведомлений
+                if !contactService.pendingRequests.isEmpty {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            Text("\(contactService.pendingRequests.count)")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                        )
+                        .offset(x: 4, y: -4)
+                }
+            }
+        }
     }
     
     private var emptyStateView: some View {
@@ -348,11 +241,170 @@ struct ChatListView: View {
         }
     }
     
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
+    // MARK: - Methods
+    
+    private func initializeView() async {
+        // Обновляем пользователя в viewModel
+        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
+        await viewModel.loadChats()
+        
+        // Обновляем контакты
+        contactService.loadContacts()
+        contactService.loadPendingRequests()
+    }
+    
+    private func setupNotificationObserver() {
+        NotificationCenter.default.addObserver(
+            forName: .showNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            if let data = notification.object as? NotificationData {
+                notificationData = data
+            }
+        }
+    }
+    
+    private func createChat() async {
+        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
+              let deviceId = KeychainService.shared.loadDeviceId() else {
+            return
+        }
+        
+        isLoadingChat = true
+        
+        do {
+            let chat = try await APIService.shared.createChat(
+                name: newChatName,
+                creatorId: userId,
+                deviceId: deviceId
+            )
+            
+            // Генерируем и сохраняем ключ чата
+            await saveChatKey(for: chat.id, userId: userId)
+            
+            await MainActor.run {
+                inviteKey = chat.id.uuidString
+                showInviteSheet = true
+                newChatName = ""
+                isLoadingChat = false
+                
+                // Обновляем список чатов
+                viewModel.chats.insert(chat, at: 0)
+            }
+            
+        } catch {
+            await MainActor.run {
+                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+                isLoadingChat = false
+            }
+        }
+    }
+    
+    private func saveChatKey(for chatId: UUID, userId: UUID) async {
+        do {
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            
+            // Генерируем симметричный ключ для чата
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                print("❌ Публичный ключ не найден")
+                return
+            }
+            
+            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+            
+            // Сохраняем зашифрованный ключ в Keychain
+            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
+            
+            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+            
+            print("🔑 Ключ чата сохранен для: \(chatId.uuidString.prefix(8))...")
+            
+        } catch {
+            print("❌ Ошибка сохранения ключа чата: \(error)")
+        }
+    }
+    
+    private func joinChat() {
+        // TODO: Реализовать присоединение к чату
+        print("Присоединяемся к чату с ключом: \(joinChatKey)")
+        joinChatKey = ""
+    }
+}
+
+// MARK: - View Modifiers
+// Выносим модификаторы в extension для упрощения чтения
+
+extension View {
+    func notificationAlert(notificationData: Binding<NotificationData?>) -> some View {
+        self.alert(
+            notificationData.wrappedValue?.type.title ?? "Уведомление",
+            isPresented: .constant(notificationData.wrappedValue != nil)
+        ) {
+            Button("OK") {
+                notificationData.wrappedValue = nil
+            }
+        } message: {
+            if let message = notificationData.wrappedValue?.message {
+                Text(message)
+            }
+        }
+    }
+    
+    func createChatAlert(
+        showCreateChatAlert: Binding<Bool>,
+        newChatName: Binding<String>,
+        createChat: @escaping () async -> Void
+    ) -> some View {
+        self.alert("Создать чат", isPresented: showCreateChatAlert) {
+            TextField("Название чата", text: newChatName)
+            
+            Button("Отмена", role: .cancel) {
+                newChatName.wrappedValue = ""
+            }
+            
+            Button("Создать") {
+                Task {
+                    await createChat()
+                }
+            }
+            .disabled(newChatName.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите название для нового чата")
+        }
+    }
+    
+    func joinChatAlert(
+        showJoinChatAlert: Binding<Bool>,
+        joinChatKey: Binding<String>,
+        joinChat: @escaping () -> Void
+    ) -> some View {
+        self.alert("Присоединиться к чату", isPresented: showJoinChatAlert) {
+            TextField("Ключ приглашения", text: joinChatKey)
+            
+            Button("Отмена", role: .cancel) {
+                joinChatKey.wrappedValue = ""
+            }
+            
+            Button("Присоединиться") {
+                joinChat()
+            }
+            .disabled(joinChatKey.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите ключ приглашения для присоединения к чату")
+        }
+    }
+    
+    func inviteSheet(showInviteSheet: Binding<Bool>, inviteKey: String?) -> some View {
+        self.sheet(isPresented: showInviteSheet) {
+            if let inviteKey = inviteKey {
+                InviteShareView(inviteKey: inviteKey)
+            }
+        }
     }
 }

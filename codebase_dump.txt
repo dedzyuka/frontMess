@@ -58,6 +58,7 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var authViewModel = AuthViewModel()
     @StateObject private var webSocketService = WebSocketService.shared
+    @StateObject private var contactService = ContactService.shared  // Добавляем
     @State private var isCheckingAutoLogin = true
     
     var body: some View {
@@ -67,7 +68,8 @@ struct ContentView: View {
             } else if appState.isAuthenticated {
                 ChatListView()
                     .environmentObject(webSocketService)
-                    .environmentObject(authViewModel) // Добавляем
+                    .environmentObject(authViewModel)
+                    .environmentObject(contactService)  // Добавляем
             } else {
                 LoginView()
                     .environmentObject(authViewModel)
@@ -77,6 +79,7 @@ struct ContentView: View {
             Button("OK") {
                 appState.errorMessage = nil
             }
+            
         } message: {
             Text(appState.errorMessage ?? "")
         }
@@ -84,6 +87,11 @@ struct ContentView: View {
             // Проверяем автологин при запуске
             checkAutoLogin()
         }
+        Button("Debug: Recreate DB") {
+            LocalDatabase.shared.recreateTables()
+        }
+        .font(.caption)
+        .foregroundColor(.red)
     }
     
     private func checkAutoLogin() {
@@ -93,6 +101,7 @@ struct ContentView: View {
         if authViewModel.hasSavedUser() {
             print("👤 Найден сохраненный пользователь, пытаемся войти...")
             authViewModel.autoLogin()
+            
             
             // Даем 2 секунды на попытку автологина
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -151,6 +160,102 @@ struct ChatInviteResponse: Codable {
 
 
 ./FrontDip/MessengerApp/Models/Chat/ChatMember.swift
+
+
+./FrontDip/MessengerApp/Models/Chat/ChatMemberDetailed.swift
+import Foundation
+
+struct ChatMemberDetailed: Identifiable, Codable {
+    let user_id: UUID
+    let nickname: String
+    let public_key: String
+    let joined_at: Date
+    let device_id: String
+    
+    var id: UUID { user_id }
+    
+    enum CodingKeys: String, CodingKey {
+        case user_id
+        case nickname
+        case public_key
+        case joined_at
+        case device_id
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Chat/ChatMembersResponse.swift
+import Foundation
+
+struct ChatMembersResponse: Codable {
+    let chat_id: UUID
+    let members: [ChatMemberDetailed]
+    let total_members: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case chat_id
+        case members
+        case total_members
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Contact/ChatWithContactInfo.swift
+import Foundation
+
+struct ChatWithContactInfo: Identifiable {
+    let id: UUID
+    let chat: Chat
+    let isContactInChat: Bool
+    
+    init(chat: Chat, isContactInChat: Bool) {
+        self.id = chat.id
+        self.chat = chat
+        self.isContactInChat = isContactInChat
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Contact/Contact.swift
+import Foundation
+
+struct Contact: Identifiable, Codable {
+    let id: UUID
+    let userId: UUID
+    let nickname: String
+    let publicKey: String
+    let addedAt: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userId = "user_id"
+        case nickname
+        case publicKey = "public_key"
+        case addedAt = "added_at"
+    }
+}
+
+
+./FrontDip/MessengerApp/Models/Contact/ContactRequest.swift
+import Foundation
+
+struct ContactRequest: Identifiable, Codable {
+    let id: UUID
+    let fromUserId: UUID
+    let fromNickname: String
+    let fromPublicKey: String
+    let status: String
+    let createdAt: Date
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case fromUserId = "from_user_id"
+        case fromNickname = "from_nickname"
+        case fromPublicKey = "from_public_key"
+        case status
+        case createdAt = "created_at"
+    }
+}
 
 
 ./FrontDip/MessengerApp/Models/Enums/ChatType.swift
@@ -238,7 +343,16 @@ struct User: Identifiable, Codable {
 ./FrontDip/MessengerApp/Models/User/UserDTO.swift
 
 
-./FrontDip/MessengerApp/Models/User/UserResponse.swift
+./FrontDip/MessengerApp/Models/User/UserPublicResponse.swift
+
+import Foundation
+
+struct UserPublicResponse: Identifiable, Codable {
+    var id: UUID { user_id }
+    let user_id: UUID
+    let nickname: String
+    let public_key: String
+}
 
 
 ./FrontDip/MessengerApp/Services/Auth/AuthService.swift
@@ -255,6 +369,7 @@ struct User: Identifiable, Codable {
 
 
 ./FrontDip/MessengerApp/Services/Database/LocalDatabase.swift
+// ./FrontDip/MessengerApp/Services/Database/LocalDatabase.swift
 import Foundation
 import SQLite
 
@@ -263,7 +378,11 @@ class LocalDatabase {
     
     private var db: Connection?
     private let messagesTable = Table("messages")
+    private let chatsTable = Table("chats")
+    private let contactsTable = Table("contacts")
+    private let contactRequestsTable = Table("contact_requests")
     
+    // MARK: - Столбцы для messages таблицы
     private let id = Expression<UUID>("id")
     private let chatId = Expression<UUID>("chat_id")
     private let senderId = Expression<UUID>("sender_id")
@@ -271,22 +390,34 @@ class LocalDatabase {
     private let type = Expression<String>("type")
     private let timestamp = Expression<Date>("timestamp")
     private let isEncrypted = Expression<Bool>("is_encrypted")
+    private let isSent = Expression<Bool>("is_sent")
+    private let isDelivered = Expression<Bool>("is_delivered")
     
-    
-    private let chatsTable = Table("chats")
-
-    private let chatID = Expression<UUID>("id")
+    // MARK: - Столбцы для chats таблицы (ИСПРАВЛЕНО!)
     private let chatName = Expression<String>("name")
-    private let chatCreatorId = Expression<UUID>("creator_id")
-    private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatMemberCount = Expression<Int>("member_count")
-
+    private let creatorId = Expression<UUID>("creator_id")
+    private let createdAt = Expression<Date>("created_at")
+    private let memberCount = Expression<Int>("member_count")
     
-
+    // MARK: - Столбцы для contacts таблицы
+    private let contactId = Expression<UUID>("id")
+    private let contactUserId = Expression<UUID>("user_id")
+    private let contactNickname = Expression<String>("nickname")
+    private let contactPublicKey = Expression<String>("public_key")
+    private let contactAddedAt = Expression<Date>("added_at")
+    
+    // MARK: - Столбцы для contact_requests таблицы
+    private let requestId = Expression<UUID>("id")
+    private let fromUserId = Expression<UUID>("from_user_id")
+    private let fromNickname = Expression<String>("from_nickname")
+    private let fromPublicKey = Expression<String>("from_public_key")
+    private let requestStatus = Expression<String>("status")
+    private let requestCreatedAt = Expression<Date>("created_at")
+    
     private init() {
         setupDatabase()
     }
-
+    
     private func setupDatabase() {
         do {
             let path = NSSearchPathForDirectoriesInDomains(
@@ -295,7 +426,9 @@ class LocalDatabase {
             
             db = try Connection("\(path)/messenger.sqlite3")
             
-            // Таблица сообщений (уже есть)
+            print("📊 Инициализация базы данных по пути: \(path)/messenger.sqlite3")
+            
+            // ✅ Таблица сообщений (уже есть)
             try db?.run(messagesTable.create(ifNotExists: true) { t in
                 t.column(id, primaryKey: true)
                 t.column(chatId)
@@ -308,91 +441,259 @@ class LocalDatabase {
                 t.column(isDelivered, defaultValue: false)
             })
             
-            // Новая таблица чатов
+            // ✅ Новая таблица чатов (ИСПРАВЛЕНО!)
             try db?.run(chatsTable.create(ifNotExists: true) { t in
-                t.column(chatId, primaryKey: true)
+                t.column(id, primaryKey: true)  // ✅ ИСПРАВЛЕНО: было chatID
                 t.column(chatName)
-                t.column(chatCreatorId)
-                t.column(chatCreatedAt)
-                t.column(chatMemberCount)
+                t.column(creatorId)
+                t.column(createdAt)
+                t.column(memberCount)
             })
             
-            print("✅ Database setup complete with chats table")
+            print("✅ Таблица chats создана/проверена")
+            
+            // ✅ Таблица контактов
+            try db?.run(contactsTable.create(ifNotExists: true) { t in
+                t.column(contactId, primaryKey: true)
+                t.column(contactUserId)
+                t.column(contactNickname)
+                t.column(contactPublicKey)
+                t.column(contactAddedAt)
+            })
+            
+            // ✅ Таблица запросов на контакт
+            try db?.run(contactRequestsTable.create(ifNotExists: true) { t in
+                t.column(requestId, primaryKey: true)
+                t.column(fromUserId)
+                t.column(fromNickname)
+                t.column(fromPublicKey)
+                t.column(requestStatus)
+                t.column(requestCreatedAt)
+            })
+            
+            print("✅ Database setup complete with all tables")
+            
         } catch {
             print("❌ Database setup error: \(error)")
         }
     }
-
+    
     // MARK: - Chat Operations
-    func saveChat(_ chat: Chat) -> Bool {
+    
+    func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         
         do {
-            let insert = chatsTable.insert(
-                chatId <- chat.id,
-                chatName <- chat.name,
-                chatCreatorId <- chat.creatorId,
-                chatCreatedAt <- chat.createdAt,
-                chatMemberCount <- chat.memberCount
-            )
+            // Проверяем, существует ли чат
+            let existingChat = chatsTable.filter(id == chat.id)  // ✅ ИСПРАВЛЕНО: было chatID
+            let count = try db.scalar(existingChat.count)
             
-            try db.run(insert)
+            if count > 0 {
+                // Обновляем существующий чат
+                try db.run(existingChat.update(
+                    chatName <- chat.name,
+                    creatorId <- chat.creatorId,
+                    createdAt <- chat.createdAt,
+                    memberCount <- chat.memberCount
+                ))
+                print("✅ Чат обновлен: \(chat.name)")
+            } else {
+                // Добавляем новый чат
+                try db.run(chatsTable.insert(
+                    id <- chat.id,  // ✅ ИСПРАВЛЕНО: было chatID
+                    chatName <- chat.name,
+                    creatorId <- chat.creatorId,
+                    createdAt <- chat.createdAt,
+                    memberCount <- chat.memberCount
+                ))
+                print("✅ Чат сохранен: \(chat.name)")
+            }
             return true
         } catch {
-            print("Save chat error: \(error)")
+            print("❌ Save/update chat error: \(error)")
             return false
         }
     }
-
+    
     func getChats() -> [Chat] {
         guard let db = db else { return [] }
         
         do {
-            let query = chatsTable.order(chatCreatedAt.desc)
+            let query = chatsTable.order(createdAt.desc)  // ✅ ИСПРАВЛЕНО: было chatCreatedAt
             
             var chats: [Chat] = []
             for row in try db.prepare(query) {
                 let chat = Chat(
-                    id: row[chatId],
+                    id: row[id],  // ✅ ИСПРАВЛЕНО: было row[chatID]
                     name: row[chatName],
-                    creatorId: row[chatCreatorId],
-                    createdAt: row[chatCreatedAt],
-                    memberCount: row[chatMemberCount]
+                    creatorId: row[creatorId],
+                    createdAt: row[createdAt],
+                    memberCount: row[memberCount]
                 )
                 chats.append(chat)
+                print("📊 Загружен чат: \(chat.name), ID: \(chat.id)")
             }
             
             return chats
         } catch {
-            print("Get chats error: \(error)")
+            print("❌ Get chats error: \(error)")
             return []
         }
     }
-
+    
     func deleteAllChats() {
         guard let db = db else { return }
         
         do {
             try db.run(chatsTable.delete())
-            print("All chats cleared from database")
+            print("✅ Все чаты очищены из базы данных")
         } catch {
-            print("Error clearing chats: \(error)")
+            print("❌ Error clearing chats: \(error)")
         }
     }
-
-    // MARK: - Chat Operations
-
-
-
-
-
     
-    private let isSent = Expression<Bool>("is_sent")
-    private let isDelivered = Expression<Bool>("is_delivered")
-
+    // MARK: - Contact Operations
     
-
-    // MARK: - CRUD Operations
+    func saveContact(_ contact: Contact) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let insert = contactsTable.insert(
+                contactId <- contact.id,
+                contactUserId <- contact.userId,
+                contactNickname <- contact.nickname,
+                contactPublicKey <- contact.publicKey,
+                contactAddedAt <- contact.addedAt
+            )
+            
+            try db.run(insert)
+            print("✅ Контакт сохранен: \(contact.nickname)")
+            return true
+        } catch {
+            print("❌ Save contact error: \(error)")
+            return false
+        }
+    }
+    
+    func getContacts() -> [Contact] {
+        guard let db = db else { return [] }
+        
+        do {
+            let query = contactsTable.order(contactAddedAt.desc)
+            
+            var contacts: [Contact] = []
+            for row in try db.prepare(query) {
+                let contact = Contact(
+                    id: row[contactId],
+                    userId: row[contactUserId],
+                    nickname: row[contactNickname],
+                    publicKey: row[contactPublicKey],
+                    addedAt: row[contactAddedAt]
+                )
+                contacts.append(contact)
+            }
+            
+            return contacts
+        } catch {
+            print("❌ Get contacts error: \(error)")
+            return []
+        }
+    }
+    
+    func isContact(userId: UUID) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let query = contactsTable.filter(contactUserId == userId)
+            let count = try db.scalar(query.count)
+            return count > 0
+        } catch {
+            print("❌ Check contact error: \(error)")
+            return false
+        }
+    }
+    
+    func deleteContact(userId: UUID) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let query = contactsTable.filter(contactUserId == userId)
+            try db.run(query.delete())
+            print("✅ Контакт удален: \(userId)")
+            return true
+        } catch {
+            print("❌ Delete contact error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Contact Requests Operations
+    
+    func saveContactRequest(_ request: ContactRequest) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let insert = contactRequestsTable.insert(
+                requestId <- request.id,
+                fromUserId <- request.fromUserId,
+                fromNickname <- request.fromNickname,
+                fromPublicKey <- request.fromPublicKey,
+                requestStatus <- request.status,
+                requestCreatedAt <- request.createdAt
+            )
+            
+            try db.run(insert)
+            print("✅ Запрос на контакт сохранен: от \(request.fromNickname)")
+            return true
+        } catch {
+            print("❌ Save contact request error: \(error)")
+            return false
+        }
+    }
+    
+    func getPendingContactRequests() -> [ContactRequest] {
+        guard let db = db else { return [] }
+        
+        do {
+            let query = contactRequestsTable
+                .filter(requestStatus == "pending")
+                .order(requestCreatedAt.desc)
+            
+            var requests: [ContactRequest] = []
+            for row in try db.prepare(query) {
+                let request = ContactRequest(
+                    id: row[requestId],
+                    fromUserId: row[fromUserId],
+                    fromNickname: row[fromNickname],
+                    fromPublicKey: row[fromPublicKey],
+                    status: row[requestStatus],
+                    createdAt: row[requestCreatedAt]
+                )
+                requests.append(request)
+            }
+            
+            return requests
+        } catch {
+            print("❌ Get contact requests error: \(error)")
+            return []
+        }
+    }
+    
+    func updateContactRequestStatus(_ requestId: UUID, status: String) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let request = contactRequestsTable.filter(self.requestId == requestId)
+            try db.run(request.update(requestStatus <- status))
+            print("✅ Статус запроса обновлен на: \(status)")
+            return true
+        } catch {
+            print("❌ Update contact request error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Message Operations
     
     func saveMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
@@ -411,7 +712,7 @@ class LocalDatabase {
             try db.run(insert)
             return true
         } catch {
-            print("Save message error: \(error)")
+            print("❌ Save message error: \(error)")
             return false
         }
     }
@@ -443,7 +744,7 @@ class LocalDatabase {
             
             return messages
         } catch {
-            print("Get messages error: \(error)")
+            print("❌ Get messages error: \(error)")
             return []
         }
     }
@@ -456,7 +757,36 @@ class LocalDatabase {
             try db.run(query.delete())
             return true
         } catch {
-            print("Delete messages error: \(error)")
+            print("❌ Delete messages error: \(error)")
+            return false
+        }
+    }
+    
+    func messageExists(_ messageId: UUID) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let query = messagesTable.filter(id == messageId)
+            let count = try db.scalar(query.count)
+            return count > 0
+        } catch {
+            print("❌ Error checking message existence: \(error)")
+            return false
+        }
+    }
+    
+    func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
+        guard let db = db else { return false }
+        
+        do {
+            let message = messagesTable.filter(id == messageId)
+            try db.run(message.update(
+                self.isSent <- isSent,
+                self.isDelivered <- isDelivered
+            ))
+            return true
+        } catch {
+            print("❌ Error updating message status: \(error)")
             return false
         }
     }
@@ -469,9 +799,22 @@ class LocalDatabase {
         do {
             // Удаляем все сообщения
             try db.run(messagesTable.delete())
-            print("All messages cleared from database")
+            print("✅ Все сообщения очищены из базы данных")
+            
+            // Удаляем все чаты
+            try db.run(chatsTable.delete())
+            print("✅ Все чаты очищены из базы данных")
+            
+            // Удаляем все контакты
+            try db.run(contactsTable.delete())
+            print("✅ Все контакты очищены из базы данных")
+            
+            // Удаляем все запросы на контакт
+            try db.run(contactRequestsTable.delete())
+            print("✅ Все запросы на контакт очищены из базы данных")
+            
         } catch {
-            print("Error clearing database: \(error)")
+            print("❌ Error clearing database: \(error)")
         }
     }
     
@@ -481,40 +824,40 @@ class LocalDatabase {
         do {
             let query = messagesTable.filter(self.chatId == chatId)
             try db.run(query.delete())
-            print("Messages cleared for chat: \(chatId)")
+            print("✅ Сообщения очищены для чата: \(chatId)")
         } catch {
-            print("Error clearing messages: \(error)")
-        }
-    }
-    
-    
-    // MARK: - Статус сообщений (реализация или удаление)
-    
-    // Вариант 1: Удаляем неиспользуемый метод
-    // func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
-    //     // Не реализовано
-    //     return false
-    // }
-    
-    // Вариант 2: Добавляем поля в таблицу и реализуем метод
-    // В текущей схеме нет полей для статуса, поэтому:
-    func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
-        guard let db = db else { return false }
-        
-        do {
-            let message = messagesTable.filter(id == messageId)
-            try db.run(message.update(
-                self.isSent <- isSent,
-                self.isDelivered <- isDelivered
-            ))
-            return true
-        } catch {
-            print("Error updating message status: \(error)")
-            return false
+            print("❌ Error clearing messages: \(error)")
         }
     }
     
     // MARK: - Migration Helpers
+    
+    func recreateTables() {
+        print("🔄 Пересоздание всех таблиц...")
+        
+        // Закрываем существующее соединение
+        db = nil
+        
+        // Удаляем файл базы данных
+        let path = NSSearchPathForDirectoriesInDomains(
+            .documentDirectory, .userDomainMask, true
+        ).first!
+        
+        let databasePath = "\(path)/messenger.sqlite3"
+        
+        do {
+            if FileManager.default.fileExists(atPath: databasePath) {
+                try FileManager.default.removeItem(atPath: databasePath)
+                print("🗑️ Старая база данных удалена")
+            }
+        } catch {
+            print("❌ Ошибка удаления базы данных: \(error)")
+        }
+        
+        // Создаем новую базу
+        setupDatabase()
+        print("✅ База данных пересоздана с новой схемой")
+    }
     
     func getDatabasePath() -> String? {
         let path = NSSearchPathForDirectoriesInDomains(
@@ -531,20 +874,45 @@ class LocalDatabase {
             let attributes = try FileManager.default.attributesOfItem(atPath: path)
             return attributes[.size] as? Int64
         } catch {
-            print("Error getting database size: \(error)")
+            print("❌ Error getting database size: \(error)")
             return nil
         }
     }
-    func messageExists(_ messageId: UUID) -> Bool {
-        guard let db = db else { return false }
+    
+    func printDatabaseInfo() {
+        guard let db = db else {
+            print("❌ База данных не инициализирована")
+            return
+        }
+        
+        print("📊 ИНФОРМАЦИЯ О БАЗЕ ДАННЫХ:")
         
         do {
-            let query = messagesTable.filter(id == messageId)
-            let count = try db.scalar(query.count)
-            return count > 0
+            // Проверяем таблицу chats
+            let chatsCount = try db.scalar(chatsTable.count)
+            print("   Чатов: \(chatsCount)")
+            
+            // Проверяем таблицу messages
+            let messagesCount = try db.scalar(messagesTable.count)
+            print("   Сообщений: \(messagesCount)")
+            
+            // Проверяем таблицу contacts
+            let contactsCount = try db.scalar(contactsTable.count)
+            print("   Контактов: \(contactsCount)")
+            
+            // Проверяем таблицу contact_requests
+            let requestsCount = try db.scalar(contactRequestsTable.count)
+            print("   Запросов на контакт: \(requestsCount)")
+            
+            // Показываем схему таблицы chats
+            print("   Схема таблицы chats:")
+            let pragma = try db.prepare("PRAGMA table_info(chats)")
+            for row in pragma {
+                print("     Колонка: \(row[1] ?? "?"), Тип: \(row[2] ?? "?")")
+            }
+            
         } catch {
-            print("Error checking message existence: \(error)")
-            return false
+            print("❌ Ошибка получения информации о базе: \(error)")
         }
     }
 }
@@ -558,6 +926,7 @@ class LocalDatabase {
 
 
 ./FrontDip/MessengerApp/Services/Message/MessageService.swift
+// ./FrontDip/MessengerApp/Services/Message/MessageService.swift
 import Foundation
 import Combine
 
@@ -579,10 +948,12 @@ class MessageService: ObservableObject {
     }
     
     private func setupWebSocketHandlers() {
-        // Подписываемся на входящие сообщения
-        webSocketService.$receivedMessages
-            .sink { [weak self] messages in
-                self?.handleIncomingMessages(messages)
+        // Подписываемся на входящие сообщения через NotificationCenter
+        NotificationCenter.default.publisher(for: .newMessageReceived)
+            .sink { [weak self] notification in
+                if let message = notification.object as? Message {
+                    self?.handleIncomingMessages([message])
+                }
             }
             .store(in: &cancellables)
     }
@@ -616,11 +987,16 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message, chatId: UUID) {
+        guard let messageId = message.id else {
+            print("❌ Message ID is nil")
+            return
+        }
+        
         let webSocketMessage = WebSocketMessage(
             type: "chat_message",
             chatId: chatId,
             content: message.content,
-            messageId: message.id,
+            messageId: messageId,
             timestamp: message.timestamp
         )
         
@@ -691,12 +1067,18 @@ class MessageService: ObservableObject {
         guard let messageId = message.id,
               let currentUser = AppState.shared.currentUser else { return }
         
+        // Исправленный порядок аргументов
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            chatId: message.chatId,
-            recipientId: currentUser.id,
+            chatId: nil,
+            content: nil, // content должен идти перед originalSenderId
             messageId: messageId,
-            timestamp: Date()
+            timestamp: Date(),
+            senderId: nil,
+            recipientId: nil,
+            originalSenderId: message.senderId, // теперь originalSenderId после recipientId
+            requestId: nil,
+            ackSenderId: currentUser.id
         )
         
         webSocketService.sendMessage(ackMessage)
@@ -748,11 +1130,6 @@ class MessageService: ObservableObject {
     }
 }
 
-// Расширение для Notification
-extension Notification.Name {
-    static let newMessageReceived = Notification.Name("newMessageReceived")
-}
-
 
 ./FrontDip/MessengerApp/Services/Network/APIEndpoints.swift
 
@@ -763,7 +1140,7 @@ import Foundation
 class APIService {
     static let shared = APIService()
     
-    private let baseURL = "http://172.20.10.4:8000/api/v1"
+    let baseURL = "http://localhost:8000/api/v1"
     private let decoder = JSONDecoder.iso8601WithMilliseconds
     
     private init() {}
@@ -836,11 +1213,6 @@ class APIService {
     
     // MARK: - Chat Endpoints
     
-    // В ChatAPIService.swift
-    // В APIService.swift измените метод createChat:
-    // В APIService.swift
-    // В APIService.swift
-    // Альтернативный метод createChat (проще)
     func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {
         let url = URL(string: "\(baseURL)/chats/")!
         
@@ -869,7 +1241,7 @@ class APIService {
         }
         
         if httpResponse.statusCode == 201 {
-            // Парсим вручную
+            // Парсим вручную как ChatCreateResponse (а не ChatInviteResponse)
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let chatIdString = json["chat_id"] as? String,
                   let chatId = UUID(uuidString: chatIdString),
@@ -892,6 +1264,13 @@ class APIService {
                 createdAt: createdAt,
                 memberCount: 1
             )
+        } else if httpResponse.statusCode == 400 {
+            // Пробуем другой формат ответа
+            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let detail = errorJson["detail"] as? String {
+                print("❌ Ошибка сервера: \(detail)")
+            }
+            throw URLError(.badServerResponse)
         } else {
             throw URLError(.badServerResponse)
         }
@@ -939,6 +1318,105 @@ class APIService {
         
         let (data, _) = try await URLSession.shared.data(from: url)
         return try decoder.decode([Message].self, from: data)
+    }
+    // В APIService.swift, замените метод searchUsers:
+
+    func searchUsers(query: String, deviceId: String) async throws -> [UserPublicResponse] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let url = URL(string: "\(baseURL)/users/search?query=\(encodedQuery)&limit=50")!
+        
+        var request = URLRequest(url: url)
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("Поиск пользователей, статус: \(httpResponse.statusCode)")
+        
+        // Всегда логируем ответ
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Ответ сервера: \(responseString)")
+        }
+        
+        if httpResponse.statusCode == 200 {
+            // Используем существующий декодер
+            return try decoder.decode([UserPublicResponse].self, from: data)
+        } else {
+            throw URLError(.badServerResponse)
+        }
+    }
+    // MARK: - Chat Members Endpoints
+
+    func getChatMembers(chatId: UUID) async throws -> [ChatMemberDetailed] {
+        let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/members/detailed")!
+        
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let response = try decoder.decode(ChatMembersResponse.self, from: data)
+        return response.members
+    }
+
+    func addUserToChat(chatId: UUID, userId: UUID, deviceId: String) async throws -> Bool {
+        // Будем использовать существующий endpoint /chats/{chat_id}/join
+        let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/join")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "user_id": userId.uuidString,
+            "invite_key": chatId.uuidString // Используем chat_id как invite_key
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        return httpResponse.statusCode == 200
+    }
+
+    // MARK: - Chat Invite Endpoint
+
+    func inviteUserToChat(chatId: UUID, userId: UUID, deviceId: String) async throws -> [String: Any] {
+        let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/invite")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        
+        let body: [String: Any] = [
+            "user_id": userId.uuidString
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        
+        print("Статус приглашения: \(httpResponse.statusCode)")
+        
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Ответ сервера: \(responseString)")
+        }
+        
+        if httpResponse.statusCode == 200 {
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return json ?? [:]
+        } else {
+            throw URLError(.badServerResponse)
+        }
     }
 }
 
@@ -1001,10 +1479,316 @@ class ChatAPIService {
 }
 
 
+./FrontDip/MessengerApp/Services/Network/ContactService.swift
+// ./FrontDip/MessengerApp/Services/Network/ContactService.swift
+import Foundation
+import Combine
+
+class ContactService: ObservableObject {
+    static let shared = ContactService()
+    
+    @Published var contacts: [Contact] = []
+    @Published var pendingRequests: [ContactRequest] = []
+    
+    private let database = LocalDatabase.shared
+    private let webSocketService = WebSocketService.shared
+    private let apiService = APIService.shared
+    private let keychainService = KeychainService.shared
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    private init() {
+        loadContacts()
+        loadPendingRequests()
+        setupWebSocketHandlers()
+        
+        // Обновляем данные при каждом появлении пользователя
+        NotificationCenter.default.publisher(for: .userLoggedIn)
+            .sink { [weak self] _ in
+                self?.refreshAllData()
+            }
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - Загрузка данных
+    
+    func loadContacts() {
+        contacts = database.getContacts()
+        print("📱 Загружено контактов: \(contacts.count)")
+    }
+    
+    func loadPendingRequests() {
+        pendingRequests = database.getPendingContactRequests()
+        print("📱 Загружено запросов: \(pendingRequests.count)")
+    }
+    
+    func refreshAllData() {
+        loadContacts()
+        loadPendingRequests()
+        
+        // Уведомляем UI о новых запросах
+        if !pendingRequests.isEmpty {
+            NotificationCenter.default.post(
+                name: .showNotification,
+                object: NotificationData(
+                    type: .info,
+                    message: "У вас \(pendingRequests.count) новых запросов"
+                )
+            )
+        }
+    }
+    
+    // MARK: - Поиск пользователей
+    
+    func searchUsers(query: String) async throws -> [UserPublicResponse] {
+        guard let deviceId = keychainService.loadDeviceId() else {
+            throw NSError(domain: "Auth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
+        }
+        
+        do {
+            let users = try await apiService.searchUsers(query: query, deviceId: deviceId)
+            print("✅ Найдено пользователей: \(users.count)")
+            return users
+        } catch {
+            print("❌ Ошибка поиска пользователей: \(error)")
+            throw error
+        }
+    }
+    
+    // MARK: - Управление контактами
+    
+    func addContact(_ user: UserPublicResponse) {
+        let contact = Contact(
+            id: UUID(),
+            userId: user.user_id,
+            nickname: user.nickname,
+            publicKey: user.public_key,
+            addedAt: Date()
+        )
+        
+        if database.saveContact(contact) {
+            loadContacts()
+            print("✅ Контакт добавлен: \(user.nickname)")
+        }
+    }
+    
+    func removeContact(userId: UUID) {
+        if database.deleteContact(userId: userId) {
+            loadContacts()
+            print("🗑️ Контакт удален")
+        }
+    }
+    
+    func isContact(userId: UUID) -> Bool {
+        return database.isContact(userId: userId)
+    }
+    
+    // MARK: - Запросы на контакт
+    
+    func sendContactRequest(to user: UserPublicResponse) {
+        guard let currentUser = AppState.shared.currentUser else {
+            print("❌ Текущий пользователь не найден")
+            return
+        }
+        
+        print("📤 Отправляем запрос на контакт пользователю \(user.nickname)")
+        
+        // Сохраняем локально как исходящий запрос
+        let request = ContactRequest(
+            id: UUID(),
+            fromUserId: currentUser.id,
+            fromNickname: currentUser.nickname,
+            fromPublicKey: currentUser.publicKey,
+            status: "pending",
+            createdAt: Date()
+        )
+        
+        if database.saveContactRequest(request) {
+            loadPendingRequests()
+            print("✅ Запрос сохранен локально")
+        }
+        
+        // Отправляем через WebSocket
+        webSocketService.sendContactRequest(to: user.user_id)  // ✅ Используем правильный метод
+        
+        // Показываем уведомление
+        NotificationService.shared.showInfo("Запрос отправлен пользователю \(user.nickname)")
+    }
+    
+    func acceptContactRequest(_ request: ContactRequest) {
+        // Добавляем в контакты
+        let contact = Contact(
+            id: UUID(),
+            userId: request.fromUserId,
+            nickname: request.fromNickname,
+            publicKey: request.fromPublicKey,
+            addedAt: Date()
+        )
+        
+        if database.saveContact(contact) {
+            loadContacts()
+            print("✅ Контакт добавлен: \(request.fromNickname)")
+        }
+        
+        // Обновляем статус запроса
+        if database.updateContactRequestStatus(request.id, status: "accepted") {
+            loadPendingRequests()
+            print("✅ Статус запроса обновлен на 'accepted'")
+        }
+        
+        // Отправляем подтверждение через WebSocket
+        webSocketService.sendContactAccept(to: request.fromUserId)  // ✅ Используем правильный метод
+        
+        print("✅ Подтверждение отправлено")
+    }
+    
+    func declineContactRequest(_ request: ContactRequest) {
+        if database.updateContactRequestStatus(request.id, status: "declined") {
+            loadPendingRequests()
+            print("❌ Запрос отклонен")
+        }
+    }
+    
+    // MARK: - WebSocket обработчики
+    
+    private func setupWebSocketHandlers() {
+        NotificationCenter.default.publisher(for: .newContactRequest)
+            .sink { [weak self] notification in
+                if let request = notification.object as? ContactRequest {
+                    self?.handleIncomingContactRequest(request)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .contactRequestAccepted)
+            .sink { [weak self] notification in
+                if let contact = notification.object as? Contact {
+                    self?.handleContactRequestAccepted(contact)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .websocketConnected)
+            .sink { [weak self] _ in
+                print("🔗 WebSocket подключен, обновляем контакты...")
+                self?.refreshAllData()
+            }
+            .store(in: &cancellables)
+    }
+    
+     func handleIncomingContactRequest(_ request: ContactRequest) {
+        print("📩 Получен запрос на контакт от \(request.fromNickname)")
+        
+        // Сохраняем входящий запрос
+        if database.saveContactRequest(request) {
+            loadPendingRequests()
+            
+            // Показываем уведомление
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .showNotification,
+                    object: NotificationData(
+                        type: .info,
+                        message: "Новый запрос на контакт от \(request.fromNickname)"
+                    )
+                )
+            }
+        }
+    }
+    
+    func handleContactRequestAccepted(_ contact: Contact) {
+        print("✅ Запрос на контакт принят: \(contact.nickname)")
+        
+        // Добавляем в контакты
+        if database.saveContact(contact) {
+            loadContacts()
+            
+            // Показываем уведомление
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .showNotification,
+                    object: NotificationData(
+                        type: .success,
+                        message: "\(contact.nickname) принял(а) ваш запрос на контакт"
+                    )
+                )
+            }
+        }
+    }
+}
+
+
 ./FrontDip/MessengerApp/Services/Network/NetworkManager.swift
 
 
 ./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
+// ./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
+import Foundation
+import SwiftUI
+
+// Все Notification.Name в одном месте
+extension Notification.Name {
+    static let showNotification = Notification.Name("showNotification")
+    static let newContactRequest = Notification.Name("newContactRequest")
+    static let contactRequestAccepted = Notification.Name("contactRequestAccepted")
+    static let userLoggedIn = Notification.Name("userLoggedIn")
+    static let newMessageReceived = Notification.Name("newMessageReceived")
+    static let websocketConnected = Notification.Name("websocketConnected")
+    static let websocketDisconnected = Notification.Name("websocketDisconnected")
+    static let websocketError = Notification.Name("websocketError")
+}
+
+class NotificationService {
+    static let shared = NotificationService()
+    
+    private init() {}
+    
+    func showSuccess(_ message: String) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .showNotification,
+                object: NotificationData(type: .success, message: message)
+            )
+        }
+    }
+    
+    func showError(_ message: String) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .showNotification,
+                object: NotificationData(type: .error, message: message)
+            )
+        }
+    }
+    
+    func showInfo(_ message: String) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .showNotification,
+                object: NotificationData(type: .info, message: message)
+            )
+        }
+    }
+}
+
+struct NotificationData {
+    enum NotificationType {
+        case success
+        case error
+        case info
+        
+        var title: String {
+            switch self {
+            case .success: return "Успех"
+            case .error: return "Ошибка"
+            case .info: return "Информация"
+            }
+        }
+    }
+    
+    let type: NotificationType
+    let message: String
+}
 
 
 ./FrontDip/MessengerApp/Services/Security/CryptoService.swift
@@ -1509,25 +2293,47 @@ class KeychainService {
 
 
 ./FrontDip/MessengerApp/Services/WebSocket/WebSocketService.swift
-
 import Foundation
 import Combine
 
-class WebSocketService: ObservableObject {
+class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     static let shared = WebSocketService()
     
     @Published var isConnected = false
-    @Published var receivedMessages: [Message] = []
+    @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var lastError: String?
+    @Published var onlineUsers: Int = 0
     
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession!
-    private let baseURL = "ws://localhost:8000"
+    private let baseURL = "ws://localhost:8000" 
+    
+    private var reconnectTimer: Timer?
+    private var heartbeatTimer: Timer?
+    private var pingTimer: Timer?
+    
+    private var messageHandlers: [String: (Any) -> Void] = [:]
+    private var pendingMessages: [WebSocketMessage] = []
     
     private var cancellables = Set<AnyCancellable>()
     
-    private init() {
+    enum ConnectionStatus: String {
+        case disconnected = "🔴 Отключен"
+        case connecting = "🟡 Подключение..."
+        case connected = "🟢 Подключен"
+        case reconnecting = "🟠 Переподключение..."
+    }
+    
+    private override init() {
+        super.init()
         setupURLSession()
+        setupMessageHandlers()
         setupBindings()
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            print("❌ WebSocket task failed: \(error)")
+        }
     }
     
     private func setupURLSession() {
@@ -1535,59 +2341,229 @@ class WebSocketService: ObservableObject {
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         
-        urlSession = URLSession(configuration: configuration)
+        urlSession = URLSession(configuration: configuration, delegate: self, delegateQueue: OperationQueue())
+    }
+    
+    private func setupMessageHandlers() {
+        // Регистрируем обработчики для разных типов сообщений
+        messageHandlers = [
+            "chat_message": handleChatMessage,
+            "contact_request": handleContactRequest,
+            "contact_accept": handleContactAccept,
+            "contact_request_sent": handleContactRequestSent,
+            "message_ack": handleMessageAck,
+            "pong": handlePong,
+            "user_status": handleUserStatus
+        ]
     }
     
     private func setupBindings() {
-        // Подписка на изменения статуса пользователя
-//        AppState.shared.$currentUser
-//            .sink { [weak self] user in
-//                if let user = user {
-//                    self?.connect(userId: user.id)
-//                } else {
-//                    self?.disconnect()
-//                }
-//            }
-//            .store(in: &cancellables)
+        // Автоматическое переподключение при смене статуса
+        $connectionStatus
+            .sink { [weak self] status in
+                switch status {
+                case .disconnected:
+                    self?.scheduleReconnect()
+                case .connected:
+                    self?.cancelReconnectTimer()
+                    self?.startHeartbeat()
+                default:
+                    break
+                }
+            }
+            .store(in: &cancellables)
     }
     
+    // MARK: - Public Methods
+    
     func connect(userId: UUID) {
-        guard let url = URL(string: "\(baseURL)/ws/\(userId)") else {
-            print("❌ Неверный URL WebSocket")
+        guard let deviceId = KeychainService.shared.loadDeviceId() else {
+            print("❌ Device ID not found")
+            lastError = "Device ID not found"
             return
         }
         
+        guard connectionStatus != .connecting && connectionStatus != .connected else {
+            print("⚠️ Already connecting or connected")
+            return
+        }
+        
+        connectionStatus = .connecting
+        lastError = nil
+        
+        // Формируем URL с параметрами
+        let encodedDeviceId = deviceId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceId
+        guard let url = URL(string: "\(baseURL)/ws/\(userId)?device_id=\(encodedDeviceId)") else {
+            print("❌ Invalid WebSocket URL")
+            lastError = "Invalid WebSocket URL"
+            connectionStatus = .disconnected
+            return
+        }
+        
+        print("🔗 Connecting to WebSocket: \(url)")
+        
+        // Создаем WebSocket задачу
         webSocketTask = urlSession.webSocketTask(with: url)
         webSocketTask?.resume()
         
+        // Начинаем слушать сообщения
         listenForMessages()
-        startHeartbeat()
         
-        print("✅ WebSocket подключен к: \(url)")
-        isConnected = true
+        // Отправляем начальный ping
+        sendPing()
     }
     
     func disconnect() {
+        print("🔌 Disconnecting WebSocket...")
+        
+        // Останавливаем таймеры
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        
+        pingTimer?.invalidate()
+        pingTimer = nil
+        
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+        
+        // Закрываем соединение
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+        
+        connectionStatus = .disconnected
         isConnected = false
-        print("🔌 WebSocket отключен")
+        
+        print("✅ WebSocket disconnected")
     }
+    
+    func sendMessage(_ message: WebSocketMessage) {
+        guard connectionStatus == .connected else {
+            print("⚠️ Can't send message - not connected")
+            
+            // Сохраняем для отправки позже (кроме пингов)
+            if message.type != "ping" {
+                pendingMessages.append(message)
+                print("💾 Message saved for later delivery: \(message.type)")
+            }
+            
+            return
+        }
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            
+            let data = try encoder.encode(message)
+            
+            if let jsonString = String(data: data, encoding: .utf8) {
+                let wsMessage = URLSessionWebSocketTask.Message.string(jsonString)
+                
+                webSocketTask?.send(wsMessage) { [weak self] error in
+                    if let error = error {
+                        print("❌ Error sending message: \(error)")
+                        self?.lastError = "Send error: \(error.localizedDescription)"
+                        
+                        // Сохраняем для повторной отправки
+                        if message.type != "ping" {
+                            self?.pendingMessages.append(message)
+                        }
+                    } else {
+                        print("✅ Message sent: \(message.type)")
+                    }
+                }
+            }
+        } catch {
+            print("❌ Error encoding message: \(error)")
+            lastError = "Encode error: \(error.localizedDescription)"
+        }
+    }
+    
+    func sendChatMessage(chatId: UUID, content: String, messageId: UUID? = nil) {
+        let message = WebSocketMessage(
+            type: "chat_message",
+            chatId: chatId,
+            content: content,
+            messageId: messageId ?? UUID(),
+            timestamp: Date()
+        )
+        sendMessage(message)
+    }
+    
+    func sendContactRequest(to userId: UUID) {
+            guard let currentUser = AppState.shared.currentUser else {
+                print("❌ Current user not found")
+                return
+            }
+            
+            let message = WebSocketMessage(
+                type: "contact_request",
+                chatId: nil,
+                content: nil,
+                messageId: nil,
+                timestamp: Date(),
+                senderId: currentUser.id,
+                recipientId: userId,
+                originalSenderId: nil,
+                requestId: UUID(),
+                ackSenderId: nil,
+                senderNickname: currentUser.nickname,
+                senderPublicKey: currentUser.publicKey
+            )
+            sendMessage(message)
+        }
+    
+    func sendContactAccept(to userId: UUID) {
+            guard let currentUser = AppState.shared.currentUser else {
+                print("❌ Current user not found")
+                return
+            }
+            
+            let message = WebSocketMessage(
+                type: "contact_accept",
+                chatId: nil,
+                content: nil,
+                messageId: nil,
+                timestamp: Date(),
+                senderId: nil,
+                recipientId: nil,
+                originalSenderId: userId,
+                requestId: nil,
+                ackSenderId: nil,
+                senderNickname: nil,
+                senderPublicKey: nil,
+                recipientNickname: nil,
+                acceptedUserId: currentUser.id,
+                acceptedNickname: currentUser.nickname,
+                acceptedPublicKey: currentUser.publicKey
+            )
+            sendMessage(message)
+        }
+    
+    // MARK: - Private Methods
     
     private func listenForMessages() {
         webSocketTask?.receive { [weak self] result in
+            guard let self = self else { return }
+            
             switch result {
             case .success(let message):
-                self?.handleMessage(message)
-                self?.listenForMessages() // Продолжаем слушать
+                self.handleWebSocketMessage(message)
+                self.listenForMessages() // Продолжаем слушать
+                
             case .failure(let error):
-                print("❌ Ошибка получения сообщения: \(error)")
-                self?.isConnected = false
-                self?.reconnect()
+                print("❌ Error receiving message: \(error)")
+                self.lastError = "Receive error: \(error.localizedDescription)"
+                
+                // Если это не преднамеренное отключение
+                if (error as NSError).code != 57 { // Socket is not connected
+                    self.connectionStatus = .disconnected
+                    self.isConnected = false
+                }
             }
         }
     }
     
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+    private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .string(let text):
             processStringMessage(text)
@@ -1601,168 +2577,340 @@ class WebSocketService: ObservableObject {
     }
     
     private func processStringMessage(_ text: String) {
-        guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            print("❌ Невалидный JSON")
+        guard let data = text.data(using: .utf8) else {
+            print("❌ Cannot convert message to data")
             return
         }
         
-        guard let type = json["type"] as? String else {
-            print("❌ Сообщение без типа")
-            return
-        }
-        
-        switch type {
-        case "message":
-            handlePrivateMessage(json)
-        case "chat_message":
-            handleChatMessage(json)
-        case "message_ack":
-            handleMessageAck(json)
-        case "user_status":
-            handleUserStatus(json)
-        case "pong":
-            print("❤️ Понг получен")
-        default:
-            print("❓ Неизвестный тип сообщения: \(type)")
+        do {
+            // Пытаемся декодировать в WebSocketMessage
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            
+            let message = try decoder.decode(WebSocketMessage.self, from: data)
+            
+            print("📩 Received message type: \(message.type)")
+            
+            // Вызываем соответствующий обработчик
+            if let handler = messageHandlers[message.type] {
+                handler(message)
+            } else {
+                print("⚠️ No handler for message type: \(message.type)")
+            }
+            
+        } catch {
+            print("❌ Error parsing message JSON: \(error)")
         }
     }
     
-    private func handlePrivateMessage(_ data: [String: Any]) {
-        print("📩 Приватное сообщение: \(data)")
-        // TODO: Обработка приватных сообщений
-    }
+    // MARK: - Message Handlers
     
-    func handleChatMessage(_ data: [String: Any]) {
-        guard let chatIdString = data["chat_id"] as? String,
-              let chatId = UUID(uuidString: chatIdString),
-              let senderIdString = data["sender_id"] as? String,
-              let senderId = UUID(uuidString: senderIdString),
-              let content = data["content"] as? String,
-              let messageIdString = data["message_id"] as? String,
-              let messageId = UUID(uuidString: messageIdString),
-              let timestampString = data["timestamp"] as? String else {
+    private func handleChatMessage(_ data: Any) {
+        guard let message = data as? WebSocketMessage,
+              let chatId = message.chatId,
+              let senderId = message.senderId,
+              let content = message.content,
+              let messageId = message.messageId,
+              let timestamp = message.timestamp else {
+            print("❌ Invalid chat message format")
             return
         }
-        
-        // Парсим timestamp
-        let formatter = ISO8601DateFormatter()
-        let timestamp = formatter.date(from: timestampString) ?? Date()
         
         // Создаем объект сообщения
-        let message = Message(
+        let messageObj = Message(
             id: messageId,
             chatId: chatId,
             senderId: senderId,
             content: content,
             type: .text,
             timestamp: timestamp,
-            isEncrypted: data["encrypted"] as? Bool ?? true
+            isEncrypted: true
         )
         
-        // Сохраняем в локальную БД через MessageService
-        _ = LocalDatabase.shared.saveMessage(message)
-        
-        // Уведомляем MessageService о новом сообщении
-        MessageService.shared.handleIncomingMessages([message])
-        
-        print("📩 Новое сообщение в чате \(chatIdString.prefix(8)) от \(senderIdString.prefix(8))")
-    }
-    
-    private func handleMessageAck(_ data: [String: Any]) {
-        guard let messageIdString = data["message_id"] as? String,
-              let messageId = UUID(uuidString: messageIdString),
-              let recipientIdString = data["recipient_id"] as? String,
-              let recipientId = UUID(uuidString: recipientIdString) else {
-            return
-        }
-        
-        // Уведомляем MessageService о подтверждении
-        MessageService.shared.handleMessageAck(messageId: messageId, from: recipientId)
-    }
-    
-    private func handleUserStatus(_ data: [String: Any]) {
-        guard let userId = data["user_id"] as? String,
-              let isOnline = data["is_online"] as? Bool else {
-            return
-        }
-        
-        print("👤 Пользователь \(userId) теперь \(isOnline ? "онлайн" : "офлайн")")
-    }
-    
-    func sendMessage(_ message: WebSocketMessage) {
-        guard isConnected else {
-            print("❌ WebSocket не подключен")
-            return
-        }
-        
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
+        // Сохраняем в локальную БД
+        DispatchQueue.main.async {
+            _ = LocalDatabase.shared.saveMessage(messageObj)
             
-            let data = try encoder.encode(message)
+            // Уведомляем о новом сообщении
+            NotificationCenter.default.post(
+                name: .newMessageReceived,
+                object: messageObj
+            )
             
-            if let jsonString = String(data: data, encoding: .utf8) {
-                let wsMessage = URLSessionWebSocketTask.Message.string(jsonString)
-                
-                webSocketTask?.send(wsMessage) { error in
-                    if let error = error {
-                        print("❌ Ошибка отправки: \(error)")
-                    }
-                }
-            }
-        } catch {
-            print("❌ Ошибка кодирования: \(error)")
+            print("📩 Chat message saved: \(content.prefix(20))...")
         }
+    }
+    
+    private func handleContactRequest(_ data: Any) {
+        guard let message = data as? WebSocketMessage,
+              let requestId = message.requestId,
+              let senderId = message.senderId,
+              let senderNickname = message.senderNickname,
+              let senderPublicKey = message.senderPublicKey else {
+            print("❌ Invalid contact request format")
+            return
+        }
+        
+        let request = ContactRequest(
+            id: requestId,
+            fromUserId: senderId,
+            fromNickname: senderNickname,
+            fromPublicKey: senderPublicKey,
+            status: "pending",
+            createdAt: message.timestamp ?? Date()
+        )
+        
+        // Передаем в ContactService
+        ContactService.shared.handleIncomingContactRequest(request)
+    }
+    private var offlineMessages: [UUID: [WebSocketMessage]] = [:]
+
+    func saveOfflineMessage(_ message: WebSocketMessage, for userId: UUID) {
+        if offlineMessages[userId] == nil {
+            offlineMessages[userId] = []
+        }
+        offlineMessages[userId]?.append(message)
+    }
+
+    func sendOfflineMessages(for userId: UUID) {
+        guard let messages = offlineMessages[userId] else { return }
+        
+        for message in messages {
+            sendMessage(message)
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        
+        offlineMessages.removeValue(forKey: userId)
+    }
+    
+    private func handleContactAccept(_ data: Any) {
+        guard let message = data as? WebSocketMessage,
+              let acceptedUserId = message.acceptedUserId,
+              let acceptedNickname = message.acceptedNickname,
+              let acceptedPublicKey = message.acceptedPublicKey else {
+            print("❌ Invalid contact accept format")
+            return
+        }
+        
+        let contact = Contact(
+            id: UUID(),
+            userId: acceptedUserId,
+            nickname: acceptedNickname,
+            publicKey: acceptedPublicKey,
+            addedAt: Date()
+        )
+        
+        // Передаем в ContactService
+        ContactService.shared.handleContactRequestAccepted(contact)
+    }
+    
+    private func handleContactRequestSent(_ data: Any) {
+        guard let message = data as? WebSocketMessage,
+              let recipientNickname = message.recipientNickname else {
+            return
+        }
+        
+        DispatchQueue.main.async {
+            NotificationService.shared.showSuccess("Запрос на контакт отправлен \(recipientNickname)")
+            print("✅ Contact request sent to \(recipientNickname)")
+        }
+    }
+    
+    private func handleMessageAck(_ data: Any) {
+        guard let message = data as? WebSocketMessage,
+              let messageId = message.messageId,
+              let ackSenderId = message.ackSenderId else {
+            return
+        }
+        
+        print("✅ Message \(messageId.uuidString.prefix(8)) acknowledged by \(ackSenderId.uuidString.prefix(8))")
+        
+        // Передаем в MessageService
+        MessageService.shared.handleMessageAck(messageId: messageId, from: ackSenderId)
+    }
+    
+    private func handlePong(_ data: Any) {
+        print("❤️ Pong received")
+        // Обновляем время последней активности
+    }
+    
+    private func handleUserStatus(_ data: Any) {
+        // Обработка статусов пользователей
+        print("👤 User status update")
+    }
+    
+    // MARK: - Connection Management
+    
+    private func sendPing() {
+        let pingMessage = WebSocketMessage(type: "ping", timestamp: Date())
+        sendMessage(pingMessage)
     }
     
     private func startHeartbeat() {
-        Timer.publish(every: 30, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                self?.sendHeartbeat()
-            }
-            .store(in: &cancellables)
+        // Останавливаем старый таймер
+        heartbeatTimer?.invalidate()
+        
+        // Запускаем новый таймер для пинга каждые 30 секунд
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+        
+        // Отправляем ожидающие сообщения
+        sendPendingMessages()
     }
     
-    private func sendHeartbeat() {
-        let heartbeat = WebSocketMessage(type: "ping")
-        sendMessage(heartbeat)
-    }
-    
-    private func reconnect() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let userId = AppState.shared.currentUser?.id else { return }
-            print("🔄 Переподключение WebSocket...")
-            self?.connect(userId: userId)
+    private func sendPendingMessages() {
+        guard !pendingMessages.isEmpty else { return }
+        
+        print("📤 Sending \(pendingMessages.count) pending messages...")
+        
+        let messagesToSend = pendingMessages
+        pendingMessages.removeAll()
+        
+        for message in messagesToSend {
+            sendMessage(message)
+            // Небольшая задержка между сообщениями
+            Thread.sleep(forTimeInterval: 0.1)
         }
     }
     
-    private func decryptMessage(_ encryptedContent: String, chatId: UUID) async -> String? {
-        // TODO: Реализовать дешифрование с использованием ключей из Keychain
-        return encryptedContent // Пока возвращаем как есть
+    private func scheduleReconnect() {
+        guard reconnectTimer == nil else { return }
+        
+        print("🔄 Scheduling reconnect in 5 seconds...")
+        
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+            guard let self = self,
+                  let userId = AppState.shared.currentUser?.id,
+                  self.connectionStatus == .disconnected else {
+                return
+            }
+            
+            print("🔄 Attempting to reconnect...")
+            self.connectionStatus = .reconnecting
+            self.connect(userId: userId)
+        }
+    }
+    
+    private func cancelReconnectTimer() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+    }
+    
+    // MARK: - URLSessionWebSocketDelegate
+    
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        print("✅ WebSocket connection opened")
+        
+        DispatchQueue.main.async {
+            self.connectionStatus = .connected
+            self.isConnected = true
+            self.lastError = nil
+            
+            // Уведомляем о успешном подключении
+            NotificationCenter.default.post(
+                name: .websocketConnected,
+                object: nil
+            )
+        }
+    }
+    
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown"
+        print("🔌 WebSocket closed with code: \(closeCode), reason: \(reasonString)")
+        
+        DispatchQueue.main.async {
+            self.connectionStatus = .disconnected
+            self.isConnected = false
+            
+            if closeCode != .normalClosure {
+                self.lastError = "Connection closed: \(reasonString)"
+                
+                // Уведомляем о разрыве соединения
+                NotificationCenter.default.post(
+                    name: .websocketDisconnected,
+                    object: reasonString
+                )
+            }
+        }
     }
 }
 
-// MARK: - WebSocket Message Model
+// MARK: - WebSocket Message Models
+
 struct WebSocketMessage: Codable {
     let type: String
     var chatId: UUID?
-    var recipientId: UUID?
     var content: String?
     var messageId: UUID?
     var timestamp: Date?
+    var senderId: UUID?
+    var recipientId: UUID?
+    var originalSenderId: UUID?
+    var requestId: UUID?
+    var ackSenderId: UUID?
+    var senderNickname: String?
+    var senderPublicKey: String?
+    var recipientNickname: String?
+    var acceptedUserId: UUID?
+    var acceptedNickname: String?
+    var acceptedPublicKey: String?
     
-    init(type: String, chatId: UUID? = nil, recipientId: UUID? = nil,
-         content: String? = nil, messageId: UUID? = nil, timestamp: Date? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case type
+        case chatId = "chat_id"
+        case content
+        case messageId = "message_id"
+        case timestamp
+        case senderId = "sender_id"
+        case recipientId = "recipient_id"
+        case originalSenderId = "original_sender_id"
+        case requestId = "request_id"
+        case ackSenderId = "ack_sender_id"
+        case senderNickname = "sender_nickname"
+        case senderPublicKey = "sender_public_key"
+        case recipientNickname = "recipient_nickname"
+        case acceptedUserId = "accepted_user_id"
+        case acceptedNickname = "accepted_nickname"
+        case acceptedPublicKey = "accepted_public_key"
+    }
+    
+    init(type: String,
+         chatId: UUID? = nil,
+         content: String? = nil,
+         messageId: UUID? = nil,
+         timestamp: Date? = nil,
+         senderId: UUID? = nil,
+         recipientId: UUID? = nil,
+         originalSenderId: UUID? = nil,
+         requestId: UUID? = nil,
+         ackSenderId: UUID? = nil,
+         senderNickname: String? = nil,
+         senderPublicKey: String? = nil,
+         recipientNickname: String? = nil,
+         acceptedUserId: UUID? = nil,
+         acceptedNickname: String? = nil,
+         acceptedPublicKey: String? = nil) {
         self.type = type
         self.chatId = chatId
-        self.recipientId = recipientId
         self.content = content
         self.messageId = messageId
         self.timestamp = timestamp
+        self.senderId = senderId
+        self.recipientId = recipientId
+        self.originalSenderId = originalSenderId
+        self.requestId = requestId
+        self.ackSenderId = ackSenderId
+        self.senderNickname = senderNickname
+        self.senderPublicKey = senderPublicKey
+        self.recipientNickname = recipientNickname
+        self.acceptedUserId = acceptedUserId
+        self.acceptedNickname = acceptedNickname
+        self.acceptedPublicKey = acceptedPublicKey
     }
 }
+
+
 
 
 ./FrontDip/MessengerApp/Utils/Constants/AppColors.swift
@@ -2030,6 +3178,7 @@ class AuthViewModel: ObservableObject {
                 AppState.shared.currentUser = user
                 AppState.shared.login()
                 print("🎉 ПОЛЬЗОВАТЕЛЬ ВОССТАНОВЛЕН!")
+                NotificationCenter.default.post(name: .userLoggedIn, object: nil)
             }
             
         } catch {
@@ -2125,18 +3274,26 @@ class AuthViewModel: ObservableObject {
             return
         }
         
+        print("🔑 Найден сохраненный user_id: \(userId)")
+        
         Task {
             do {
                 let user = try await APIService.shared.getUser(userId: userId)
-                
-                // Восстанавливаем сохраненные чаты
-                await restoreUserChats(userId: userId)
                 
                 await MainActor.run {
                     currentUser = user
                     AppState.shared.currentUser = user
                     AppState.shared.login()
+                    
                     print("🎉 АВТОМАТИЧЕСКИЙ ВХОД ВЫПОЛНЕН!")
+                    
+                    // Подключаем WebSocket после успешного входа
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+                        WebSocketService.shared.connect(userId: user.id)
+                    }
+                    
+                    NotificationCenter.default.post(name: .userLoggedIn, object: nil)
                 }
                 
             } catch {
@@ -2144,7 +3301,17 @@ class AuthViewModel: ObservableObject {
             }
         }
     }
-
+    func connectWebSocket() {
+        guard let user = currentUser else { return }
+        
+        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+        WebSocketService.shared.connect(userId: user.id)
+        
+        // Проверить через 3 секунды
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            print("WebSocket подключен: \(WebSocketService.shared.isConnected)")
+        }
+    }
     // Добавьте метод для восстановления ключей чатов
     private func restoreChatKeys(userId: UUID) async {
         print("🔄 Восстановление ключей чатов...")
@@ -2237,6 +3404,7 @@ class ChatListViewModel: ObservableObject {
     func loadChats() async {
         // 1. Сначала показываем чаты из локальной базы
         let localChats = LocalDatabase.shared.getChats()
+        LocalDatabase.shared.printDatabaseInfo()
         
         await MainActor.run {
             self.chats = localChats
@@ -2262,7 +3430,7 @@ class ChatListViewModel: ObservableObject {
             
             // Сохраняем каждый чат в локальную базу
             for chat in serverChats {
-                _ = LocalDatabase.shared.saveChat(chat)
+                _ = LocalDatabase.shared.saveOrUpdateChat(chat)
             }
             
             // Восстанавливаем ключи
@@ -2292,11 +3460,22 @@ class ChatListViewModel: ObservableObject {
     private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
         for chat in chats {
             // Проверяем, есть ли ключ чата в Keychain
-            if let encryptedChatKey = keychainService.loadChatKey(chatId: chat.id) {
+            if let encryptedChatKeyData = keychainService.loadChatKey(chatId: chat.id) {
                 do {
+                    print("🔄 Восстановление ключа для чата \(chat.name)...")
+                    print("🔐 Зашифрованный ключ размером: \(encryptedChatKeyData.count) байт")
+                    
                     // Получаем наш приватный ключ
                     guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-                        print("❌ ChatListViewModel: Нет приватного ключа для чата \(chat.name)")
+                        print("❌ Нет приватного ключа для чата \(chat.name)")
+                        continue
+                    }
+                    
+                    print("🔑 Приватный ключ размером: \(privateKeyData.count) байт")
+                    
+                    // Проверяем размеры данных
+                    if privateKeyData.count != 32 {
+                        print("⚠️ Неправильный размер приватного ключа: \(privateKeyData.count)")
                         continue
                     }
                     
@@ -2304,19 +3483,231 @@ class ChatListViewModel: ObservableObject {
                     let cryptoService = CryptoService.shared
                     
                     // Расшифровываем ключ чата
-                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
+                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKeyData, with: privateKey)
                     let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
                     
                     // Сохраняем в менеджер ключей
                     ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
                     
-                    print("🔑 ChatListViewModel: Ключ восстановлен для чата: \(chat.name)")
+                    print("✅ Ключ восстановлен для чата: \(chat.name)")
                     
                 } catch {
-                    print("❌ ChatListViewModel: Ошибка восстановления ключа для чата \(chat.name): \(error)")
+                    print("❌ Ошибка восстановления ключа для чата \(chat.name): \(error)")
+                    print("🔍 Пробуем удалить поврежденный ключ...")
+                    _ = keychainService.deleteChatKey(chatId: chat.id)
+                }
+            } else {
+                print("⚠️ Ключ не найден для чата: \(chat.name)")
+            }
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/ViewModels/Chat/ChatSelectionViewModel.swift
+import Foundation
+import Combine
+
+class ChatSelectionViewModel: ObservableObject {
+    @Published var chats: [ChatWithContactInfo] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let apiService = APIService.shared
+    private let contactService = ContactService.shared
+    
+    let contact: Contact
+    private var chatListViewModel = ChatListViewModel()
+    
+    init(contact: Contact) {
+        self.contact = contact
+    }
+    
+    func loadChats() {
+        Task {
+            await MainActor.run {
+                isLoading = true
+                errorMessage = nil
+            }
+            
+            guard let currentUser = AppState.shared.currentUser,
+                  let deviceId = KeychainService.shared.loadDeviceId() else {
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = "Не удалось получить информацию о пользователе"
+                }
+                return
+            }
+            
+            do {
+                // Загружаем чаты пользователя
+                let userChats = try await apiService.getUserChats(
+                    userId: currentUser.id,
+                    deviceId: deviceId
+                )
+                
+                // Для каждого чата проверяем, есть ли в нем контакт
+                var chatsWithInfo: [ChatWithContactInfo] = []
+                
+                for chat in userChats {
+                    let isContactInChat = await checkIfContactInChat(chatId: chat.id)
+                    let chatInfo = ChatWithContactInfo(
+                        chat: chat,
+                        isContactInChat: isContactInChat
+                    )
+                    chatsWithInfo.append(chatInfo)
+                }
+                
+                await MainActor.run {
+                    self.chats = chatsWithInfo
+                    self.isLoading = false
+                    print("✅ Загружено чатов: \(chatsWithInfo.count)")
+                }
+                
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
+                    self.isLoading = false
+                    print("❌ Ошибка загрузки чатов: \(error)")
                 }
             }
         }
+    }
+    
+    private func checkIfContactInChat(chatId: UUID) async -> Bool {
+        do {
+            let members = try await apiService.getChatMembers(chatId: chatId)
+            return members.contains { $0.user_id == contact.userId }
+        } catch {
+            print("❌ Ошибка проверки участников чата: \(error)")
+            return false
+        }
+    }
+    
+    // Обновляем метод addContactToChat:
+
+    func addContactToChat(_ chat: Chat) async -> Bool {
+        guard let deviceId = KeychainService.shared.loadDeviceId() else {
+            print("❌ Device ID not found")
+            return false
+        }
+        
+        do {
+            print("📤 Приглашаем пользователя \(contact.nickname) в чат \(chat.name)...")
+            
+            let result = try await apiService.inviteUserToChat(
+                chatId: chat.id,
+                userId: contact.userId,
+                deviceId: deviceId
+            )
+            
+            let success = result["success"] as? Bool ?? false
+            
+            if success {
+                print("✅ Пользователь успешно приглашен в чат")
+                
+                await MainActor.run {
+                    // Обновляем список чатов
+                    loadChats()
+                }
+                
+                return true
+            } else {
+                print("❌ Не удалось пригласить пользователя")
+                return false
+            }
+            
+        } catch {
+            print("❌ Ошибка приглашения пользователя в чат: \(error)")
+            return false
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/ViewModels/Chat/ChatSidebarViewModel.swift
+import Foundation
+import Combine
+
+class ChatSidebarViewModel: ObservableObject {
+    @Published var members: [ChatMemberDetailed] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let apiService = APIService.shared
+    private let keychainService = KeychainService.shared
+    
+    let chat: Chat
+    
+    init(chat: Chat) {
+        self.chat = chat
+    }
+    
+    func loadMembers() {
+        Task {
+            await MainActor.run {
+                isLoading = true
+                errorMessage = nil
+            }
+            
+            do {
+                let members = try await apiService.getChatMembers(chatId: chat.id)
+                
+                await MainActor.run {
+                    self.members = members
+                    self.isLoading = false
+                    print("✅ Загружено участников чата: \(members.count)")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка загрузки участников: \(error.localizedDescription)"
+                    self.isLoading = false
+                    print("❌ Ошибка загрузки участников чата: \(error)")
+                }
+            }
+        }
+    }
+
+
+    func addUserToChat(_ userId: UUID) async -> Bool {
+        guard let deviceId = keychainService.loadDeviceId() else {
+            print("❌ Device ID not found")
+            return false
+        }
+        
+        do {
+            print("📤 Добавляем пользователя в чат \(chat.name)...")
+            
+            let result = try await apiService.inviteUserToChat(
+                chatId: chat.id,
+                userId: userId,
+                deviceId: deviceId
+            )
+            
+            let success = result["success"] as? Bool ?? false
+            
+            if success {
+                print("✅ Пользователь успешно добавлен в чат")
+                
+                await MainActor.run {
+                    // Обновляем список участников
+                    loadMembers()
+                }
+                
+                return true
+            } else {
+                print("❌ Не удалось добавить пользователя")
+                return false
+            }
+            
+        } catch {
+            print("❌ Ошибка добавления пользователя в чат: \(error)")
+            return false
+        }
+    }
+    
+    func isUserInChat(_ userId: UUID) -> Bool {
+        return members.contains { $0.user_id == userId }
     }
 }
 
@@ -2496,6 +3887,66 @@ class CreateChatViewModel: ObservableObject {
 ./FrontDip/MessengerApp/ViewModels/Profile/ProfileViewModel.swift
 
 
+./FrontDip/MessengerApp/ViewModels/SearchViewModel.swift
+// ./FrontDip/MessengerApp/ViewModels/SearchViewModel.swift
+import Foundation
+import Combine
+
+class SearchViewModel: ObservableObject {
+    @Published var searchQuery = ""
+    @Published var searchResults: [UserPublicResponse] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let contactService = ContactService.shared
+    
+    func search() {
+        guard !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else {
+            searchResults = []
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                let results = try await contactService.searchUsers(query: searchQuery)
+                
+                await MainActor.run {
+                    // Фильтруем уже добавленных в контакты и самого себя
+                    self.searchResults = results.filter { user in
+                        !self.contactService.isContact(userId: user.user_id) &&
+                        user.user_id != AppState.shared.currentUser?.id
+                    }
+                    self.isLoading = false
+                    print("Найдено пользователей: \(self.searchResults.count)")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка поиска: \(error.localizedDescription)"
+                    self.isLoading = false
+                    print("Ошибка поиска: \(error)")
+                }
+            }
+        }
+    }
+    
+    func sendContactRequest(to user: UserPublicResponse) {
+        contactService.sendContactRequest(to: user)
+        
+        // Убираем из результатов поиска
+        searchResults.removeAll { $0.user_id == user.user_id }
+        
+        // Показываем уведомление
+        NotificationCenter.default.post(
+            name: .showNotification,
+            object: "Запрос отправлен пользователю \(user.nickname)"
+        )
+    }
+}
+
+
 ./FrontDip/MessengerApp/Views/Auth/LoginView.swift
 import SwiftUI
 
@@ -2592,15 +4043,173 @@ struct LoginView: View {
 ./FrontDip/MessengerApp/Views/Auth/WelcomeView.swift
 
 
+./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
+// ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
+import SwiftUI
+
+struct AddContactToChatView: View {
+    let chat: Chat
+    @ObservedObject var viewModel: ChatSidebarViewModel
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var contactService: ContactService
+    
+    @State private var selectedContacts: Set<UUID> = []
+    @State private var isLoading = false
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                if contactService.contacts.isEmpty {
+                    Spacer()
+                    VStack(spacing: 20) {
+                        Image(systemName: "person.2.slash")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray.opacity(0.5))
+                        
+                        Text("Нет контактов")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        
+                        Text("Добавьте контакты через поиск")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(contactService.contacts) { contact in
+                            ContactSelectionRow(
+                                contact: contact,
+                                isSelected: selectedContacts.contains(contact.userId),
+                                isAlreadyInChat: viewModel.isUserInChat(contact.userId)
+                            ) {
+                                toggleContactSelection(contact.userId)
+                            }
+                        }
+                    }
+                    .listStyle(PlainListStyle())
+                }
+            }
+            .navigationTitle("Добавить в чат")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Отмена") {
+                        dismiss()
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Добавить") {
+                        addSelectedContacts()
+                    }
+                    .disabled(selectedContacts.isEmpty || isLoading)
+                }
+            }
+            .onAppear {
+                contactService.loadContacts()
+            }
+        }
+    }
+    
+    private func toggleContactSelection(_ userId: UUID) {
+        if selectedContacts.contains(userId) {
+            selectedContacts.remove(userId)
+        } else {
+            selectedContacts.insert(userId)
+        }
+    }
+    
+    private func addSelectedContacts() {
+        isLoading = true
+        
+        Task {
+            var addedCount = 0
+            var failedCount = 0
+            
+            for userId in selectedContacts {
+                let success = await viewModel.addUserToChat(userId)
+                if success {
+                    addedCount += 1
+                } else {
+                    failedCount += 1
+                }
+            }
+            
+            await MainActor.run {
+                isLoading = false
+                dismiss()
+                
+                // Используем NotificationService вместо прямого вызова NotificationCenter
+                let message = "Добавлено: \(addedCount), не удалось: \(failedCount)"
+                if addedCount > 0 {
+                    NotificationService.shared.showSuccess(message)
+                } else {
+                    NotificationService.shared.showError(message)
+                }
+            }
+        }
+    }
+}
+
+struct ContactSelectionRow: View {
+    let contact: Contact
+    let isSelected: Bool
+    let isAlreadyInChat: Bool
+    let onToggle: () -> Void
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color.blue.opacity(0.3))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(contact.nickname.prefix(1).uppercased())
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                )
+            
+            VStack(alignment: .leading) {
+                Text(contact.nickname)
+                    .font(.headline)
+                
+                if isAlreadyInChat {
+                    Text("Уже в чате")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            }
+            
+            Spacer()
+            
+            if isAlreadyInChat {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+            } else {
+                Button(action: onToggle) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundColor(isSelected ? .blue : .gray)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+        .padding(.vertical, 8)
+        .opacity(isAlreadyInChat ? 0.6 : 1.0)
+        .disabled(isAlreadyInChat)
+    }
+}
+
+
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 // ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 import SwiftUI
 import CryptoKit
 
 struct ChatListView: View {
-    @StateObject private var viewModel = ChatListViewModel() // Убираем параметр
+    @StateObject private var viewModel = ChatListViewModel()
     @EnvironmentObject var appState: AppState
-    @StateObject private var authViewModel = AuthViewModel() // Создаем здесь
+    @StateObject private var authViewModel = AuthViewModel()
+    @StateObject private var contactService = ContactService.shared
     
     @State private var newChatName = ""
     @State private var isLoadingChat = false
@@ -2613,76 +4222,18 @@ struct ChatListView: View {
     @State private var showJoinChatAlert = false
     @State private var joinChatKey = ""
     
+    // Новые состояния для управления показами View
+    @State private var showingSearchView = false
+    @State private var showingContactsView = false
+    @State private var showingNotificationsView = false
+    
+    // Для уведомлений
+    @State private var notificationData: NotificationData?
+    
     var body: some View {
         ZStack {
             NavigationView {
-                Group {
-                    if viewModel.isLoading && viewModel.chats.isEmpty {
-                        LoadingView()
-                    } else if viewModel.chats.isEmpty {
-                        emptyStateView
-                    } else {
-                        List(viewModel.chats) { chat in
-                            NavigationLink(destination: ChatView(chat: chat)) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(chat.name)
-                                        .font(.headline)
-                                    
-                                    Text("\(chat.memberCount) участников")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    
-                                    Text(formatDate(chat.createdAt))
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(.vertical, 8)
-                            }
-                        }
-                        .listStyle(PlainListStyle())
-                    }
-                }
-                .navigationTitle("Чаты")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button(action: {
-                            withAnimation(.spring()) {
-                                showCreateChatAlert = true
-                            }
-                        }) {
-                            Image(systemName: "square.and.pencil")
-                        }
-                    }
-                    
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(action: {
-                            withAnimation(.spring()) {
-                                showSideMenu = true
-                            }
-                        }) {
-                            Circle()
-                                .fill(Color.blue.opacity(0.8))
-                                .frame(width: 32, height: 32)
-                                .overlay(
-                                    Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
-                                        .font(.caption)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.white)
-                                )
-                        }
-                    }
-                }
-                .refreshable {
-                    await viewModel.loadChats()
-                }
-                .onAppear {
-                    Task {
-                        // Обновляем пользователя в viewModel
-                        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
-                        await viewModel.loadChats()
-                    }
-                }
+                chatListContent
             }
             .blur(radius: showSideMenu ? 3 : 0)
             .disabled(showSideMenu)
@@ -2690,115 +4241,150 @@ struct ChatListView: View {
             // Боковое меню
             SideMenuView(
                 authViewModel: authViewModel,
-                isShowing: $showSideMenu
+                isShowing: $showSideMenu,
+                showSearchView: $showingSearchView,
+                showContactsView: $showingContactsView,
+                showNotificationsView: $showingNotificationsView
             )
             .environmentObject(appState)
+            .environmentObject(contactService)
         }
-        .alert("Создать чат", isPresented: $showCreateChatAlert) {
-            TextField("Название чата", text: $newChatName)
-            
-            Button("Отмена", role: .cancel) {
-                newChatName = ""
+        .onAppear {
+            setupNotificationObserver()
+            Task {
+                await initializeView()
             }
-            
-            Button("Создать") {
-                Task {
-                    await createChat()
+        }
+        // ✅ ВОТ СЮДА ДОБАВИМ SHEET МОДИФИКАТОРЫ:
+        .sheet(isPresented: $showingSearchView) {
+            SearchView()
+                .environmentObject(contactService)
+        }
+        .sheet(isPresented: $showingContactsView) {
+            ContactsView()
+                .environmentObject(contactService)
+        }
+        .sheet(isPresented: $showingNotificationsView) {
+            NotificationsView()
+                .environmentObject(contactService)
+        }
+        // Существующие модификаторы
+        .notificationAlert(notificationData: $notificationData)
+        .createChatAlert(
+            showCreateChatAlert: $showCreateChatAlert,
+            newChatName: $newChatName,
+            createChat: createChat
+        )
+        .joinChatAlert(
+            showJoinChatAlert: $showJoinChatAlert,
+            joinChatKey: $joinChatKey,
+            joinChat: joinChat
+        )
+        .inviteSheet(showInviteSheet: $showInviteSheet, inviteKey: inviteKey)
+    }
+    
+    // MARK: - Subviews
+    
+    private var chatListContent: some View {
+        Group {
+            if viewModel.isLoading && viewModel.chats.isEmpty {
+                LoadingView()
+            } else if viewModel.chats.isEmpty {
+                emptyStateView
+            } else {
+                List(viewModel.chats) { chat in
+                    NavigationLink(destination: ChatView(chat: chat)) {
+                        ChatRow(chat: chat)
+                    }
                 }
+                .listStyle(PlainListStyle())
             }
-            .disabled(newChatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите название для нового чата")
         }
-        .alert("Присоединиться к чату", isPresented: $showJoinChatAlert) {
-            TextField("Ключ приглашения", text: $joinChatKey)
-            
-            Button("Отмена", role: .cancel) {
-                joinChatKey = ""
+        .navigationTitle("Чаты")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                createChatButton
             }
             
-            Button("Присоединиться") {
-                Task {
-                    await joinChat()
-                }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                menuButton
             }
-            .disabled(joinChatKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите ключ приглашения для присоединения к чату")
         }
-        .sheet(isPresented: $showInviteSheet) {
-            if let inviteKey = inviteKey {
-                InviteShareView(inviteKey: inviteKey)
-            }
+        .refreshable {
+            await viewModel.loadChats()
         }
     }
     
-    private func createChat() async {
-        // Используем authViewModel для получения пользователя
-        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
-              let deviceId = KeychainService.shared.loadDeviceId() else {
-            return
-        }
+    private struct ChatRow: View {
+        let chat: Chat
         
-        isLoadingChat = true
-        
-        do {
-            let chat = try await APIService.shared.createChat(
-                name: newChatName,
-                creatorId: userId,
-                deviceId: deviceId
-            )
-            
-            // Генерируем и сохраняем ключ чата
-            await saveChatKey(for: chat.id, userId: userId)
-            
-            await MainActor.run {
-                inviteKey = chat.id.uuidString
-                showInviteSheet = true
-                newChatName = ""
-                isLoadingChat = false
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chat.name)
+                    .font(.headline)
                 
-                // Обновляем список чатов
-                viewModel.chats.insert(chat, at: 0)
+                Text("\(chat.memberCount) участников")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Text(formatDate(chat.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
-            
-        } catch {
-            await MainActor.run {
-                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
-                isLoadingChat = false
-            }
+            .padding(.vertical, 8)
+        }
+        
+        private func formatDate(_ date: Date) -> String {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            formatter.locale = Locale(identifier: "ru_RU")
+            return formatter.string(from: date)
         }
     }
     
-    private func saveChatKey(for chatId: UUID, userId: UUID) async {
-        do {
-            let cryptoService = CryptoService.shared
-            let keychainService = KeychainService.shared
-            
-            let chatKey = cryptoService.generateSymmetricKey()
-            
-            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
-                print("❌ Публичный ключ не найден")
-                return
+    private var createChatButton: some View {
+        Button(action: {
+            withAnimation(.spring()) {
+                showCreateChatAlert = true
             }
-            
-            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-            
-            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
-            
-            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
-            
-        } catch {
-            print("❌ Ошибка сохранения ключа чата: \(error)")
+        }) {
+            Image(systemName: "square.and.pencil")
         }
     }
     
-    private func joinChat() {
-        // TODO: Реализовать присоединение к чату
-        print("Присоединяемся к чату с ключом: \(joinChatKey)")
-        joinChatKey = ""
+    private var menuButton: some View {
+        Button(action: {
+            withAnimation(.spring()) {
+                showSideMenu = true
+            }
+        }) {
+            ZStack(alignment: .topTrailing) {
+                Circle()
+                    .fill(Color.blue.opacity(0.8))
+                    .frame(width: 32, height: 32)
+                    .overlay(
+                        Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                    )
+                
+                // Бейдж с количеством уведомлений
+                if !contactService.pendingRequests.isEmpty {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 12, height: 12)
+                        .overlay(
+                            Text("\(contactService.pendingRequests.count)")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.white)
+                        )
+                        .offset(x: 4, y: -4)
+                }
+            }
+        }
     }
     
     private var emptyStateView: some View {
@@ -2858,6 +4444,269 @@ struct ChatListView: View {
         }
     }
     
+    // MARK: - Methods
+    
+    private func initializeView() async {
+        // Обновляем пользователя в viewModel
+        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
+        await viewModel.loadChats()
+        
+        // Обновляем контакты
+        contactService.loadContacts()
+        contactService.loadPendingRequests()
+    }
+    
+    private func setupNotificationObserver() {
+        NotificationCenter.default.addObserver(
+            forName: .showNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            if let data = notification.object as? NotificationData {
+                notificationData = data
+            }
+        }
+    }
+    
+    private func createChat() async {
+        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
+              let deviceId = KeychainService.shared.loadDeviceId() else {
+            return
+        }
+        
+        isLoadingChat = true
+        
+        do {
+            let chat = try await APIService.shared.createChat(
+                name: newChatName,
+                creatorId: userId,
+                deviceId: deviceId
+            )
+            
+            // Генерируем и сохраняем ключ чата
+            await saveChatKey(for: chat.id, userId: userId)
+            
+            await MainActor.run {
+                inviteKey = chat.id.uuidString
+                showInviteSheet = true
+                newChatName = ""
+                isLoadingChat = false
+                
+                // Обновляем список чатов
+                viewModel.chats.insert(chat, at: 0)
+            }
+            
+        } catch {
+            await MainActor.run {
+                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+                isLoadingChat = false
+            }
+        }
+    }
+    
+    private func saveChatKey(for chatId: UUID, userId: UUID) async {
+        do {
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            
+            // Генерируем симметричный ключ для чата
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                print("❌ Публичный ключ не найден")
+                return
+            }
+            
+            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+            
+            // Сохраняем зашифрованный ключ в Keychain
+            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
+            
+            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+            
+            print("🔑 Ключ чата сохранен для: \(chatId.uuidString.prefix(8))...")
+            
+        } catch {
+            print("❌ Ошибка сохранения ключа чата: \(error)")
+        }
+    }
+    
+    private func joinChat() {
+        // TODO: Реализовать присоединение к чату
+        print("Присоединяемся к чату с ключом: \(joinChatKey)")
+        joinChatKey = ""
+    }
+}
+
+// MARK: - View Modifiers
+// Выносим модификаторы в extension для упрощения чтения
+
+extension View {
+    func notificationAlert(notificationData: Binding<NotificationData?>) -> some View {
+        self.alert(
+            notificationData.wrappedValue?.type.title ?? "Уведомление",
+            isPresented: .constant(notificationData.wrappedValue != nil)
+        ) {
+            Button("OK") {
+                notificationData.wrappedValue = nil
+            }
+        } message: {
+            if let message = notificationData.wrappedValue?.message {
+                Text(message)
+            }
+        }
+    }
+    
+    func createChatAlert(
+        showCreateChatAlert: Binding<Bool>,
+        newChatName: Binding<String>,
+        createChat: @escaping () async -> Void
+    ) -> some View {
+        self.alert("Создать чат", isPresented: showCreateChatAlert) {
+            TextField("Название чата", text: newChatName)
+            
+            Button("Отмена", role: .cancel) {
+                newChatName.wrappedValue = ""
+            }
+            
+            Button("Создать") {
+                Task {
+                    await createChat()
+                }
+            }
+            .disabled(newChatName.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите название для нового чата")
+        }
+    }
+    
+    func joinChatAlert(
+        showJoinChatAlert: Binding<Bool>,
+        joinChatKey: Binding<String>,
+        joinChat: @escaping () -> Void
+    ) -> some View {
+        self.alert("Присоединиться к чату", isPresented: showJoinChatAlert) {
+            TextField("Ключ приглашения", text: joinChatKey)
+            
+            Button("Отмена", role: .cancel) {
+                joinChatKey.wrappedValue = ""
+            }
+            
+            Button("Присоединиться") {
+                joinChat()
+            }
+            .disabled(joinChatKey.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Введите ключ приглашения для присоединения к чату")
+        }
+    }
+    
+    func inviteSheet(showInviteSheet: Binding<Bool>, inviteKey: String?) -> some View {
+        self.sheet(isPresented: showInviteSheet) {
+            if let inviteKey = inviteKey {
+                InviteShareView(inviteKey: inviteKey)
+            }
+        }
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Chat/ChatRow.swift
+
+
+./FrontDip/MessengerApp/Views/Chat/ChatSidebarView.swift
+import SwiftUI
+
+struct ChatSidebarView: View {
+    let chat: Chat
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var viewModel: ChatSidebarViewModel
+    @State private var showingAddContact = false
+    
+    init(chat: Chat) {
+        self.chat = chat
+        _viewModel = StateObject(wrappedValue: ChatSidebarViewModel(chat: chat))
+    }
+    
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Заголовок чата
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(chat.name)
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .padding(.top, 20)
+                    
+                    HStack {
+                        Label("\(chat.memberCount) участников", systemImage: "person.2")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        Text(formatDate(chat.createdAt))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 20)
+                
+                // Участники чата
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Участники")
+                            .font(.headline)
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            showingAddContact = true
+                        }) {
+                            Image(systemName: "person.badge.plus")
+                                .foregroundColor(.blue)
+                        }
+                    }
+                    .padding(.horizontal)
+                    
+                    if viewModel.isLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.members.isEmpty {
+                        Text("Нет участников")
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(viewModel.members) { member in
+                                    ChatMemberRow(member: member)
+                                        .padding(.horizontal)
+                                        .padding(.vertical, 8)
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Spacer()
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarItems(trailing: Button("Готово") {
+                dismiss()
+            })
+        }
+        .onAppear {
+            viewModel.loadMembers()
+        }
+        .sheet(isPresented: $showingAddContact) {
+            AddContactToChatView(chat: chat, viewModel: viewModel)
+        }
+    }
+    
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -2867,22 +4716,62 @@ struct ChatListView: View {
     }
 }
 
-
-./FrontDip/MessengerApp/Views/Chat/ChatRow.swift
+struct ChatMemberRow: View {
+    let member: ChatMemberDetailed
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color.blue.opacity(0.3))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(member.nickname.prefix(1).uppercased())
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                )
+            
+            VStack(alignment: .leading) {
+                Text(member.nickname)
+                    .font(.headline)
+                
+                HStack {
+                    Text("ID: \(member.user_id.uuidString.prefix(8))...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text("•")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text("Присоединился: \(formatDate(member.joined_at))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Spacer()
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .none
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.string(from: date)
+    }
+}
 
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
-// ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 import SwiftUI
 
 struct ChatView: View {
     let chat: Chat
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
-    @State private var messageText = ""
-    @State private var isCurrentUser: Bool = true // Временно, нужно будет определять по senderId
+    @State private var showChatSidebar = false
     
-    // Инициализатор для передачи чата во ViewModel
     init(chat: Chat) {
         self.chat = chat
         _viewModel = StateObject(wrappedValue: ChatViewModel(chat: chat))
@@ -2913,7 +4802,7 @@ struct ChatView: View {
                 Spacer()
                 
                 Button(action: {
-                    // TODO: Действия с чатом
+                    showChatSidebar = true
                 }) {
                     Image(systemName: "info.circle")
                         .font(.system(size: 20))
@@ -2949,7 +4838,7 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода (как в Telegram)
+            // Поле ввода
             HStack(spacing: 12) {
                 Button(action: {
                     // Прикрепление файла
@@ -2979,8 +4868,8 @@ struct ChatView: View {
             .background(Color(.systemBackground))
         }
         .navigationBarHidden(true)
-        .onAppear {
-            // ViewModel уже загрузила сообщения в init
+        .sheet(isPresented: $showChatSidebar) {
+            ChatSidebarView(chat: chat)
         }
     }
 }
@@ -3131,14 +5020,130 @@ struct LoadingView: View {
 }
 
 
+./FrontDip/MessengerApp/Views/Common/SearchView.swift
+// ./FrontDip/MessengerApp/Views/Contact/SearchView.swift
+import SwiftUI
+
+struct SearchView: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var contactService: ContactService
+    @StateObject private var viewModel = SearchViewModel()
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Поисковая строка
+                HStack {
+                    TextField("Введите никнейм", text: $viewModel.searchQuery)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .onSubmit {
+                            viewModel.search()
+                        }
+                    
+                    Button(action: {
+                        viewModel.search()
+                    }) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.blue)
+                    }
+                }
+                .padding()
+                
+                // Результаты поиска
+                if viewModel.isLoading {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                } else if viewModel.searchResults.isEmpty && !viewModel.searchQuery.isEmpty {
+                    Spacer()
+                    Text("Пользователи не найдены")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                } else {
+                    List(viewModel.searchResults) { user in
+                        SearchResultRow(user: user) {
+                            viewModel.sendContactRequest(to: user)
+                        }
+                    }
+                    .listStyle(PlainListStyle())
+                }
+            }
+            .navigationTitle("Поиск пользователей")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SearchResultRow: View {
+    let user: UserPublicResponse
+    let onAdd: () -> Void
+    @State private var showingAlert = false
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color.blue.opacity(0.3))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(user.nickname.prefix(1).uppercased())
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                )
+            
+            VStack(alignment: .leading) {
+                Text(user.nickname)
+                    .font(.headline)
+                Text("ID: \(user.user_id.uuidString.prefix(8))...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(action: {
+                showingAlert = true
+            }) {
+                Image(systemName: "person.badge.plus")
+                    .foregroundColor(.blue)
+            }
+        }
+        .padding(.vertical, 8)
+        .alert("Добавить в контакты", isPresented: $showingAlert) {
+            Button("Отмена", role: .cancel) { }
+            Button("Добавить", role: .none) {
+                onAdd()
+            }
+        } message: {
+            Text("Отправить запрос на добавление в контакты пользователю \(user.nickname)?")
+        }
+    }
+}
+
+
 ./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
 // ./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
 import SwiftUI
 
 struct SideMenuView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var contactService: ContactService
     @ObservedObject var authViewModel: AuthViewModel
     @Binding var isShowing: Bool
+    
+    // Новые binding переменные для управления показами View
+    @Binding var showSearchView: Bool
+    @Binding var showContactsView: Bool
+    @Binding var showNotificationsView: Bool
+    
     @State private var showWipeAlert = false
     @State private var showLogoutAlert = false
     
@@ -3198,16 +5203,41 @@ struct SideMenuView: View {
                     ScrollView {
                         VStack(spacing: 0) {
                             MenuItem(
-                                icon: "person.2",
-                                title: "Контакты",
+                                icon: "magnifyingglass",
+                                title: "Поиск",
                                 color: .blue
                             ) {
-                                // TODO: Реализовать контакты
-                                print("Контакты")
+                                showSearchView = true
                                 withAnimation(.spring()) {
                                     isShowing = false
                                 }
                             }
+                            
+                            MenuItem(
+                                icon: "person.2.fill",
+                                title: "Контакты",
+                                color: .green,
+                                badgeCount: contactService.contacts.count
+                            ) {
+                                // Показываем ContactsView
+                                showContactsView = true
+                                isShowing = false
+                            }
+
+                            MenuItem(
+                                icon: "bell.fill",
+                                title: "Уведомления",
+                                color: .orange,
+                                badgeCount: contactService.pendingRequests.count
+                            ) {
+                                // Показываем NotificationsView
+                                showNotificationsView = true
+                                isShowing = false
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 24)
                             
                             MenuItem(
                                 icon: "gear",
@@ -3306,13 +5336,16 @@ struct MenuItem: View {
     let title: String
     let color: Color
     let isDestructive: Bool
+    let badgeCount: Int?
     let action: () -> Void
     
-    init(icon: String, title: String, color: Color, isDestructive: Bool = false, action: @escaping () -> Void) {
+    init(icon: String, title: String, color: Color, isDestructive: Bool = false,
+         badgeCount: Int? = nil, action: @escaping () -> Void) {
         self.icon = icon
         self.title = title
         self.color = color
         self.isDestructive = isDestructive
+        self.badgeCount = badgeCount
         self.action = action
     }
     
@@ -3330,15 +5363,267 @@ struct MenuItem: View {
                 
                 Spacer()
                 
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                // Отображаем бейдж если есть
+                if let count = badgeCount, count > 0 {
+                    Text("\(count)")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.red)
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
         }
         .background(Color(.systemBackground))
         .contentShape(Rectangle())
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Contact/ChatSelectionView.swift
+// ./FrontDip/MessengerApp/Views/Contact/ChatSelectionView.swift
+import SwiftUI
+
+struct ChatSelectionView: View {
+    let contact: Contact
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var viewModel: ChatSelectionViewModel
+    @State private var isLoadingAction = false
+    
+    init(contact: Contact) {
+        self.contact = contact
+        _viewModel = StateObject(wrappedValue: ChatSelectionViewModel(contact: contact))
+    }
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                if viewModel.isLoading {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                } else if viewModel.chats.isEmpty {
+                    Spacer()
+                    VStack(spacing: 20) {
+                        Image(systemName: "bubble.left.and.bubble.right.slash")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray.opacity(0.5))
+                        
+                        Text("Нет чатов")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                        
+                        Text("Создайте чат, чтобы добавить в него контакты")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                } else {
+                    List(viewModel.chats) { chatInfo in
+                        ChatSelectionRow(
+                            chatInfo: chatInfo,
+                            isLoading: isLoadingAction,
+                            onAdd: {
+                                addContactToChat(chatInfo.chat)
+                            }
+                        )
+                    }
+                    .listStyle(PlainListStyle())
+                }
+            }
+            .navigationTitle("Добавить в чат")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") {
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                viewModel.loadChats()
+            }
+        }
+    }
+    
+    private func addContactToChat(_ chat: Chat) {
+        isLoadingAction = true
+        
+        Task {
+            let success = await viewModel.addContactToChat(chat)
+            
+            await MainActor.run {
+                isLoadingAction = false
+                
+                if success {
+                    // Используем NotificationService
+                    NotificationService.shared.showSuccess("\(contact.nickname) добавлен в чат \(chat.name)")
+                    
+                    // Закрываем через 1 секунду
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        dismiss()
+                    }
+                } else {
+                    // Используем NotificationService
+                    NotificationService.shared.showError("Не удалось добавить \(contact.nickname) в чат")
+                }
+            }
+        }
+    }
+}
+
+struct ChatSelectionRow: View {
+    let chatInfo: ChatWithContactInfo
+    let isLoading: Bool
+    let onAdd: () -> Void
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chatInfo.chat.name)
+                    .font(.headline)
+                
+                Text("\(chatInfo.chat.memberCount) участников")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            if chatInfo.isContactInChat {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    
+                    Text("Уже в чате")
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
+            } else {
+                Button(action: onAdd) {
+                    if isLoading {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundColor(.blue)
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+                .disabled(isLoading)
+            }
+        }
+        .padding(.vertical, 8)
+        .opacity(chatInfo.isContactInChat ? 0.6 : 1.0)
+    }
+}
+
+
+./FrontDip/MessengerApp/Views/Contact/ContactsView.swift
+// ./FrontDip/MessengerApp/Views/Contact/ContactsView.swift
+import SwiftUI
+
+struct ContactsView: View {
+    @EnvironmentObject var contactService: ContactService
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                if contactService.contacts.isEmpty {
+                    Spacer()
+                    Text("Нет контактов")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                } else {
+                    List(contactService.contacts) { contact in
+                        ContactRow(contact: contact)
+                    }
+                }
+            }
+            .navigationTitle("Контакты")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ContactRow: View {
+    let contact: Contact
+    @State private var showingActionSheet = false
+    @State private var showingChatSelection = false
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color.blue.opacity(0.3))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(contact.nickname.prefix(1).uppercased())
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                )
+            
+            VStack(alignment: .leading) {
+                Text(contact.nickname)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Text("Добавлен: \(formatDate(contact.addedAt))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(action: {
+                showingActionSheet = true
+            }) {
+                Image(systemName: "ellipsis.circle")
+                    .foregroundColor(.blue)
+            }
+            .buttonStyle(PlainButtonStyle())
+        }
+        .padding(.vertical, 8)
+        .actionSheet(isPresented: $showingActionSheet) {
+            ActionSheet(
+                title: Text(contact.nickname),
+                buttons: [
+                    .default(Text("Добавить в чат")) {
+                        showingChatSelection = true
+                    },
+                    .destructive(Text("Удалить контакт")) {
+                        ContactService.shared.removeContact(userId: contact.userId)
+                    },
+                    .cancel()
+                ]
+            )
+        }
+        .sheet(isPresented: $showingChatSelection) {
+            ChatSelectionView(contact: contact)
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.string(from: date)
     }
 }
 
@@ -3427,6 +5712,93 @@ struct MessageBubbleView: View {
 
 
 ./FrontDip/MessengerApp/Views/Message/MessageListView.swift
+
+
+./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
+// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
+import SwiftUI
+
+struct NotificationsView: View {
+    @EnvironmentObject var contactService: ContactService
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                if contactService.pendingRequests.isEmpty {
+                    Spacer()
+                    Text("Нет уведомлений")
+                        .foregroundColor(.secondary)
+                    Spacer()
+                } else {
+                    List(contactService.pendingRequests) { request in
+                        ContactRequestRow(request: request)
+                    }
+                }
+            }
+            .navigationTitle("Уведомления")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ContactRequestRow: View {
+    let request: ContactRequest
+    @State private var showingActionSheet = false
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color.orange.opacity(0.3))
+                .frame(width: 40, height: 40)
+                .overlay(
+                    Text(request.fromNickname.prefix(1).uppercased())
+                        .font(.headline)
+                        .foregroundColor(.orange)
+                )
+            
+            VStack(alignment: .leading) {
+                Text(request.fromNickname)
+                    .font(.headline)
+                Text("Запрос на контакт")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(action: {
+                showingActionSheet = true
+            }) {
+                Image(systemName: "ellipsis.circle")
+                    .foregroundColor(.blue)
+            }
+        }
+        .padding(.vertical, 8)
+        .actionSheet(isPresented: $showingActionSheet) {
+            ActionSheet(
+                title: Text("Запрос на контакт"),
+                message: Text("Принять запрос от \(request.fromNickname)?"),
+                buttons: [
+                    .default(Text("Принять")) {
+                        ContactService.shared.acceptContactRequest(request)
+                    },
+                    .destructive(Text("Отклонить")) {
+                        ContactService.shared.declineContactRequest(request)
+                    },
+                    .cancel()
+                ]
+            )
+        }
+    }
+}
 
 
 ./FrontDip/MessengerApp/Views/Profile/ProfileView.swift

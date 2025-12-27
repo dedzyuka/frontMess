@@ -10,21 +10,13 @@ struct NotificationsView: View {
             VStack {
                 if contactService.pendingRequests.isEmpty {
                     Spacer()
-                    VStack(spacing: 20) {
-                        Image(systemName: "bell.slash")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray.opacity(0.5))
-                        
-                        Text("Нет уведомлений")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                    }
+                    Text("Нет уведомлений")
+                        .foregroundColor(.secondary)
                     Spacer()
                 } else {
                     List(contactService.pendingRequests) { request in
                         ContactRequestRow(request: request)
                     }
-                    .listStyle(PlainListStyle())
                 }
             }
             .navigationTitle("Уведомления")
@@ -35,9 +27,6 @@ struct NotificationsView: View {
                         dismiss()
                     }
                 }
-            }
-            .onAppear {
-                contactService.loadPendingRequests()
             }
         }
     }

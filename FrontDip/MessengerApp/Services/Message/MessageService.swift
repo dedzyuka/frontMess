@@ -1,3 +1,4 @@
+// ./FrontDip/MessengerApp/Services/Message/MessageService.swift
 import Foundation
 import Combine
 
@@ -19,10 +20,12 @@ class MessageService: ObservableObject {
     }
     
     private func setupWebSocketHandlers() {
-        // Подписываемся на входящие сообщения
-        webSocketService.$receivedMessages
-            .sink { [weak self] messages in
-                self?.handleIncomingMessages(messages)
+        // Подписываемся на входящие сообщения через NotificationCenter
+        NotificationCenter.default.publisher(for: .newMessageReceived)
+            .sink { [weak self] notification in
+                if let message = notification.object as? Message {
+                    self?.handleIncomingMessages([message])
+                }
             }
             .store(in: &cancellables)
     }
@@ -56,11 +59,16 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message, chatId: UUID) {
+        guard let messageId = message.id else {
+            print("❌ Message ID is nil")
+            return
+        }
+        
         let webSocketMessage = WebSocketMessage(
             type: "chat_message",
             chatId: chatId,
             content: message.content,
-            messageId: message.id,
+            messageId: messageId,
             timestamp: message.timestamp
         )
         
@@ -131,12 +139,18 @@ class MessageService: ObservableObject {
         guard let messageId = message.id,
               let currentUser = AppState.shared.currentUser else { return }
         
+        // Исправленный порядок аргументов
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            chatId: message.chatId,
-            recipientId: currentUser.id,
+            chatId: nil,
+            content: nil, // content должен идти перед originalSenderId
             messageId: messageId,
-            timestamp: Date()
+            timestamp: Date(),
+            senderId: nil,
+            recipientId: nil,
+            originalSenderId: message.senderId, // теперь originalSenderId после recipientId
+            requestId: nil,
+            ackSenderId: currentUser.id
         )
         
         webSocketService.sendMessage(ackMessage)
@@ -186,9 +200,4 @@ class MessageService: ObservableObject {
         // Сбрасываем счетчик
         unreadMessagesCount = 0
     }
-}
-
-// Расширение для Notification
-extension Notification.Name {
-    static let newMessageReceived = Notification.Name("newMessageReceived")
 }

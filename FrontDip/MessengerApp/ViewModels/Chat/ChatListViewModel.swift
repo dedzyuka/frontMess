@@ -26,6 +26,7 @@ class ChatListViewModel: ObservableObject {
     func loadChats() async {
         // 1. Сначала показываем чаты из локальной базы
         let localChats = LocalDatabase.shared.getChats()
+        LocalDatabase.shared.printDatabaseInfo()
         
         await MainActor.run {
             self.chats = localChats
@@ -51,7 +52,7 @@ class ChatListViewModel: ObservableObject {
             
             // Сохраняем каждый чат в локальную базу
             for chat in serverChats {
-                _ = LocalDatabase.shared.saveChat(chat)
+                _ = LocalDatabase.shared.saveOrUpdateChat(chat)
             }
             
             // Восстанавливаем ключи
@@ -81,11 +82,22 @@ class ChatListViewModel: ObservableObject {
     private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
         for chat in chats {
             // Проверяем, есть ли ключ чата в Keychain
-            if let encryptedChatKey = keychainService.loadChatKey(chatId: chat.id) {
+            if let encryptedChatKeyData = keychainService.loadChatKey(chatId: chat.id) {
                 do {
+                    print("🔄 Восстановление ключа для чата \(chat.name)...")
+                    print("🔐 Зашифрованный ключ размером: \(encryptedChatKeyData.count) байт")
+                    
                     // Получаем наш приватный ключ
                     guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-                        print("❌ ChatListViewModel: Нет приватного ключа для чата \(chat.name)")
+                        print("❌ Нет приватного ключа для чата \(chat.name)")
+                        continue
+                    }
+                    
+                    print("🔑 Приватный ключ размером: \(privateKeyData.count) байт")
+                    
+                    // Проверяем размеры данных
+                    if privateKeyData.count != 32 {
+                        print("⚠️ Неправильный размер приватного ключа: \(privateKeyData.count)")
                         continue
                     }
                     
@@ -93,17 +105,21 @@ class ChatListViewModel: ObservableObject {
                     let cryptoService = CryptoService.shared
                     
                     // Расшифровываем ключ чата
-                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
+                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKeyData, with: privateKey)
                     let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
                     
                     // Сохраняем в менеджер ключей
                     ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
                     
-                    print("🔑 ChatListViewModel: Ключ восстановлен для чата: \(chat.name)")
+                    print("✅ Ключ восстановлен для чата: \(chat.name)")
                     
                 } catch {
-                    print("❌ ChatListViewModel: Ошибка восстановления ключа для чата \(chat.name): \(error)")
+                    print("❌ Ошибка восстановления ключа для чата \(chat.name): \(error)")
+                    print("🔍 Пробуем удалить поврежденный ключ...")
+                    _ = keychainService.deleteChatKey(chatId: chat.id)
                 }
+            } else {
+                print("⚠️ Ключ не найден для чата: \(chat.name)")
             }
         }
     }

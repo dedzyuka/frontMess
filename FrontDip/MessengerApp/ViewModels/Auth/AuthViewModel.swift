@@ -235,25 +235,30 @@ class AuthViewModel: ObservableObject {
         print("🔄 Пытаемся выполнить автоматический вход...")
         
         guard let userIdString = keychainService.load(key: "user_id"),
-              let userId = UUID(uuidString: userIdString)
-        
-        else {
+              let userId = UUID(uuidString: userIdString) else {
             print("❌ Нет сохраненного пользователя")
             return
         }
+        
+        print("🔑 Найден сохраненный user_id: \(userId)")
         
         Task {
             do {
                 let user = try await APIService.shared.getUser(userId: userId)
                 
-                // Восстанавливаем сохраненные чаты
-                await restoreUserChats(userId: userId)
-                
                 await MainActor.run {
                     currentUser = user
                     AppState.shared.currentUser = user
                     AppState.shared.login()
+                    
                     print("🎉 АВТОМАТИЧЕСКИЙ ВХОД ВЫПОЛНЕН!")
+                    
+                    // Подключаем WebSocket после успешного входа
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+                        WebSocketService.shared.connect(userId: user.id)
+                    }
+                    
                     NotificationCenter.default.post(name: .userLoggedIn, object: nil)
                 }
                 
@@ -262,7 +267,17 @@ class AuthViewModel: ObservableObject {
             }
         }
     }
-
+    func connectWebSocket() {
+        guard let user = currentUser else { return }
+        
+        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+        WebSocketService.shared.connect(userId: user.id)
+        
+        // Проверить через 3 секунды
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            print("WebSocket подключен: \(WebSocketService.shared.isConnected)")
+        }
+    }
     // Добавьте метод для восстановления ключей чатов
     private func restoreChatKeys(userId: UUID) async {
         print("🔄 Восстановление ключей чатов...")

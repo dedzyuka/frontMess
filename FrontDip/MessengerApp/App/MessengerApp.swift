@@ -20,6 +20,7 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var authViewModel = AuthViewModel()
     @StateObject private var webSocketService = WebSocketService.shared
+    @StateObject private var contactService = ContactService.shared  // Добавляем
     @State private var isCheckingAutoLogin = true
     
     var body: some View {
@@ -29,7 +30,8 @@ struct ContentView: View {
             } else if appState.isAuthenticated {
                 ChatListView()
                     .environmentObject(webSocketService)
-                    .environmentObject(authViewModel) // Добавляем
+                    .environmentObject(authViewModel)
+                    .environmentObject(contactService)  // Добавляем
             } else {
                 LoginView()
                     .environmentObject(authViewModel)
@@ -39,6 +41,7 @@ struct ContentView: View {
             Button("OK") {
                 appState.errorMessage = nil
             }
+            
         } message: {
             Text(appState.errorMessage ?? "")
         }
@@ -46,6 +49,11 @@ struct ContentView: View {
             // Проверяем автологин при запуске
             checkAutoLogin()
         }
+        Button("Debug: Recreate DB") {
+            LocalDatabase.shared.recreateTables()
+        }
+        .font(.caption)
+        .foregroundColor(.red)
     }
     
     private func checkAutoLogin() {
@@ -55,6 +63,7 @@ struct ContentView: View {
         if authViewModel.hasSavedUser() {
             print("👤 Найден сохраненный пользователь, пытаемся войти...")
             authViewModel.autoLogin()
+            
             
             // Даем 2 секунды на попытку автологина
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {

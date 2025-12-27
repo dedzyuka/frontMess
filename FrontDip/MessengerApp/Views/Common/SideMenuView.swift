@@ -84,25 +84,23 @@ struct SideMenuView: View {
                             MenuItem(
                                 icon: "person.2.fill",
                                 title: "Контакты",
-                                color: .green
+                                color: .green,
+                                badgeCount: contactService.contacts.count
                             ) {
+                                // Показываем ContactsView
                                 showContactsView = true
-                                withAnimation(.spring()) {
-                                    isShowing = false
-                                }
+                                isShowing = false
                             }
-                            
+
                             MenuItem(
                                 icon: "bell.fill",
                                 title: "Уведомления",
                                 color: .orange,
-                                isDestructive: false,
                                 badgeCount: contactService.pendingRequests.count
                             ) {
+                                // Показываем NotificationsView
                                 showNotificationsView = true
-                                withAnimation(.spring()) {
-                                    isShowing = false
-                                }
+                                isShowing = false
                             }
                             
                             Divider()

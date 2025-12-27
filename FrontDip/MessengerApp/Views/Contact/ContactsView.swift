@@ -10,25 +10,13 @@ struct ContactsView: View {
             VStack {
                 if contactService.contacts.isEmpty {
                     Spacer()
-                    VStack(spacing: 20) {
-                        Image(systemName: "person.2.slash")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray.opacity(0.5))
-                        
-                        Text("Нет контактов")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                        
-                        Text("Добавляйте контакты через поиск")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                    Text("Нет контактов")
+                        .foregroundColor(.secondary)
                     Spacer()
                 } else {
                     List(contactService.contacts) { contact in
                         ContactRow(contact: contact)
                     }
-                    .listStyle(PlainListStyle())
                 }
             }
             .navigationTitle("Контакты")
@@ -39,9 +27,6 @@ struct ContactsView: View {
                         dismiss()
                     }
                 }
-            }
-            .onAppear {
-                contactService.loadContacts()
             }
         }
     }

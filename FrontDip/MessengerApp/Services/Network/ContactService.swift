@@ -1,4 +1,4 @@
-// ./FrontDip/MessengerApp/Services/Contact/ContactService.swift
+// ./FrontDip/MessengerApp/Services/Network/ContactService.swift
 import Foundation
 import Combine
 
@@ -48,7 +48,10 @@ class ContactService: ObservableObject {
         if !pendingRequests.isEmpty {
             NotificationCenter.default.post(
                 name: .showNotification,
-                object: "У вас \(pendingRequests.count) новых запросов"
+                object: NotificationData(
+                    type: .info,
+                    message: "У вас \(pendingRequests.count) новых запросов"
+                )
             )
         }
     }
@@ -106,7 +109,9 @@ class ContactService: ObservableObject {
             return
         }
         
-        // Сохраняем как исходящий запрос
+        print("📤 Отправляем запрос на контакт пользователю \(user.nickname)")
+        
+        // Сохраняем локально как исходящий запрос
         let request = ContactRequest(
             id: UUID(),
             fromUserId: currentUser.id,
@@ -118,23 +123,14 @@ class ContactService: ObservableObject {
         
         if database.saveContactRequest(request) {
             loadPendingRequests()
-            print("📤 Запрос на контакт сохранен локально")
+            print("✅ Запрос сохранен локально")
         }
         
-        // Отправляем через WebSocket (ИСПРАВЛЕНО: правильный порядок аргументов)
-        let message = WebSocketMessage(
-            type: "contact_request",
-            senderId: currentUser.id,  // Теперь здесь
-            recipientId: user.user_id, // Теперь здесь
-            contactData: WebSocketMessage.ContactData(
-                userId: currentUser.id,
-                nickname: currentUser.nickname,
-                publicKey: currentUser.publicKey
-            )
-        )
+        // Отправляем через WebSocket
+        webSocketService.sendContactRequest(to: user.user_id)  // ✅ Используем правильный метод
         
-        webSocketService.sendMessage(message)
-        print("📤 Запрос на контакт отправлен через WebSocket")
+        // Показываем уведомление
+        NotificationService.shared.showInfo("Запрос отправлен пользователю \(user.nickname)")
     }
     
     func acceptContactRequest(_ request: ContactRequest) {
@@ -158,22 +154,9 @@ class ContactService: ObservableObject {
             print("✅ Статус запроса обновлен на 'accepted'")
         }
         
-        // Отправляем подтверждение
-        guard let currentUser = AppState.shared.currentUser else { return }
+        // Отправляем подтверждение через WebSocket
+        webSocketService.sendContactAccept(to: request.fromUserId)  // ✅ Используем правильный метод
         
-        // ИСПРАВЛЕНО: правильный порядок аргументов
-        let acceptMessage = WebSocketMessage(
-            type: "contact_accept",
-            senderId: currentUser.id,  // Теперь здесь
-            recipientId: request.fromUserId, // Теперь здесь
-            contactData: WebSocketMessage.ContactData(
-                userId: currentUser.id,
-                nickname: currentUser.nickname,
-                publicKey: currentUser.publicKey
-            )
-        )
-        
-        webSocketService.sendMessage(acceptMessage)
         print("✅ Подтверждение отправлено")
     }
     
@@ -202,43 +185,52 @@ class ContactService: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .websocketConnected)
+            .sink { [weak self] _ in
+                print("🔗 WebSocket подключен, обновляем контакты...")
+                self?.refreshAllData()
+            }
+            .store(in: &cancellables)
     }
     
-    private func handleIncomingContactRequest(_ request: ContactRequest) {
+     func handleIncomingContactRequest(_ request: ContactRequest) {
+        print("📩 Получен запрос на контакт от \(request.fromNickname)")
+        
         // Сохраняем входящий запрос
         if database.saveContactRequest(request) {
             loadPendingRequests()
             
             // Показываем уведомление
-            NotificationCenter.default.post(
-                name: .showNotification,
-                object: "Новый запрос на контакт от \(request.fromNickname)"
-            )
-            
-            print("📩 Новый запрос на контакт от \(request.fromNickname)")
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .showNotification,
+                    object: NotificationData(
+                        type: .info,
+                        message: "Новый запрос на контакт от \(request.fromNickname)"
+                    )
+                )
+            }
         }
     }
     
-    private func handleContactRequestAccepted(_ contact: Contact) {
+    func handleContactRequestAccepted(_ contact: Contact) {
+        print("✅ Запрос на контакт принят: \(contact.nickname)")
+        
         // Добавляем в контакты
         if database.saveContact(contact) {
             loadContacts()
             
             // Показываем уведомление
-            NotificationCenter.default.post(
-                name: .showNotification,
-                object: "\(contact.nickname) принял(а) ваш запрос на контакт"
-            )
-            
-            print("✅ Запрос принят: \(contact.nickname)")
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .showNotification,
+                    object: NotificationData(
+                        type: .success,
+                        message: "\(contact.nickname) принял(а) ваш запрос на контакт"
+                    )
+                )
+            }
         }
     }
-}
-
-// Расширение для Notification
-extension Notification.Name {
-    static let newContactRequest = Notification.Name("newContactRequest")
-    static let contactRequestAccepted = Notification.Name("contactRequestAccepted")
-    static let showNotification = Notification.Name("showNotification")
-    static let userLoggedIn = Notification.Name("userLoggedIn")
 }
