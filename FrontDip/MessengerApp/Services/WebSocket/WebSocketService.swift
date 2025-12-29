@@ -171,15 +171,17 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         lastError = nil
         
         let encodedDeviceId = deviceId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceId
-        let urlString = "\(baseURL)/ws/ws/\(userId)?device_id=\(encodedDeviceId)"
+        
+        // ИСПРАВЛЯЕМ ЗДЕСЬ:
+        let urlString = "\(baseURL)/ws/\(userId)?device_id=\(encodedDeviceId)"
+        
+        print("🔗 Connecting to WebSocket: \(urlString)")
         
         guard let url = URL(string: urlString) else {
             print("❌ Invalid WebSocket URL: \(urlString)")
             connectionStatus = .disconnected
             return
         }
-        
-        print("🔗 Connecting to WebSocket: \(url)")
         
         webSocketTask = urlSession.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -425,12 +427,26 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         print("📩 Chat message saved: \(content.prefix(20))...")
     }
     
+    // В методе handleContactRequest добавляем сохранение в локальную базу:
     private func handleContactRequest(_ message: WebSocketMessage) {
         guard let requestId = message.requestId,
               let senderId = message.senderId,
               let senderNickname = message.senderNickname,
               let senderPublicKey = message.senderPublicKey else {
             print("❌ Invalid contact request format")
+            return
+        }
+        
+        print("📩 Received contact request from: \(senderNickname) (\(senderId))")
+        
+        // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем, что запрос не от самого себя
+        guard let currentUser = AppState.shared.currentUser else {
+            print("❌ Current user not found")
+            return
+        }
+        
+        if senderId == currentUser.id {
+            print("⚠️ Игнорируем запрос от самого себя")
             return
         }
         
@@ -445,14 +461,12 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         
         _ = LocalDatabase.shared.saveContactRequest(request)
         
-        NotificationCenter.default.post(
-            name: .newContactRequest,
-            object: request
-        )
+        ContactService.shared.handleIncomingContactRequest(request)
         
-        print("📩 Contact request from \(senderNickname)")
+        print("✅ Запрос сохранен локально")
     }
-    
+
+    // В методе handleContactAccept:
     private func handleContactAccept(_ message: WebSocketMessage) {
         guard let acceptedUserId = message.acceptedUserId,
               let acceptedNickname = message.acceptedNickname,
@@ -469,12 +483,11 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             addedAt: Date()
         )
         
+        // Сохраняем в локальную базу
         _ = LocalDatabase.shared.saveContact(contact)
         
-        NotificationCenter.default.post(
-            name: .contactRequestAccepted,
-            object: contact
-        )
+        // Уведомляем ContactService
+        ContactService.shared.handleContactRequestAccepted(contact)
         
         print("✅ Contact accepted from \(acceptedNickname)")
     }

@@ -135,8 +135,12 @@ class AuthViewModel: ObservableObject {
                     WebSocketService.shared.connect(userId: user.id)
                 }
                 
-                // Восстанавливаем ключи чатов и создаем их для существующих чатов
-                restoreAndCreateChatKeys(userId: user.id)
+                // Синхронизируем контакты и запросы
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    print("🔄 Синхронизация контактов...")
+                    ContactService.shared.syncContacts()
+                    ContactService.shared.syncPendingRequests()
+                }
                 
                 NotificationCenter.default.post(name: .userLoggedIn, object: nil)
             }

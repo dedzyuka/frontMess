@@ -1,22 +1,46 @@
 // ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 import SwiftUI
 
+// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 struct NotificationsView: View {
     @EnvironmentObject var contactService: ContactService
     @Environment(\.dismiss) var dismiss
+    @State private var isLoading = false
     
     var body: some View {
         NavigationView {
             VStack {
                 if contactService.pendingRequests.isEmpty {
                     Spacer()
-                    Text("Нет уведомлений")
-                        .foregroundColor(.secondary)
+                    VStack(spacing: 20) {
+                        Image(systemName: "bell.slash")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray.opacity(0.5))
+                        
+                        Text("Нет уведомлений")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                    }
                     Spacer()
                 } else {
                     List(contactService.pendingRequests) { request in
                         ContactRequestRow(request: request)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    contactService.declineContactRequest(request)
+                                } label: {
+                                    Label("Отклонить", systemImage: "xmark.circle")
+                                }
+                                
+                                Button {
+                                    contactService.acceptContactRequest(request)
+                                } label: {
+                                    Label("Принять", systemImage: "checkmark.circle")
+                                        .tint(.green)
+                                }
+                            }
                     }
+                    .listStyle(PlainListStyle())
                 }
             }
             .navigationTitle("Уведомления")
@@ -27,7 +51,29 @@ struct NotificationsView: View {
                         dismiss()
                     }
                 }
+                
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if isLoading {
+                        ProgressView()
+                    } else {
+                        Button("Обновить") {
+                            refreshRequests()
+                        }
+                    }
+                }
             }
+            .onAppear {
+                contactService.loadPendingRequests()
+            }
+        }
+    }
+    
+    private func refreshRequests() {
+        isLoading = true
+        contactService.syncPendingRequests()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            isLoading = false
         }
     }
 }
@@ -47,38 +93,37 @@ struct ContactRequestRow: View {
                         .foregroundColor(.orange)
                 )
             
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(request.fromNickname)
                     .font(.headline)
+                
                 Text("Запрос на контакт")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                
+                Text(formatDate(request.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.gray)
             }
             
             Spacer()
             
-            Button(action: {
-                showingActionSheet = true
-            }) {
-                Image(systemName: "ellipsis.circle")
-                    .foregroundColor(.blue)
+            if request.status == "pending" {
+                Text("Ждет ответа")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.1))
+                    .cornerRadius(8)
             }
         }
         .padding(.vertical, 8)
-        .actionSheet(isPresented: $showingActionSheet) {
-            ActionSheet(
-                title: Text("Запрос на контакт"),
-                message: Text("Принять запрос от \(request.fromNickname)?"),
-                buttons: [
-                    .default(Text("Принять")) {
-                        ContactService.shared.acceptContactRequest(request)
-                    },
-                    .destructive(Text("Отклонить")) {
-                        ContactService.shared.declineContactRequest(request)
-                    },
-                    .cancel()
-                ]
-            )
-        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
