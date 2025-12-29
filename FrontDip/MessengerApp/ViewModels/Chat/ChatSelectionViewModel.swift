@@ -78,7 +78,7 @@ class ChatSelectionViewModel: ObservableObject {
     }
     
     // Обновляем метод addContactToChat:
-
+    
     func addContactToChat(_ chat: Chat) async -> Bool {
         guard let deviceId = KeychainService.shared.loadDeviceId() else {
             print("❌ Device ID not found")
@@ -88,13 +88,12 @@ class ChatSelectionViewModel: ObservableObject {
         do {
             print("📤 Приглашаем пользователя \(contact.nickname) в чат \(chat.name)...")
             
-            let result = try await apiService.inviteUserToChat(
+            // Функция возвращает Bool напрямую
+            let success = try await apiService.inviteUserToChat(
                 chatId: chat.id,
                 userId: contact.userId,
                 deviceId: deviceId
             )
-            
-            let success = result["success"] as? Bool ?? false
             
             if success {
                 print("✅ Пользователь успешно приглашен в чат")

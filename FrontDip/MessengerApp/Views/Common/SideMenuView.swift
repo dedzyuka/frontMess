@@ -3,9 +3,9 @@ import SwiftUI
 
 struct SideMenuView: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var contactService: ContactService
-    @ObservedObject var authViewModel: AuthViewModel
-    @Binding var isShowing: Bool
+        @EnvironmentObject var contactService: ContactService
+        @ObservedObject var authViewModel: AuthViewModel
+        @Binding var isShowing: Bool
     
     // Новые binding переменные для управления показами View
     @Binding var showSearchView: Bool
@@ -187,7 +187,7 @@ struct SideMenuView: View {
         .alert("Очистить все данные", isPresented: $showWipeAlert) {
             Button("Отмена", role: .cancel) { }
             Button("Очистить", role: .destructive) {
-                authViewModel.completeWipe()
+                authViewModel.wipeAllData()
                 withAnimation(.spring()) {
                     isShowing = false
                 }

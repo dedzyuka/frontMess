@@ -244,8 +244,7 @@ struct ChatListView: View {
     // MARK: - Methods
     
     private func initializeView() async {
-        // Обновляем пользователя в viewModel
-        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
+
         await viewModel.loadChats()
         
         // Обновляем контакты
@@ -292,6 +291,10 @@ struct ChatListView: View {
                 // Обновляем список чатов
                 viewModel.chats.insert(chat, at: 0)
             }
+            
+            // АВТОМАТИЧЕСКИ ПОДКЛЮЧАЕМ WebSocket К НОВОМУ ЧАТУ
+            // НЕ НУЖНО! WebSocket уже подключен к пользователю
+            // НЕ ДЕЛАЙТЕ: WebSocketService.shared.connect(userId: userId) еще раз
             
         } catch {
             await MainActor.run {

@@ -153,7 +153,7 @@ class LocalDatabase {
             var chats: [Chat] = []
             for row in try db.prepare(query) {
                 let chat = Chat(
-                    id: row[chatId],  // ✅ ИСПРАВЛЕНО: было row[chatID]
+                    id: row[id],  // ✅ ИСПРАВЛЕНО: было row[chatID]
                     name: row[chatName],
                     creatorId: row[creatorId],
                     createdAt: row[createdAt],
@@ -262,17 +262,34 @@ class LocalDatabase {
         guard let db = db else { return false }
         
         do {
-            let insert = contactRequestsTable.insert(
-                requestId <- request.id,
-                fromUserId <- request.fromUserId,
-                fromNickname <- request.fromNickname,
-                fromPublicKey <- request.fromPublicKey,
-                requestStatus <- request.status,
-                requestCreatedAt <- request.createdAt
-            )
+            // Проверяем, не существует ли уже запрос с таким ID
+            let existingQuery = contactRequestsTable.filter(requestId == request.id)
+            let count = try db.scalar(existingQuery.count)
             
-            try db.run(insert)
-            print("✅ Запрос на контакт сохранен: от \(request.fromNickname)")
+            if count > 0 {
+                // Если уже существует - обновляем
+                try db.run(existingQuery.update(
+                    fromUserId <- request.fromUserId,
+                    fromNickname <- request.fromNickname,
+                    fromPublicKey <- request.fromPublicKey,
+                    requestStatus <- request.status,
+                    requestCreatedAt <- request.createdAt
+                ))
+                print("✅ Запрос на контакт обновлен: от \(request.fromNickname)")
+            } else {
+                // Если не существует - создаем новый
+                let insert = contactRequestsTable.insert(
+                    requestId <- request.id,
+                    fromUserId <- request.fromUserId,
+                    fromNickname <- request.fromNickname,
+                    fromPublicKey <- request.fromPublicKey,
+                    requestStatus <- request.status,
+                    requestCreatedAt <- request.createdAt
+                )
+                
+                try db.run(insert)
+                print("✅ Запрос на контакт сохранен: от \(request.fromNickname)")
+            }
             return true
         } catch {
             print("❌ Save contact request error: \(error)")

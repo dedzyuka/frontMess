@@ -36,6 +36,7 @@ class AppState: ObservableObject {
 
 
 ./FrontDip/MessengerApp/App/MessengerApp.swift
+// ./FrontDip/MessengerApp/App/MessengerApp.swift
 import SwiftUI
 
 @main
@@ -53,12 +54,11 @@ struct MessengerApp: App {
     }
 }
 
-// В ContentView.swift
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var authViewModel = AuthViewModel()
-    @StateObject private var webSocketService = WebSocketService.shared
-    @StateObject private var contactService = ContactService.shared  // Добавляем
+    @StateObject private var contactService = ContactService.shared
+    
     @State private var isCheckingAutoLogin = true
     
     var body: some View {
@@ -67,9 +67,8 @@ struct ContentView: View {
                 LoadingView()
             } else if appState.isAuthenticated {
                 ChatListView()
-                    .environmentObject(webSocketService)
                     .environmentObject(authViewModel)
-                    .environmentObject(contactService)  // Добавляем
+                    .environmentObject(contactService)
             } else {
                 LoginView()
                     .environmentObject(authViewModel)
@@ -79,39 +78,29 @@ struct ContentView: View {
             Button("OK") {
                 appState.errorMessage = nil
             }
-            
         } message: {
             Text(appState.errorMessage ?? "")
         }
         .onAppear {
-            // Проверяем автологин при запуске
             checkAutoLogin()
         }
-        Button("Debug: Recreate DB") {
-            LocalDatabase.shared.recreateTables()
-        }
-        .font(.caption)
-        .foregroundColor(.red)
     }
     
     private func checkAutoLogin() {
         print("🚀 Запуск приложения...")
         
-        // Проверяем, есть ли сохраненный пользователь
         if authViewModel.hasSavedUser() {
-            print("👤 Найден сохраненный пользователь, пытаемся войти...")
+            print("👤 Найден сохраненный пользователь")
             authViewModel.autoLogin()
             
-            
-            // Даем 2 секунды на попытку автологина
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 isCheckingAutoLogin = false
                 if !appState.isAuthenticated {
-                    print("⏱️ Автологин не удался, показываем экран входа")
+                    print("⏱️ Автологин не удался")
                 }
             }
         } else {
-            print("👤 Сохраненный пользователь не найден, показываем экран входа")
+            print("👤 Сохраненный пользователь не найден")
             isCheckingAutoLogin = false
         }
     }
@@ -356,6 +345,69 @@ struct UserPublicResponse: Identifiable, Codable {
 
 
 ./FrontDip/MessengerApp/Services/Auth/AuthService.swift
+
+
+./FrontDip/MessengerApp/Services/Auth/SessionManager.swift
+// ./FrontDip/MessengerApp/Services/Auth/SessionManager.swift
+import Foundation
+import Combine
+
+class SessionManager: ObservableObject {
+    static let shared = SessionManager()
+    
+    @Published var isAuthenticated = false
+    @Published var currentUser: User?
+    @Published var isLoading = true
+    
+    private let authViewModel = AuthViewModel()
+    private var cancellables = Set<AnyCancellable>()
+    
+    private init() {
+        setupBindings()
+    }
+    
+    func start() {
+        print("🚀 Запуск SessionManager...")
+        
+        if authViewModel.hasSavedUser() {
+            Task {
+                await authViewModel.restoreSession()
+                await MainActor.run {
+                    self.isLoading = false
+                }
+            }
+        } else {
+            isLoading = false
+        }
+    }
+    
+    private func setupBindings() {
+        AppState.shared.$isAuthenticated
+            .sink { [weak self] isAuthenticated in
+                self?.isAuthenticated = isAuthenticated
+            }
+            .store(in: &cancellables)
+        
+        AppState.shared.$currentUser
+            .sink { [weak self] user in
+                self?.currentUser = user
+            }
+            .store(in: &cancellables)
+    }
+    
+    func register(nickname: String) async -> Bool {
+        await authViewModel.register()
+        return authViewModel.currentUser != nil
+    }
+    
+    func logout() {
+        authViewModel.logout()
+    }
+    
+    func wipeAllData() {
+        authViewModel.wipeAllData()
+    }
+}
 
 
 ./FrontDip/MessengerApp/Services/Auth/UserManager.swift
@@ -633,17 +685,34 @@ class LocalDatabase {
         guard let db = db else { return false }
         
         do {
-            let insert = contactRequestsTable.insert(
-                requestId <- request.id,
-                fromUserId <- request.fromUserId,
-                fromNickname <- request.fromNickname,
-                fromPublicKey <- request.fromPublicKey,
-                requestStatus <- request.status,
-                requestCreatedAt <- request.createdAt
-            )
+            // Проверяем, не существует ли уже запрос с таким ID
+            let existingQuery = contactRequestsTable.filter(requestId == request.id)
+            let count = try db.scalar(existingQuery.count)
             
-            try db.run(insert)
-            print("✅ Запрос на контакт сохранен: от \(request.fromNickname)")
+            if count > 0 {
+                // Если уже существует - обновляем
+                try db.run(existingQuery.update(
+                    fromUserId <- request.fromUserId,
+                    fromNickname <- request.fromNickname,
+                    fromPublicKey <- request.fromPublicKey,
+                    requestStatus <- request.status,
+                    requestCreatedAt <- request.createdAt
+                ))
+                print("✅ Запрос на контакт обновлен: от \(request.fromNickname)")
+            } else {
+                // Если не существует - создаем новый
+                let insert = contactRequestsTable.insert(
+                    requestId <- request.id,
+                    fromUserId <- request.fromUserId,
+                    fromNickname <- request.fromNickname,
+                    fromPublicKey <- request.fromPublicKey,
+                    requestStatus <- request.status,
+                    requestCreatedAt <- request.createdAt
+                )
+                
+                try db.run(insert)
+                print("✅ Запрос на контакт сохранен: от \(request.fromNickname)")
+            }
             return true
         } catch {
             print("❌ Save contact request error: \(error)")
@@ -1135,15 +1204,65 @@ class MessageService: ObservableObject {
 
 
 ./FrontDip/MessengerApp/Services/Network/APIService.swift
+// ./FrontDip/MessengerApp/Services/Network/APIService.swift
 import Foundation
+
 
 class APIService {
     static let shared = APIService()
     
     let baseURL = "http://localhost:8000/api/v1"
-    private let decoder = JSONDecoder.iso8601WithMilliseconds
     
     private init() {}
+    
+    // MARK: - Custom JSONDecoder
+    
+    private var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            
+            // Пробуем разные форматы дат
+            let formatters: [DateFormatter] = [
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }(),
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }(),
+                {
+                    let f = DateFormatter()
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    f.locale = Locale(identifier: "en_US_POSIX")
+                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    return f
+                }()
+            ]
+            
+            for formatter in formatters {
+                if let date = formatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Cannot decode date string \(dateString)"
+            )
+        }
+        
+        return decoder
+    }
     
     // MARK: - User Endpoints
     
@@ -1161,18 +1280,7 @@ class APIService {
             "device_id": deviceId
         ]
         
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            
-            // Логирование для отладки
-            if let jsonString = String(data: request.httpBody!, encoding: .utf8) {
-                print("Отправляем JSON: \(jsonString)")
-            }
-            
-        } catch {
-            print("Ошибка сериализации JSON: \(error)")
-            throw error
-        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -1180,26 +1288,9 @@ class APIService {
             throw URLError(.badServerResponse)
         }
         
-        print("Статус код: \(httpResponse.statusCode)")
-        
-        // Всегда логируем ответ
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Ответ сервера: \(responseString)")
-        }
-        
-        switch httpResponse.statusCode {
-        case 201:
-            // Используем кастомный декодер
+        if httpResponse.statusCode == 201 {
             return try decoder.decode(User.self, from: data)
-        case 400, 422:
-            if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let detail = errorDict["detail"] as? String {
-                throw NSError(domain: "API", code: httpResponse.statusCode,
-                            userInfo: [NSLocalizedDescriptionKey: detail])
-            } else {
-                throw URLError(.badServerResponse)
-            }
-        default:
+        } else {
             throw URLError(.badServerResponse)
         }
     }
@@ -1228,52 +1319,8 @@ class APIService {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        print("Статус создания чата: \(httpResponse.statusCode)")
-        
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Ответ сервера: \(responseString)")
-        }
-        
-        if httpResponse.statusCode == 201 {
-            // Парсим вручную как ChatCreateResponse (а не ChatInviteResponse)
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let chatIdString = json["chat_id"] as? String,
-                  let chatId = UUID(uuidString: chatIdString),
-                  let inviteKey = json["invite_key"] as? String,
-                  let createdAtString = json["created_at"] as? String else {
-                throw URLError(.cannotParseResponse)
-            }
-            
-            // Конвертируем строку в дату
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let createdAt = formatter.date(from: createdAtString) ?? Date()
-            
-            print("✅ Создан чат: \(name), ID: \(chatId)")
-            
-            return Chat(
-                id: chatId,
-                name: name,
-                creatorId: creatorId,
-                createdAt: createdAt,
-                memberCount: 1
-            )
-        } else if httpResponse.statusCode == 400 {
-            // Пробуем другой формат ответа
-            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let detail = errorJson["detail"] as? String {
-                print("❌ Ошибка сервера: \(detail)")
-            }
-            throw URLError(.badServerResponse)
-        } else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try decoder.decode(Chat.self, from: data)
     }
     
     func getUserChats(userId: UUID, deviceId: String) async throws -> [Chat] {
@@ -1286,41 +1333,8 @@ class APIService {
         return try decoder.decode([Chat].self, from: data)
     }
     
-    // MARK: - Message Endpoints
+    // MARK: - Search Users
     
-    func sendMessage(chatId: UUID, content: String, deviceId: String) async throws -> Message {
-        guard let userId = AppState.shared.currentUser?.id else {
-            throw URLError(.userAuthenticationRequired)
-        }
-        
-        let url = URL(string: "\(baseURL)/messages/")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let body: [String: Any] = [
-            "chat_id": chatId.uuidString,
-            "sender_id": userId.uuidString,
-            "content": content,
-            "encrypted": true
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return try decoder.decode(Message.self, from: data)
-    }
-    
-    func getChatMessages(chatId: UUID) async throws -> [Message] {
-        let url = URL(string: "\(baseURL)/messages/\(chatId.uuidString)")!
-        
-        let (data, _) = try await URLSession.shared.data(from: url)
-        return try decoder.decode([Message].self, from: data)
-    }
-    // В APIService.swift, замените метод searchUsers:
-
     func searchUsers(query: String, deviceId: String) async throws -> [UserPublicResponse] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         let url = URL(string: "\(baseURL)/users/search?query=\(encodedQuery)&limit=50")!
@@ -1328,28 +1342,12 @@ class APIService {
         var request = URLRequest(url: url)
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
         
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        print("Поиск пользователей, статус: \(httpResponse.statusCode)")
-        
-        // Всегда логируем ответ
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Ответ сервера: \(responseString)")
-        }
-        
-        if httpResponse.statusCode == 200 {
-            // Используем существующий декодер
-            return try decoder.decode([UserPublicResponse].self, from: data)
-        } else {
-            throw URLError(.badServerResponse)
-        }
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try decoder.decode([UserPublicResponse].self, from: data)
     }
-    // MARK: - Chat Members Endpoints
-
+    
+    // MARK: - Chat Members
+    
     func getChatMembers(chatId: UUID) async throws -> [ChatMemberDetailed] {
         let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/members/detailed")!
         
@@ -1357,35 +1355,8 @@ class APIService {
         let response = try decoder.decode(ChatMembersResponse.self, from: data)
         return response.members
     }
-
-    func addUserToChat(chatId: UUID, userId: UUID, deviceId: String) async throws -> Bool {
-        // Будем использовать существующий endpoint /chats/{chat_id}/join
-        let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/join")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let body: [String: Any] = [
-            "user_id": userId.uuidString,
-            "invite_key": chatId.uuidString // Используем chat_id как invite_key
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        return httpResponse.statusCode == 200
-    }
-
-    // MARK: - Chat Invite Endpoint
-
-    func inviteUserToChat(chatId: UUID, userId: UUID, deviceId: String) async throws -> [String: Any] {
+    
+    func inviteUserToChat(chatId: UUID, userId: UUID, deviceId: String) async throws -> Bool {
         let url = URL(string: "\(baseURL)/chats/\(chatId.uuidString)/invite")!
         
         var request = URLRequest(url: url)
@@ -1399,24 +1370,13 @@ class APIService {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
         
-        print("Статус приглашения: \(httpResponse.statusCode)")
-        
-        if let responseString = String(data: data, encoding: .utf8) {
-            print("Ответ сервера: \(responseString)")
-        }
-        
-        if httpResponse.statusCode == 200 {
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return json ?? [:]
-        } else {
-            throw URLError(.badServerResponse)
-        }
+        return httpResponse.statusCode == 200
     }
 }
 
@@ -1429,7 +1389,7 @@ class ChatAPIService {
     static let shared = ChatAPIService()
     
     private let baseURL = "http://localhost:8000/api/v1"
-    private let decoder = JSONDecoder.iso8601WithMilliseconds
+    private let decoder = JSONDecoder.flexibleISO8601
     
     // Создать чат
     func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {
@@ -1489,28 +1449,32 @@ class ContactService: ObservableObject {
     
     @Published var contacts: [Contact] = []
     @Published var pendingRequests: [ContactRequest] = []
+    @Published var isLoading = false
     
     private let database = LocalDatabase.shared
     private let webSocketService = WebSocketService.shared
     private let apiService = APIService.shared
-    private let keychainService = KeychainService.shared
-    
     private var cancellables = Set<AnyCancellable>()
+    
+    private var pendingContactRequestsQueue: [(UserPublicResponse, UUID)] = []
     
     private init() {
         loadContacts()
         loadPendingRequests()
         setupWebSocketHandlers()
-        
-        // Обновляем данные при каждом появлении пользователя
-        NotificationCenter.default.publisher(for: .userLoggedIn)
+        setupBindings()
+    }
+    
+    private func setupBindings() {
+        // Отправляем запросы из очереди при подключении WebSocket
+        NotificationCenter.default.publisher(for: .websocketConnected)
             .sink { [weak self] _ in
-                self?.refreshAllData()
+                self?.sendQueuedContactRequests()
             }
             .store(in: &cancellables)
     }
     
-    // MARK: - Загрузка данных
+    // MARK: - Data Loading
     
     func loadContacts() {
         contacts = database.getContacts()
@@ -1525,37 +1489,23 @@ class ContactService: ObservableObject {
     func refreshAllData() {
         loadContacts()
         loadPendingRequests()
-        
-        // Уведомляем UI о новых запросах
-        if !pendingRequests.isEmpty {
-            NotificationCenter.default.post(
-                name: .showNotification,
-                object: NotificationData(
-                    type: .info,
-                    message: "У вас \(pendingRequests.count) новых запросов"
-                )
-            )
-        }
     }
     
-    // MARK: - Поиск пользователей
+    // MARK: - User Search
     
     func searchUsers(query: String) async throws -> [UserPublicResponse] {
-        guard let deviceId = keychainService.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
+        guard let deviceId = KeychainService.shared.loadDeviceId() else {
+            throw NSError(domain: "Auth", code: 1,
+                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
         }
         
-        do {
-            let users = try await apiService.searchUsers(query: query, deviceId: deviceId)
-            print("✅ Найдено пользователей: \(users.count)")
-            return users
-        } catch {
-            print("❌ Ошибка поиска пользователей: \(error)")
-            throw error
-        }
+        return try await apiService.searchUsers(
+            query: query,
+            deviceId: deviceId
+        )
     }
     
-    // MARK: - Управление контактами
+    // MARK: - Contact Management
     
     func addContact(_ user: UserPublicResponse) {
         let contact = Contact(
@@ -1583,11 +1533,25 @@ class ContactService: ObservableObject {
         return database.isContact(userId: userId)
     }
     
-    // MARK: - Запросы на контакт
+    // MARK: - Contact Requests
     
     func sendContactRequest(to user: UserPublicResponse) {
         guard let currentUser = AppState.shared.currentUser else {
             print("❌ Текущий пользователь не найден")
+            return
+        }
+        
+        // Проверяем, что не отправляем самому себе
+        guard currentUser.id != user.user_id else {
+            print("⚠️ Нельзя отправить запрос самому себе")
+            NotificationService.shared.showError("Нельзя отправить запрос самому себе")
+            return
+        }
+        
+        // Проверяем, что пользователь уже не в контактах
+        guard !isContact(userId: user.user_id) else {
+            print("⚠️ Пользователь уже в контактах")
+            NotificationService.shared.showInfo("Пользователь уже в контактах")
             return
         }
         
@@ -1608,11 +1572,29 @@ class ContactService: ObservableObject {
             print("✅ Запрос сохранен локально")
         }
         
-        // Отправляем через WebSocket
-        webSocketService.sendContactRequest(to: user.user_id)  // ✅ Используем правильный метод
+        // Отправляем через WebSocket, если подключен
+        if webSocketService.isConnected {
+            webSocketService.sendContactRequest(to: user.user_id)
+        } else {
+            // Сохраняем в очередь для отправки позже
+            pendingContactRequestsQueue.append((user, request.id))
+            print("⏳ WebSocket не подключен, запрос добавлен в очередь")
+            NotificationService.shared.showInfo("Запрос будет отправлен при подключении")
+        }
         
-        // Показываем уведомление
         NotificationService.shared.showInfo("Запрос отправлен пользователю \(user.nickname)")
+    }
+    
+    private func sendQueuedContactRequests() {
+        guard !pendingContactRequestsQueue.isEmpty else { return }
+        
+        print("📤 Отправка запросов из очереди: \(pendingContactRequestsQueue.count)")
+        
+        for (user, requestId) in pendingContactRequestsQueue {
+            webSocketService.sendContactRequest(to: user.user_id)
+        }
+        
+        pendingContactRequestsQueue.removeAll()
     }
     
     func acceptContactRequest(_ request: ContactRequest) {
@@ -1637,19 +1619,21 @@ class ContactService: ObservableObject {
         }
         
         // Отправляем подтверждение через WebSocket
-        webSocketService.sendContactAccept(to: request.fromUserId)  // ✅ Используем правильный метод
+        webSocketService.sendContactAccept(to: request.fromUserId)
         
         print("✅ Подтверждение отправлено")
+        NotificationService.shared.showSuccess("Контакт \(request.fromNickname) добавлен")
     }
     
     func declineContactRequest(_ request: ContactRequest) {
         if database.updateContactRequestStatus(request.id, status: "declined") {
             loadPendingRequests()
             print("❌ Запрос отклонен")
+            NotificationService.shared.showInfo("Запрос отклонен")
         }
     }
     
-    // MARK: - WebSocket обработчики
+    // MARK: - WebSocket Handlers
     
     private func setupWebSocketHandlers() {
         NotificationCenter.default.publisher(for: .newContactRequest)
@@ -1667,32 +1651,31 @@ class ContactService: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        
-        NotificationCenter.default.publisher(for: .websocketConnected)
-            .sink { [weak self] _ in
-                print("🔗 WebSocket подключен, обновляем контакты...")
-                self?.refreshAllData()
-            }
-            .store(in: &cancellables)
     }
     
-     func handleIncomingContactRequest(_ request: ContactRequest) {
+    func handleIncomingContactRequest(_ request: ContactRequest) {
         print("📩 Получен запрос на контакт от \(request.fromNickname)")
+        
+        // Проверяем, что запрос не от нас самих
+        guard let currentUserId = AppState.shared.currentUser?.id,
+              request.fromUserId != currentUserId else {
+            print("⚠️ Получен запрос от самого себя, игнорируем")
+            return
+        }
+        
+        // Проверяем, что пользователь уже не в контактах
+        guard !isContact(userId: request.fromUserId) else {
+            print("⚠️ Пользователь уже в контактах")
+            return
+        }
         
         // Сохраняем входящий запрос
         if database.saveContactRequest(request) {
             loadPendingRequests()
             
-            // Показываем уведомление
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: .showNotification,
-                    object: NotificationData(
-                        type: .info,
-                        message: "Новый запрос на контакт от \(request.fromNickname)"
-                    )
-                )
-            }
+            NotificationService.shared.showInfo(
+                "Новый запрос на контакт от \(request.fromNickname)"
+            )
         }
     }
     
@@ -1703,16 +1686,9 @@ class ContactService: ObservableObject {
         if database.saveContact(contact) {
             loadContacts()
             
-            // Показываем уведомление
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: .showNotification,
-                    object: NotificationData(
-                        type: .success,
-                        message: "\(contact.nickname) принял(а) ваш запрос на контакт"
-                    )
-                )
-            }
+            NotificationService.shared.showSuccess(
+                "\(contact.nickname) принял(а) ваш запрос на контакт"
+            )
         }
     }
 }
@@ -1792,103 +1768,80 @@ struct NotificationData {
 
 
 ./FrontDip/MessengerApp/Services/Security/CryptoService.swift
+// ./FrontDip/MessengerApp/Services/Security/CryptoService.swift
 import Foundation
-import UIKit
 import CryptoKit
+import UIKit
 
 class CryptoService {
     static let shared = CryptoService()
     
     private init() {}
     
-        // MARK: - Device ID Generation
-        
-        func generateDeviceId() -> String {
-            print("🔧 Генерация Device_ID...")
-            
-            // 1. Пробуем загрузить сохраненный Device_ID из UserDefaults
-            if let savedId = UserDefaults.standard.string(forKey: "persistent_device_id") {
-                print("📱 Device_ID загружен из UserDefaults: \(savedId.prefix(8))...")
-                return savedId
-            }
-            
-            // 2. Если нет - генерируем новый на основе параметров устройства
-            var deviceComponents: [String] = []
-            
-            #if os(iOS)
-            // Для iOS используем UIDevice
-            let device = UIDevice.current
-            deviceComponents.append("iOS")
-            deviceComponents.append(device.systemName)
-            deviceComponents.append(device.systemVersion)
-            deviceComponents.append(device.model)
-            if let identifier = device.identifierForVendor?.uuidString {
-                deviceComponents.append(identifier)
-            }
-            #elseif os(macOS)
-            // Для macOS
-            deviceComponents.append("macOS")
-            if let serialNumber = getMacSerialNumber() {
-                deviceComponents.append(serialNumber)
-            }
-            #endif
-            
-            // 3. Добавляем Bundle Identifier
-            if let bundleId = Bundle.main.bundleIdentifier {
-                deviceComponents.append(bundleId)
-            }
-            
-            // 4. Добавляем случайную часть для безопасности
-            let randomPart = UUID().uuidString
-            deviceComponents.append(randomPart)
-            
-            // 5. Объединяем и хэшируем
-            let combinedString = deviceComponents.joined(separator: "_")
-            let data = Data(combinedString.utf8)
-            let hash = SHA256.hash(data: data)
-            let deviceId = hash.compactMap { String(format: "%02x", $0) }.joined()
-            
-            // 6. Сохраняем навсегда в UserDefaults
-            UserDefaults.standard.set(deviceId, forKey: "persistent_device_id")
-            print("✅ Новый Device_ID сгенерирован и сохранен: \(deviceId.prefix(8))...")
-            
-            return deviceId
+    // MARK: - Device ID Management
+    
+    func generateDeviceId() -> String {
+        // Сначала пробуем загрузить из Keychain (основное хранилище)
+        if let savedId = KeychainService.shared.loadDeviceId() {
+            print("📱 Device_ID загружен из Keychain: \(savedId.prefix(8))...")
+            return savedId
         }
         
-        #if os(macOS)
-        private func getMacSerialNumber() -> String? {
-            let platformExpert = IOServiceGetMatchingService(kIOMainPortDefault,
-                                                             IOServiceMatching("IOPlatformExpertDevice"))
-            guard platformExpert > 0 else { return nil }
-            
-            defer { IOObjectRelease(platformExpert) }
-            
-            guard let serialNumber = IORegistryEntryCreateCFProperty(platformExpert,
-                                                                    kIOPlatformSerialNumberKey as CFString,
-                                                                    kCFAllocatorDefault, 0).takeRetainedValue() as? String
-            else {
-                return nil
-            }
-            
-            return serialNumber
+        // Если нет в Keychain, пробуем UserDefaults (для миграции)
+        if let userDefaultsId = UserDefaults.standard.string(forKey: "persistent_device_id") {
+            // Мигрируем в Keychain
+            _ = KeychainService.shared.saveDeviceId(userDefaultsId)
+            print("📱 Device_ID мигрирован в Keychain: \(userDefaultsId.prefix(8))...")
+            return userDefaultsId
+        }
+        
+        // Генерируем новый Device ID
+        var deviceComponents: [String] = []
+        
+        #if os(iOS)
+        let device = UIDevice.current
+        deviceComponents.append("iOS")
+        deviceComponents.append(device.systemName)
+        deviceComponents.append(device.systemVersion)
+        deviceComponents.append(device.model)
+        if let identifier = device.identifierForVendor?.uuidString {
+            deviceComponents.append(identifier)
         }
         #endif
+        
+        if let bundleId = Bundle.main.bundleIdentifier {
+            deviceComponents.append(bundleId)
+        }
+        
+        let randomPart = UUID().uuidString
+        deviceComponents.append(randomPart)
+        
+        let combinedString = deviceComponents.joined(separator: "_")
+        let data = Data(combinedString.utf8)
+        let hash = SHA256.hash(data: data)
+        let deviceId = hash.compactMap { String(format: "%02x", $0) }.joined()
+        
+        // Сохраняем в Keychain (основное) и UserDefaults (backup)
+        _ = KeychainService.shared.saveDeviceId(deviceId)
+        UserDefaults.standard.set(deviceId, forKey: "persistent_device_id")
+        
+        print("✅ Новый Device_ID сгенерирован: \(deviceId.prefix(8))...")
+        
+        return deviceId
+    }
     
-    // MARK: - Key Pair Generation (P-256)
+    // MARK: - Key Pair Generation
     
     func generateKeyPair() -> (privateKey: Data, publicKey: Data) {
         let privateKey = P256.KeyAgreement.PrivateKey()
-        let publicKey = privateKey.publicKey
+        let publicKey = privateKey.publicKey.rawRepresentation
         
-        return (privateKey.rawRepresentation, publicKey.rawRepresentation)
+        return (privateKey.rawRepresentation, publicKey)
     }
-    
-    // MARK: - PEM Format Conversion
     
     func publicKeyToPEM(publicKey: Data) -> String {
         let base64Key = publicKey.base64EncodedString()
         
-        // Формат PEM для EC публичного ключа
         let pem = """
         -----BEGIN PUBLIC KEY-----
         \(base64Key)
@@ -1898,15 +1851,15 @@ class CryptoService {
         return pem
     }
     
-    // MARK: - Symmetric Key Operations
+    // MARK: - Symmetric Encryption
     
     func generateSymmetricKey() -> SymmetricKey {
         return SymmetricKey(size: .bits256)
     }
     
-    func encryptMessage(_ text: String, with symmetricKey: SymmetricKey) throws -> Data {
+    func encryptMessage(_ text: String, with key: SymmetricKey) throws -> Data {
         let textData = Data(text.utf8)
-        let sealedBox = try AES.GCM.seal(textData, using: symmetricKey)
+        let sealedBox = try AES.GCM.seal(textData, using: key)
         
         guard let combined = sealedBox.combined else {
             throw CryptoError.encryptionFailed
@@ -1915,9 +1868,9 @@ class CryptoService {
         return combined
     }
     
-    func decryptMessage(_ data: Data, with symmetricKey: SymmetricKey) throws -> String {
+    func decryptMessage(_ data: Data, with key: SymmetricKey) throws -> String {
         let sealedBox = try AES.GCM.SealedBox(combined: data)
-        let decryptedData = try AES.GCM.open(sealedBox, using: symmetricKey)
+        let decryptedData = try AES.GCM.open(sealedBox, using: key)
         
         guard let text = String(data: decryptedData, encoding: .utf8) else {
             throw CryptoError.decryptionFailed
@@ -1926,17 +1879,13 @@ class CryptoService {
         return text
     }
     
-    // MARK: - Key Wrapping (Encrypt symmetric key with asymmetric)
+    // MARK: - Key Wrapping
     
     func encryptSymmetricKey(_ symmetricKey: SymmetricKey,
                            with publicKey: P256.KeyAgreement.PublicKey) throws -> Data {
-        // Генерируем эфемерную пару ключей для ECDH
         let ephemeralPrivateKey = P256.KeyAgreement.PrivateKey()
-        
-        // Вычисляем общий секрет
         let sharedSecret = try ephemeralPrivateKey.sharedSecretFromKeyAgreement(with: publicKey)
         
-        // Деривируем ключ для шифрования
         let derivedKey = sharedSecret.hkdfDerivedSymmetricKey(
             using: SHA256.self,
             salt: Data(),
@@ -1944,13 +1893,9 @@ class CryptoService {
             outputByteCount: 32
         )
         
-        // Конвертируем симметричный ключ в Data
         let symmetricKeyData = symmetricKey.withUnsafeBytes { Data($0) }
-        
-        // Шифруем симметричный ключ
         let sealedBox = try AES.GCM.seal(symmetricKeyData, using: derivedKey)
         
-        // Комбинируем: эфемерный публичный ключ + зашифрованный симметричный ключ
         var result = Data()
         result.append(ephemeralPrivateKey.publicKey.rawRepresentation)
         result.append(sealedBox.combined!)
@@ -1960,7 +1905,6 @@ class CryptoService {
     
     func decryptSymmetricKey(_ encryptedData: Data,
                            with privateKey: P256.KeyAgreement.PrivateKey) throws -> SymmetricKey {
-        // Первые 65 байт - эфемерный публичный ключ (P-256 uncompressed)
         let ephemeralPublicKeyData = encryptedData.prefix(65)
         let encryptedSymmetricKey = encryptedData.dropFirst(65)
         
@@ -1968,10 +1912,8 @@ class CryptoService {
             rawRepresentation: ephemeralPublicKeyData
         )
         
-        // Вычисляем общий секрет
         let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: ephemeralPublicKey)
         
-        // Деривируем ключ для дешифрования
         let derivedKey = sharedSecret.hkdfDerivedSymmetricKey(
             using: SHA256.self,
             salt: Data(),
@@ -1979,15 +1921,13 @@ class CryptoService {
             outputByteCount: 32
         )
         
-        // Дешифруем симметричный ключ
         let sealedBox = try AES.GCM.SealedBox(combined: encryptedSymmetricKey)
         let symmetricKeyData = try AES.GCM.open(sealedBox, using: derivedKey)
         
-        // Восстанавливаем SymmetricKey
         return symmetricKeyData.withUnsafeBytes { SymmetricKey(data: $0) }
     }
     
-    // MARK: - Data to Key Conversions
+    // MARK: - Utilities
     
     func dataToSymmetricKey(_ data: Data) -> SymmetricKey {
         return data.withUnsafeBytes { SymmetricKey(data: $0) }
@@ -1997,6 +1937,18 @@ class CryptoService {
         return key.withUnsafeBytes { Data($0) }
     }
     
+    // MARK: - Device ID Helpers
+    
+    func getCurrentDeviceId() -> String? {
+        return KeychainService.shared.loadDeviceId()
+    }
+    
+    func resetDeviceId() {
+        KeychainService.shared.delete(key: "device_id")
+        UserDefaults.standard.removeObject(forKey: "persistent_device_id")
+        print("✅ Device_ID сброшен")
+    }
+    
     // MARK: - Errors
     
     enum CryptoError: Error {
@@ -2004,41 +1956,6 @@ class CryptoService {
         case decryptionFailed
         case invalidKey
         case keyDerivationFailed
-    }
-    // MARK: - Device ID Management
-        
-    func resetDeviceId() {
-        print("🔄 Сброс Device_ID...")
-        
-        // 1. Удаляем из UserDefaults
-        UserDefaults.standard.removeObject(forKey: "persistent_device_id")
-        
-        // 2. Удаляем из Keychain
-        let keychainService = KeychainService.shared
-        keychainService.delete(key: "device_id")
-        
-        print("✅ Device_ID сброшен. При следующем запуске будет сгенерирован новый.")
-    }
-
-    func getCurrentDeviceId() -> String? {
-        return UserDefaults.standard.string(forKey: "persistent_device_id")
-    }
-
-    func printDeviceInfo() {
-        #if os(iOS)
-        let device = UIDevice.current
-        print("📱 Информация об устройстве:")
-        print("   Система: \(device.systemName) \(device.systemVersion)")
-        print("   Модель: \(device.model)")
-        print("   Имя: \(device.name)")
-        if let identifier = device.identifierForVendor {
-            print("   Vendor ID: \(identifier.uuidString)")
-        }
-        #endif
-        
-        if let deviceId = getCurrentDeviceId() {
-            print("   Device_ID: \(deviceId.prefix(16))...")
-        }
     }
 }
 
@@ -2293,551 +2210,11 @@ class KeychainService {
 
 
 ./FrontDip/MessengerApp/Services/WebSocket/WebSocketService.swift
+// ./FrontDip/MessengerApp/Services/WebSocket/WebSocketService.swift
 import Foundation
 import Combine
 
-class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
-    static let shared = WebSocketService()
-    
-    @Published var isConnected = false
-    @Published var connectionStatus: ConnectionStatus = .disconnected
-    @Published var lastError: String?
-    @Published var onlineUsers: Int = 0
-    
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var urlSession: URLSession!
-    private let baseURL = "ws://localhost:8000" 
-    
-    private var reconnectTimer: Timer?
-    private var heartbeatTimer: Timer?
-    private var pingTimer: Timer?
-    
-    private var messageHandlers: [String: (Any) -> Void] = [:]
-    private var pendingMessages: [WebSocketMessage] = []
-    
-    private var cancellables = Set<AnyCancellable>()
-    
-    enum ConnectionStatus: String {
-        case disconnected = "🔴 Отключен"
-        case connecting = "🟡 Подключение..."
-        case connected = "🟢 Подключен"
-        case reconnecting = "🟠 Переподключение..."
-    }
-    
-    private override init() {
-        super.init()
-        setupURLSession()
-        setupMessageHandlers()
-        setupBindings()
-    }
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error {
-            print("❌ WebSocket task failed: \(error)")
-        }
-    }
-    
-    private func setupURLSession() {
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60
-        
-        urlSession = URLSession(configuration: configuration, delegate: self, delegateQueue: OperationQueue())
-    }
-    
-    private func setupMessageHandlers() {
-        // Регистрируем обработчики для разных типов сообщений
-        messageHandlers = [
-            "chat_message": handleChatMessage,
-            "contact_request": handleContactRequest,
-            "contact_accept": handleContactAccept,
-            "contact_request_sent": handleContactRequestSent,
-            "message_ack": handleMessageAck,
-            "pong": handlePong,
-            "user_status": handleUserStatus
-        ]
-    }
-    
-    private func setupBindings() {
-        // Автоматическое переподключение при смене статуса
-        $connectionStatus
-            .sink { [weak self] status in
-                switch status {
-                case .disconnected:
-                    self?.scheduleReconnect()
-                case .connected:
-                    self?.cancelReconnectTimer()
-                    self?.startHeartbeat()
-                default:
-                    break
-                }
-            }
-            .store(in: &cancellables)
-    }
-    
-    // MARK: - Public Methods
-    
-    func connect(userId: UUID) {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            print("❌ Device ID not found")
-            lastError = "Device ID not found"
-            return
-        }
-        
-        guard connectionStatus != .connecting && connectionStatus != .connected else {
-            print("⚠️ Already connecting or connected")
-            return
-        }
-        
-        connectionStatus = .connecting
-        lastError = nil
-        
-        // Формируем URL с параметрами
-        let encodedDeviceId = deviceId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceId
-        guard let url = URL(string: "\(baseURL)/ws/\(userId)?device_id=\(encodedDeviceId)") else {
-            print("❌ Invalid WebSocket URL")
-            lastError = "Invalid WebSocket URL"
-            connectionStatus = .disconnected
-            return
-        }
-        
-        print("🔗 Connecting to WebSocket: \(url)")
-        
-        // Создаем WebSocket задачу
-        webSocketTask = urlSession.webSocketTask(with: url)
-        webSocketTask?.resume()
-        
-        // Начинаем слушать сообщения
-        listenForMessages()
-        
-        // Отправляем начальный ping
-        sendPing()
-    }
-    
-    func disconnect() {
-        print("🔌 Disconnecting WebSocket...")
-        
-        // Останавливаем таймеры
-        heartbeatTimer?.invalidate()
-        heartbeatTimer = nil
-        
-        pingTimer?.invalidate()
-        pingTimer = nil
-        
-        reconnectTimer?.invalidate()
-        reconnectTimer = nil
-        
-        // Закрываем соединение
-        webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        webSocketTask = nil
-        
-        connectionStatus = .disconnected
-        isConnected = false
-        
-        print("✅ WebSocket disconnected")
-    }
-    
-    func sendMessage(_ message: WebSocketMessage) {
-        guard connectionStatus == .connected else {
-            print("⚠️ Can't send message - not connected")
-            
-            // Сохраняем для отправки позже (кроме пингов)
-            if message.type != "ping" {
-                pendingMessages.append(message)
-                print("💾 Message saved for later delivery: \(message.type)")
-            }
-            
-            return
-        }
-        
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            
-            let data = try encoder.encode(message)
-            
-            if let jsonString = String(data: data, encoding: .utf8) {
-                let wsMessage = URLSessionWebSocketTask.Message.string(jsonString)
-                
-                webSocketTask?.send(wsMessage) { [weak self] error in
-                    if let error = error {
-                        print("❌ Error sending message: \(error)")
-                        self?.lastError = "Send error: \(error.localizedDescription)"
-                        
-                        // Сохраняем для повторной отправки
-                        if message.type != "ping" {
-                            self?.pendingMessages.append(message)
-                        }
-                    } else {
-                        print("✅ Message sent: \(message.type)")
-                    }
-                }
-            }
-        } catch {
-            print("❌ Error encoding message: \(error)")
-            lastError = "Encode error: \(error.localizedDescription)"
-        }
-    }
-    
-    func sendChatMessage(chatId: UUID, content: String, messageId: UUID? = nil) {
-        let message = WebSocketMessage(
-            type: "chat_message",
-            chatId: chatId,
-            content: content,
-            messageId: messageId ?? UUID(),
-            timestamp: Date()
-        )
-        sendMessage(message)
-    }
-    
-    func sendContactRequest(to userId: UUID) {
-            guard let currentUser = AppState.shared.currentUser else {
-                print("❌ Current user not found")
-                return
-            }
-            
-            let message = WebSocketMessage(
-                type: "contact_request",
-                chatId: nil,
-                content: nil,
-                messageId: nil,
-                timestamp: Date(),
-                senderId: currentUser.id,
-                recipientId: userId,
-                originalSenderId: nil,
-                requestId: UUID(),
-                ackSenderId: nil,
-                senderNickname: currentUser.nickname,
-                senderPublicKey: currentUser.publicKey
-            )
-            sendMessage(message)
-        }
-    
-    func sendContactAccept(to userId: UUID) {
-            guard let currentUser = AppState.shared.currentUser else {
-                print("❌ Current user not found")
-                return
-            }
-            
-            let message = WebSocketMessage(
-                type: "contact_accept",
-                chatId: nil,
-                content: nil,
-                messageId: nil,
-                timestamp: Date(),
-                senderId: nil,
-                recipientId: nil,
-                originalSenderId: userId,
-                requestId: nil,
-                ackSenderId: nil,
-                senderNickname: nil,
-                senderPublicKey: nil,
-                recipientNickname: nil,
-                acceptedUserId: currentUser.id,
-                acceptedNickname: currentUser.nickname,
-                acceptedPublicKey: currentUser.publicKey
-            )
-            sendMessage(message)
-        }
-    
-    // MARK: - Private Methods
-    
-    private func listenForMessages() {
-        webSocketTask?.receive { [weak self] result in
-            guard let self = self else { return }
-            
-            switch result {
-            case .success(let message):
-                self.handleWebSocketMessage(message)
-                self.listenForMessages() // Продолжаем слушать
-                
-            case .failure(let error):
-                print("❌ Error receiving message: \(error)")
-                self.lastError = "Receive error: \(error.localizedDescription)"
-                
-                // Если это не преднамеренное отключение
-                if (error as NSError).code != 57 { // Socket is not connected
-                    self.connectionStatus = .disconnected
-                    self.isConnected = false
-                }
-            }
-        }
-    }
-    
-    private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
-        switch message {
-        case .string(let text):
-            processStringMessage(text)
-        case .data(let data):
-            if let text = String(data: data, encoding: .utf8) {
-                processStringMessage(text)
-            }
-        @unknown default:
-            break
-        }
-    }
-    
-    private func processStringMessage(_ text: String) {
-        guard let data = text.data(using: .utf8) else {
-            print("❌ Cannot convert message to data")
-            return
-        }
-        
-        do {
-            // Пытаемся декодировать в WebSocketMessage
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            
-            let message = try decoder.decode(WebSocketMessage.self, from: data)
-            
-            print("📩 Received message type: \(message.type)")
-            
-            // Вызываем соответствующий обработчик
-            if let handler = messageHandlers[message.type] {
-                handler(message)
-            } else {
-                print("⚠️ No handler for message type: \(message.type)")
-            }
-            
-        } catch {
-            print("❌ Error parsing message JSON: \(error)")
-        }
-    }
-    
-    // MARK: - Message Handlers
-    
-    private func handleChatMessage(_ data: Any) {
-        guard let message = data as? WebSocketMessage,
-              let chatId = message.chatId,
-              let senderId = message.senderId,
-              let content = message.content,
-              let messageId = message.messageId,
-              let timestamp = message.timestamp else {
-            print("❌ Invalid chat message format")
-            return
-        }
-        
-        // Создаем объект сообщения
-        let messageObj = Message(
-            id: messageId,
-            chatId: chatId,
-            senderId: senderId,
-            content: content,
-            type: .text,
-            timestamp: timestamp,
-            isEncrypted: true
-        )
-        
-        // Сохраняем в локальную БД
-        DispatchQueue.main.async {
-            _ = LocalDatabase.shared.saveMessage(messageObj)
-            
-            // Уведомляем о новом сообщении
-            NotificationCenter.default.post(
-                name: .newMessageReceived,
-                object: messageObj
-            )
-            
-            print("📩 Chat message saved: \(content.prefix(20))...")
-        }
-    }
-    
-    private func handleContactRequest(_ data: Any) {
-        guard let message = data as? WebSocketMessage,
-              let requestId = message.requestId,
-              let senderId = message.senderId,
-              let senderNickname = message.senderNickname,
-              let senderPublicKey = message.senderPublicKey else {
-            print("❌ Invalid contact request format")
-            return
-        }
-        
-        let request = ContactRequest(
-            id: requestId,
-            fromUserId: senderId,
-            fromNickname: senderNickname,
-            fromPublicKey: senderPublicKey,
-            status: "pending",
-            createdAt: message.timestamp ?? Date()
-        )
-        
-        // Передаем в ContactService
-        ContactService.shared.handleIncomingContactRequest(request)
-    }
-    private var offlineMessages: [UUID: [WebSocketMessage]] = [:]
-
-    func saveOfflineMessage(_ message: WebSocketMessage, for userId: UUID) {
-        if offlineMessages[userId] == nil {
-            offlineMessages[userId] = []
-        }
-        offlineMessages[userId]?.append(message)
-    }
-
-    func sendOfflineMessages(for userId: UUID) {
-        guard let messages = offlineMessages[userId] else { return }
-        
-        for message in messages {
-            sendMessage(message)
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        
-        offlineMessages.removeValue(forKey: userId)
-    }
-    
-    private func handleContactAccept(_ data: Any) {
-        guard let message = data as? WebSocketMessage,
-              let acceptedUserId = message.acceptedUserId,
-              let acceptedNickname = message.acceptedNickname,
-              let acceptedPublicKey = message.acceptedPublicKey else {
-            print("❌ Invalid contact accept format")
-            return
-        }
-        
-        let contact = Contact(
-            id: UUID(),
-            userId: acceptedUserId,
-            nickname: acceptedNickname,
-            publicKey: acceptedPublicKey,
-            addedAt: Date()
-        )
-        
-        // Передаем в ContactService
-        ContactService.shared.handleContactRequestAccepted(contact)
-    }
-    
-    private func handleContactRequestSent(_ data: Any) {
-        guard let message = data as? WebSocketMessage,
-              let recipientNickname = message.recipientNickname else {
-            return
-        }
-        
-        DispatchQueue.main.async {
-            NotificationService.shared.showSuccess("Запрос на контакт отправлен \(recipientNickname)")
-            print("✅ Contact request sent to \(recipientNickname)")
-        }
-    }
-    
-    private func handleMessageAck(_ data: Any) {
-        guard let message = data as? WebSocketMessage,
-              let messageId = message.messageId,
-              let ackSenderId = message.ackSenderId else {
-            return
-        }
-        
-        print("✅ Message \(messageId.uuidString.prefix(8)) acknowledged by \(ackSenderId.uuidString.prefix(8))")
-        
-        // Передаем в MessageService
-        MessageService.shared.handleMessageAck(messageId: messageId, from: ackSenderId)
-    }
-    
-    private func handlePong(_ data: Any) {
-        print("❤️ Pong received")
-        // Обновляем время последней активности
-    }
-    
-    private func handleUserStatus(_ data: Any) {
-        // Обработка статусов пользователей
-        print("👤 User status update")
-    }
-    
-    // MARK: - Connection Management
-    
-    private func sendPing() {
-        let pingMessage = WebSocketMessage(type: "ping", timestamp: Date())
-        sendMessage(pingMessage)
-    }
-    
-    private func startHeartbeat() {
-        // Останавливаем старый таймер
-        heartbeatTimer?.invalidate()
-        
-        // Запускаем новый таймер для пинга каждые 30 секунд
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.sendPing()
-        }
-        
-        // Отправляем ожидающие сообщения
-        sendPendingMessages()
-    }
-    
-    private func sendPendingMessages() {
-        guard !pendingMessages.isEmpty else { return }
-        
-        print("📤 Sending \(pendingMessages.count) pending messages...")
-        
-        let messagesToSend = pendingMessages
-        pendingMessages.removeAll()
-        
-        for message in messagesToSend {
-            sendMessage(message)
-            // Небольшая задержка между сообщениями
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-    }
-    
-    private func scheduleReconnect() {
-        guard reconnectTimer == nil else { return }
-        
-        print("🔄 Scheduling reconnect in 5 seconds...")
-        
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
-            guard let self = self,
-                  let userId = AppState.shared.currentUser?.id,
-                  self.connectionStatus == .disconnected else {
-                return
-            }
-            
-            print("🔄 Attempting to reconnect...")
-            self.connectionStatus = .reconnecting
-            self.connect(userId: userId)
-        }
-    }
-    
-    private func cancelReconnectTimer() {
-        reconnectTimer?.invalidate()
-        reconnectTimer = nil
-    }
-    
-    // MARK: - URLSessionWebSocketDelegate
-    
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        print("✅ WebSocket connection opened")
-        
-        DispatchQueue.main.async {
-            self.connectionStatus = .connected
-            self.isConnected = true
-            self.lastError = nil
-            
-            // Уведомляем о успешном подключении
-            NotificationCenter.default.post(
-                name: .websocketConnected,
-                object: nil
-            )
-        }
-    }
-    
-    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown"
-        print("🔌 WebSocket closed with code: \(closeCode), reason: \(reasonString)")
-        
-        DispatchQueue.main.async {
-            self.connectionStatus = .disconnected
-            self.isConnected = false
-            
-            if closeCode != .normalClosure {
-                self.lastError = "Connection closed: \(reasonString)"
-                
-                // Уведомляем о разрыве соединения
-                NotificationCenter.default.post(
-                    name: .websocketDisconnected,
-                    object: reasonString
-                )
-            }
-        }
-    }
-}
-
-// MARK: - WebSocket Message Models
-
+// MARK: - WebSocket Message Model
 struct WebSocketMessage: Codable {
     let type: String
     var chatId: UUID?
@@ -2910,7 +2287,518 @@ struct WebSocketMessage: Codable {
     }
 }
 
-
+// MARK: - WebSocket Service
+class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate {
+    static let shared = WebSocketService()
+    
+    @Published var isConnected = false
+    @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var lastError: String?
+    
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var urlSession: URLSession!
+    
+    private let baseURL = "ws://localhost:8000"
+    private var currentUserId: UUID?
+    
+    private var reconnectTimer: Timer?
+    private var heartbeatTimer: Timer?
+    private var pendingMessages: [WebSocketMessage] = []
+    
+    private var messageHandlers: [String: (WebSocketMessage) -> Void] = [:]
+    private var cancellables = Set<AnyCancellable>()
+    
+    enum ConnectionStatus: String {
+        case disconnected = "🔴 Отключен"
+        case connecting = "🟡 Подключение..."
+        case connected = "🟢 Подключен"
+    }
+    
+    private override init() {
+        super.init()
+        setupURLSession()
+        setupMessageHandlers()
+        setupBindings()
+    }
+    
+    private func setupURLSession() {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        
+        urlSession = URLSession(
+            configuration: configuration,
+            delegate: self,
+            delegateQueue: OperationQueue()
+        )
+    }
+    
+    private func setupMessageHandlers() {
+        messageHandlers = [
+            "chat_message": handleChatMessage,
+            "contact_request": handleContactRequest,
+            "contact_accept": handleContactAccept,
+            "contact_request_sent": handleContactRequestSent,
+            "message_ack": handleMessageAck,
+            "pong": handlePong
+        ]
+    }
+    
+    private func setupBindings() {
+        $connectionStatus
+            .sink { [weak self] status in
+                switch status {
+                case .disconnected:
+                    self?.scheduleReconnect()
+                case .connected:
+                    self?.cancelReconnectTimer()
+                    self?.startHeartbeat()
+                    self?.sendPendingMessages()
+                default:
+                    break
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - Public Methods
+    
+    func connect(userId: UUID) {
+        guard let deviceId = KeychainService.shared.loadDeviceId() else {
+            print("❌ Device ID not found")
+            return
+        }
+        
+        guard connectionStatus != .connecting else {
+            print("⚠️ Already connecting")
+            return
+        }
+        
+        if let currentUserId = currentUserId, currentUserId != userId {
+            disconnect()
+        }
+        
+        currentUserId = userId
+        connectionStatus = .connecting
+        lastError = nil
+        
+        let encodedDeviceId = deviceId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? deviceId
+        let urlString = "\(baseURL)/ws/ws/\(userId)?device_id=\(encodedDeviceId)"
+        
+        guard let url = URL(string: urlString) else {
+            print("❌ Invalid WebSocket URL: \(urlString)")
+            connectionStatus = .disconnected
+            return
+        }
+        
+        print("🔗 Connecting to WebSocket: \(url)")
+        
+        webSocketTask = urlSession.webSocketTask(with: url)
+        webSocketTask?.resume()
+        
+        listenForMessages()
+        sendPing()
+    }
+    
+    func disconnect() {
+        print("🔌 Disconnecting WebSocket...")
+        
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+        
+        webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        webSocketTask = nil
+        
+        connectionStatus = .disconnected
+        isConnected = false
+        currentUserId = nil
+        
+        print("✅ WebSocket disconnected")
+    }
+    
+    func sendMessage(_ message: WebSocketMessage) {
+        guard connectionStatus == .connected else {
+            print("⚠️ WebSocket not connected, saving message for later")
+            pendingMessages.append(message)
+            return
+        }
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            
+            let data = try encoder.encode(message)
+            
+            if let jsonString = String(data: data, encoding: .utf8) {
+                let wsMessage = URLSessionWebSocketTask.Message.string(jsonString)
+                
+                webSocketTask?.send(wsMessage) { [weak self] error in
+                    if let error = error {
+                        print("❌ Error sending message: \(error)")
+                        self?.pendingMessages.append(message)
+                    } else {
+                        print("✅ Message sent: \(message.type)")
+                    }
+                }
+            }
+        } catch {
+            print("❌ Error encoding message: \(error)")
+        }
+    }
+    
+    func sendContactRequest(to userId: UUID) {
+        guard let currentUser = AppState.shared.currentUser else {
+            print("❌ Current user not found")
+            return
+        }
+        
+        let message = WebSocketMessage(
+            type: "contact_request",
+            chatId: nil,
+            content: nil,
+            messageId: nil,
+            timestamp: Date(),
+            senderId: currentUser.id,
+            recipientId: userId,
+            originalSenderId: nil,
+            requestId: UUID(),
+            ackSenderId: nil,
+            senderNickname: currentUser.nickname,
+            senderPublicKey: currentUser.publicKey
+        )
+        
+        sendMessage(message)
+    }
+    
+    func sendContactAccept(to userId: UUID) {
+        guard let currentUser = AppState.shared.currentUser else {
+            print("❌ Current user not found")
+            return
+        }
+        
+        let message = WebSocketMessage(
+            type: "contact_accept",
+            chatId: nil,
+            content: nil,
+            messageId: nil,
+            timestamp: Date(),
+            senderId: nil,
+            recipientId: nil,
+            originalSenderId: userId,
+            requestId: nil,
+            ackSenderId: nil,
+            senderNickname: nil,
+            senderPublicKey: nil,
+            recipientNickname: nil,
+            acceptedUserId: currentUser.id,
+            acceptedNickname: currentUser.nickname,
+            acceptedPublicKey: currentUser.publicKey
+        )
+        
+        sendMessage(message)
+    }
+    
+    // MARK: - Private Methods
+    
+    private func listenForMessages() {
+        webSocketTask?.receive { [weak self] result in
+            guard let self = self else { return }
+            
+            switch result {
+            case .success(let message):
+                self.handleWebSocketMessage(message)
+                self.listenForMessages()
+            case .failure(let error):
+                print("❌ Error receiving message: \(error)")
+                self.connectionStatus = .disconnected
+                self.isConnected = false
+            }
+        }
+    }
+    
+    private func handleWebSocketMessage(_ message: URLSessionWebSocketTask.Message) {
+        switch message {
+        case .string(let text):
+            processStringMessage(text)
+        case .data(let data):
+            if let text = String(data: data, encoding: .utf8) {
+                processStringMessage(text)
+            }
+        @unknown default:
+            break
+        }
+    }
+    
+    private func processStringMessage(_ text: String) {
+        guard let data = text.data(using: .utf8) else {
+            print("❌ Cannot convert message to data")
+            return
+        }
+        
+        do {
+            let decoder = JSONDecoder()
+            
+            // Используем ISO8601DateFormatter отдельно
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let dateString = try container.decode(String.self)
+                
+                // Сначала пробуем ISO8601 с дробными секундами
+                let isoFormatter = ISO8601DateFormatter()
+                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                
+                if let date = isoFormatter.date(from: dateString) {
+                    return date
+                }
+                
+                // Пробуем стандартный ISO8601
+                isoFormatter.formatOptions = [.withInternetDateTime]
+                if let date = isoFormatter.date(from: dateString) {
+                    return date
+                }
+                
+                // Пробуем старые форматы как fallback
+                let legacyFormatters: [DateFormatter] = [
+                    {
+                        let f = DateFormatter()
+                        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+                        f.locale = Locale(identifier: "en_US_POSIX")
+                        f.timeZone = TimeZone(secondsFromGMT: 0)
+                        return f
+                    }(),
+                    {
+                        let f = DateFormatter()
+                        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                        f.locale = Locale(identifier: "en_US_POSIX")
+                        f.timeZone = TimeZone(secondsFromGMT: 0)
+                        return f
+                    }()
+                ]
+                
+                for formatter in legacyFormatters {
+                    if let date = formatter.date(from: dateString) {
+                        return date
+                    }
+                }
+                
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Cannot decode date string \(dateString)"
+                )
+            }
+            
+            let message = try decoder.decode(WebSocketMessage.self, from: data)
+            print("📩 Received message type: \(message.type)")
+            
+            if let handler = messageHandlers[message.type] {
+                DispatchQueue.main.async {
+                    handler(message)
+                }
+            } else {
+                print("⚠️ No handler for message type: \(message.type)")
+            }
+            
+        } catch {
+            print("❌ Error parsing message JSON: \(error)")
+            print("📄 Raw data: \(text)")
+        }
+    }
+    
+    private func handleChatMessage(_ message: WebSocketMessage) {
+        guard let chatId = message.chatId,
+              let senderId = message.senderId,
+              let content = message.content,
+              let messageId = message.messageId,
+              let timestamp = message.timestamp else {
+            print("❌ Invalid chat message format")
+            return
+        }
+        
+        let chatMessage = Message(
+            id: messageId,
+            chatId: chatId,
+            senderId: senderId,
+            content: content,
+            type: .text,
+            timestamp: timestamp,
+            isEncrypted: true
+        )
+        
+        _ = LocalDatabase.shared.saveMessage(chatMessage)
+        
+        NotificationCenter.default.post(
+            name: .newMessageReceived,
+            object: chatMessage
+        )
+        
+        print("📩 Chat message saved: \(content.prefix(20))...")
+    }
+    
+    private func handleContactRequest(_ message: WebSocketMessage) {
+        guard let requestId = message.requestId,
+              let senderId = message.senderId,
+              let senderNickname = message.senderNickname,
+              let senderPublicKey = message.senderPublicKey else {
+            print("❌ Invalid contact request format")
+            return
+        }
+        
+        let request = ContactRequest(
+            id: requestId,
+            fromUserId: senderId,
+            fromNickname: senderNickname,
+            fromPublicKey: senderPublicKey,
+            status: "pending",
+            createdAt: message.timestamp ?? Date()
+        )
+        
+        _ = LocalDatabase.shared.saveContactRequest(request)
+        
+        NotificationCenter.default.post(
+            name: .newContactRequest,
+            object: request
+        )
+        
+        print("📩 Contact request from \(senderNickname)")
+    }
+    
+    private func handleContactAccept(_ message: WebSocketMessage) {
+        guard let acceptedUserId = message.acceptedUserId,
+              let acceptedNickname = message.acceptedNickname,
+              let acceptedPublicKey = message.acceptedPublicKey else {
+            print("❌ Invalid contact accept format")
+            return
+        }
+        
+        let contact = Contact(
+            id: UUID(),
+            userId: acceptedUserId,
+            nickname: acceptedNickname,
+            publicKey: acceptedPublicKey,
+            addedAt: Date()
+        )
+        
+        _ = LocalDatabase.shared.saveContact(contact)
+        
+        NotificationCenter.default.post(
+            name: .contactRequestAccepted,
+            object: contact
+        )
+        
+        print("✅ Contact accepted from \(acceptedNickname)")
+    }
+    
+    private func handleContactRequestSent(_ message: WebSocketMessage) {
+        print("✅ Contact request sent confirmation received")
+        
+        DispatchQueue.main.async {
+            NotificationService.shared.showInfo("Запрос на контакт отправлен")
+        }
+    }
+    
+    private func handleMessageAck(_ message: WebSocketMessage) {
+        guard let messageId = message.messageId,
+              let ackSenderId = message.ackSenderId else {
+            return
+        }
+        
+        print("✅ Message \(messageId) acknowledged by \(ackSenderId)")
+        
+        MessageService.shared.handleMessageAck(
+            messageId: messageId,
+            from: ackSenderId
+        )
+    }
+    
+    private func handlePong(_ message: WebSocketMessage) {
+        print("❤️ Pong received")
+    }
+    
+    private func sendPing() {
+        let pingMessage = WebSocketMessage(type: "ping", timestamp: Date())
+        sendMessage(pingMessage)
+    }
+    
+    private func startHeartbeat() {
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+    
+    private func scheduleReconnect() {
+        guard reconnectTimer == nil else { return }
+        
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+            guard let self = self,
+                  let userId = self.currentUserId else {
+                return
+            }
+            
+            print("🔄 Attempting to reconnect...")
+            self.connect(userId: userId)
+        }
+    }
+    
+    private func cancelReconnectTimer() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+    }
+    
+    private func sendPendingMessages() {
+        guard !pendingMessages.isEmpty else { return }
+        
+        print("📤 Sending \(pendingMessages.count) pending messages...")
+        
+        let messages = pendingMessages
+        pendingMessages.removeAll()
+        
+        for message in messages {
+            sendMessage(message)
+        }
+    }
+    
+    // MARK: - URLSessionWebSocketDelegate
+    
+    func urlSession(_ session: URLSession,
+                   webSocketTask: URLSessionWebSocketTask,
+                   didOpenWithProtocol protocol: String?) {
+        print("✅ WebSocket connection opened")
+        
+        DispatchQueue.main.async {
+            self.connectionStatus = .connected
+            self.isConnected = true
+            self.lastError = nil
+            
+            NotificationCenter.default.post(
+                name: .websocketConnected,
+                object: nil
+            )
+        }
+    }
+    
+    func urlSession(_ session: URLSession,
+                   webSocketTask: URLSessionWebSocketTask,
+                   didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+                   reason: Data?) {
+        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown"
+        print("🔌 WebSocket closed with code: \(closeCode), reason: \(reasonString)")
+        
+        DispatchQueue.main.async {
+            self.connectionStatus = .disconnected
+            self.isConnected = false
+            
+            if closeCode != .normalClosure {
+                NotificationCenter.default.post(
+                    name: .websocketDisconnected,
+                    object: reasonString
+                )
+            }
+        }
+    }
+}
 
 
 ./FrontDip/MessengerApp/Utils/Constants/AppColors.swift
@@ -2970,26 +2858,45 @@ extension View {
 ./FrontDip/MessengerApp/Utils/JSONDecoder+ISO8601.swift
 import Foundation
 
+// Вместо текущего декодера, использовать этот:
 extension JSONDecoder {
-    static let iso8601WithMilliseconds: JSONDecoder = {
+    static let flexibleISO8601: JSONDecoder = {
         let decoder = JSONDecoder()
         
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let dateString = try container.decode(String.self)
             
-            // Пробуем разные форматы дат
-            let formatters: [DateFormatter] = [
+            // Форматы для сервера FastAPI
+            let formatters: [ISO8601DateFormatter] = [
                 {
-                    let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS" // 6 цифр микросекунд
-                    f.locale = Locale(identifier: "en_US_POSIX")
-                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                     return f
                 }(),
                 {
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withInternetDateTime]
+                    return f
+                }(),
+                {
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+                    return f
+                }()
+            ]
+            
+            for formatter in formatters {
+                if let date = formatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // Пробуем старые форматы DateFormatter как fallback
+            let legacyFormatters: [DateFormatter] = [
+                {
                     let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS" // 3 цифры миллисекунд
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
                     f.locale = Locale(identifier: "en_US_POSIX")
                     f.timeZone = TimeZone(secondsFromGMT: 0)
                     return f
@@ -3003,18 +2910,10 @@ extension JSONDecoder {
                 }()
             ]
             
-            for formatter in formatters {
+            for formatter in legacyFormatters {
                 if let date = formatter.date(from: dateString) {
                     return date
                 }
-            }
-            
-            // Если ничего не сработало, пробуем ISO8601DateFormatter
-            let isoFormatter = ISO8601DateFormatter()
-            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            
-            if let date = isoFormatter.date(from: dateString) {
-                return date
             }
             
             throw DecodingError.dataCorruptedError(
@@ -3032,6 +2931,7 @@ extension JSONDecoder {
 
 
 ./FrontDip/MessengerApp/ViewModels/Auth/AuthViewModel.swift
+// ./FrontDip/MessengerApp/ViewModels/Auth/AuthViewModel.swift
 import Foundation
 import CryptoKit
 import Combine
@@ -3047,8 +2947,6 @@ class AuthViewModel: ObservableObject {
     private let keychainService = KeychainService.shared
     
     var deviceId: String {
-        // Просто вызываем метод из CryptoService
-        // Теперь он сам управляет сохранением в UserDefaults
         return cryptoService.generateDeviceId()
     }
     
@@ -3056,144 +2954,8 @@ class AuthViewModel: ObservableObject {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
-    func logout() {
-        print("🚪 Выход из аккаунта...")
-        
-        // 1. НЕ удаляем user_id из Keychain - сохраняем для будущих входов
-        // _ = keychainService.delete(key: "user_id") // УБИРАЕМ ЭТУ СТРОКУ
-        
-        // 2. Сохраняем список чатов в UserDefaults
-        if let userId = currentUser?.id {
-            let chatKeys = keychainService.getAllKeys()
-                .filter { $0.hasPrefix("chat_key_") }
-                .map { $0.replacingOccurrences(of: "chat_key_", with: "") }
-            
-            UserDefaults.standard.set(chatKeys, forKey: "user_chats_\(userId.uuidString)")
-            print("💾 Сохранено \(chatKeys.count) чатов для пользователя \(userId)")
-        }
-        
-        // 3. Очищаем только состояние
-        currentUser = nil
-        nickname = ""
-        AppState.shared.logout()
-        
-        print("✅ Выполнен выход. Данные сохранены.")
-    }
-    func restoreChatsOnLogin(userId: UUID) {
-        print("🔄 Восстановление чатов после входа...")
-        
-        // 1. Проверяем, есть ли временные данные
-        let key = "temp_chat_data_\(userId.uuidString)"
-        guard let chatData = UserDefaults.standard.dictionary(forKey: key) as? [String: Data] else {
-            print("❌ Нет сохраненных чатов для восстановления")
-            return
-        }
-        
-        // 2. Восстанавливаем каждый ключ чата
-        for (chatKey, encryptedData) in chatData {
-            _ = keychainService.saveData(key: chatKey, value: encryptedData)
-            print("✅ Восстановлен ключ: \(chatKey)")
-        }
-        
-        // 3. Очищаем временные данные
-        UserDefaults.standard.removeObject(forKey: key)
-        print("✅ Чаты успешно восстановлены")
-    }
-
-    func completeWipe() {
-        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
-        
-        // Полностью очищаем Keychain
-        keychainService.wipeAllData()
-        
-        // Очищаем локальную базу сообщений
-        LocalDatabase.shared.clearAllData()
-        
-        // Очищаем все синглтоны
-        ChatKeyManager.shared.clearAllKeys()
-        
-        // Сбрасываем состояние
-        currentUser = nil
-        nickname = ""
-        
-        // Обновляем состояние приложения
-        AppState.shared.logout()
-        
-        print("✅ Все данные полностью очищены")
-    }
+    // MARK: - User Registration
     
-    private func restoreUserChats(userId: UUID) async {
-        print("🔄 Восстановление чатов пользователя...")
-        
-        // 1. Загружаем список ID чатов из UserDefaults
-        let key = "user_chats_\(userId.uuidString)"
-        guard let chatIds = UserDefaults.standard.array(forKey: key) as? [String] else {
-            print("Нет сохраненных чатов")
-            return
-        }
-        
-        print("📋 Найдено \(chatIds.count) сохраненных чатов")
-        
-        // 2. Загружаем каждый чат с сервера
-        for chatIdString in chatIds {
-            guard let chatId = UUID(uuidString: chatIdString) else { continue }
-            
-            // Проверяем, есть ли ключ чата в Keychain
-            if keychainService.loadChatKey(chatId: chatId) != nil {
-                print("✅ Чат \(chatIdString.prefix(8)) уже имеет ключ")
-                continue
-            }
-            
-            // TODO: Загрузить информацию о чате с сервера и восстановить ключ
-            print("⚠️ Чат \(chatIdString.prefix(8)) требует восстановления ключа")
-        }
-    }
-    
-    // Добавьте метод для восстановления пользователя
-    func restoreUser() async {
-        print("🔄 Восстановление пользователя...")
-        
-        // 1. Проверяем, есть ли сохраненный user_id
-        guard let userIdString = keychainService.load(key: "user_id"),
-              let userId = UUID(uuidString: userIdString) else {
-            print("❌ Нет сохраненного пользователя")
-            return
-        }
-        
-        print("🔑 Найден сохраненный user_id: \(userId)")
-        
-        // 2. Проверяем, есть ли приватный ключ
-        guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-            print("❌ Нет приватного ключа для восстановления")
-            return
-        }
-        
-        // 3. Загружаем пользователя с сервера
-        do {
-            let user = try await APIService.shared.getUser(userId: userId)
-            print("✅ Пользователь загружен: \(user.nickname)")
-            
-            await MainActor.run {
-                currentUser = user
-                AppState.shared.currentUser = user
-                AppState.shared.login()
-                print("🎉 ПОЛЬЗОВАТЕЛЬ ВОССТАНОВЛЕН!")
-                NotificationCenter.default.post(name: .userLoggedIn, object: nil)
-            }
-            
-        } catch {
-            print("❌ Ошибка восстановления: \(error)")
-            // Если пользователь не найден, удаляем сохраненные данные
-            if (error as NSError).domain == NSURLErrorDomain,
-               (error as NSError).code == NSURLErrorBadServerResponse {
-                print("⚠️ Пользователь не найден на сервере, очищаем данные")
-                await MainActor.run {
-                    completeWipe()
-                }
-            }
-        }
-    }
-    // Регистрация пользователя
     func register() async {
         guard canRegister else {
             await MainActor.run {
@@ -3231,7 +2993,6 @@ class AuthViewModel: ObservableObject {
             
             print("✅ Пользователь создан: \(user.id)")
             print("✅ Nickname: \(user.nickname)")
-            print("✅ Created at: \(user.createdAt)")
             
             // 4. Сохраняем приватный ключ
             let privateSaved = keychainService.savePrivateKey(privateKeyData, userId: user.id)
@@ -3249,10 +3010,17 @@ class AuthViewModel: ObservableObject {
             
             await MainActor.run {
                 currentUser = user
-                isLoading = false
-                AppState.shared.login()
                 AppState.shared.currentUser = user
+                AppState.shared.login()
+                isLoading = false
+                
                 print("🎉 РЕГИСТРАЦИЯ УСПЕШНА!")
+                
+                // 7. Подключаем WebSocket
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    print("🔗 Подключаем WebSocket после регистрации")
+                    WebSocketService.shared.connect(userId: user.id)
+                }
             }
             
         } catch {
@@ -3264,9 +3032,10 @@ class AuthViewModel: ObservableObject {
         }
     }
     
-    // Автоматический вход если есть сохраненный пользователь
-    func autoLogin() {
-        print("🔄 Пытаемся выполнить автоматический вход...")
+    // MARK: - Session Management
+    
+    func restoreSession() async {
+        print("🔄 Восстановление сессии...")
         
         guard let userIdString = keychainService.load(key: "user_id"),
               let userId = UUID(uuidString: userIdString) else {
@@ -3274,100 +3043,196 @@ class AuthViewModel: ObservableObject {
             return
         }
         
-        print("🔑 Найден сохраненный user_id: \(userId)")
+        // Проверяем Device ID
+        guard let deviceId = keychainService.loadDeviceId() else {
+            print("❌ Device ID не найден")
+            return
+        }
         
-        Task {
-            do {
-                let user = try await APIService.shared.getUser(userId: userId)
+        print("🔑 Найден сохраненный user_id: \(userId)")
+        print("📱 Device ID: \(deviceId.prefix(8))...")
+        
+        do {
+            let user = try await apiService.getUser(userId: userId)
+            
+            await MainActor.run {
+                currentUser = user
+                AppState.shared.currentUser = user
+                AppState.shared.login()
                 
-                await MainActor.run {
-                    currentUser = user
-                    AppState.shared.currentUser = user
-                    AppState.shared.login()
-                    
-                    print("🎉 АВТОМАТИЧЕСКИЙ ВХОД ВЫПОЛНЕН!")
-                    
-                    // Подключаем WebSocket после успешного входа
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
-                        WebSocketService.shared.connect(userId: user.id)
-                    }
-                    
-                    NotificationCenter.default.post(name: .userLoggedIn, object: nil)
+                print("✅ Сессия восстановлена: \(user.nickname)")
+                
+                // Подключаем WebSocket
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+                    WebSocketService.shared.connect(userId: user.id)
                 }
                 
+                // Восстанавливаем ключи чатов и создаем их для существующих чатов
+                restoreAndCreateChatKeys(userId: user.id)
+                
+                NotificationCenter.default.post(name: .userLoggedIn, object: nil)
+            }
+            
+        } catch {
+            print("❌ Ошибка восстановления: \(error)")
+        }
+    }
+
+    private func restoreAndCreateChatKeys(userId: UUID) {
+        print("🔄 Восстановление и создание ключей чатов...")
+        
+        // Загружаем чаты пользователя
+        Task {
+            guard let deviceId = KeychainService.shared.loadDeviceId() else {
+                print("❌ Device ID не найден")
+                return
+            }
+            
+            do {
+                let chats = try await APIService.shared.getUserChats(
+                    userId: userId,
+                    deviceId: deviceId
+                )
+                
+                for chat in chats {
+                    // Проверяем, есть ли уже ключ для этого чата
+                    if keychainService.loadChatKey(chatId: chat.id) == nil {
+                        print("🔑 Создаем ключ для чата: \(chat.name)")
+                        
+                        // Генерируем новый ключ для чата
+                        let chatKey = cryptoService.generateSymmetricKey()
+                        
+                        guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                            print("❌ Публичный ключ не найден для чата \(chat.name)")
+                            continue
+                        }
+                        
+                        let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                        let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                        
+                        // Сохраняем в Keychain
+                        _ = keychainService.saveChatKey(encryptedChatKey, chatId: chat.id)
+                        
+                        // Сохраняем в памяти
+                        let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                        ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
+                        
+                        print("✅ Ключ создан для чата: \(chat.name)")
+                    } else {
+                        print("✅ Ключ уже существует для чата: \(chat.name)")
+                    }
+                }
             } catch {
-                print("❌ Ошибка автоматического входа: \(error)")
+                print("❌ Ошибка загрузки чатов для создания ключей: \(error)")
             }
         }
     }
-    func connectWebSocket() {
-        guard let user = currentUser else { return }
-        
-        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
-        WebSocketService.shared.connect(userId: user.id)
-        
-        // Проверить через 3 секунды
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            print("WebSocket подключен: \(WebSocketService.shared.isConnected)")
-        }
-    }
-    // Добавьте метод для восстановления ключей чатов
-    private func restoreChatKeys(userId: UUID) async {
+    
+    private func restoreChatKeys(userId: UUID) {
         print("🔄 Восстановление ключей чатов...")
         
+        // Получаем все chat_key_* из Keychain
         let allKeys = keychainService.getAllKeys()
         let chatKeyPrefix = "chat_key_"
         
-        for key in allKeys {
-            if key.hasPrefix(chatKeyPrefix) {
-                let chatIdString = key.replacingOccurrences(of: chatKeyPrefix, with: "")
-                guard let chatId = UUID(uuidString: chatIdString) else { continue }
+        for key in allKeys where key.hasPrefix(chatKeyPrefix) {
+            let chatIdString = key.replacingOccurrences(of: chatKeyPrefix, with: "")
+            guard let chatId = UUID(uuidString: chatIdString),
+                  let encryptedKey = keychainService.loadChatKey(chatId: chatId),
+                  let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
+                continue
+            }
+            
+            do {
+                let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+                let chatKey = try cryptoService.decryptSymmetricKey(encryptedKey, with: privateKey)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
                 
-                do {
-                    // Загружаем зашифрованный ключ чата
-                    guard let encryptedChatKey = keychainService.loadChatKey(chatId: chatId),
-                          let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-                        continue
-                    }
-                    
-                    let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
-                    let cryptoService = CryptoService.shared
-                    
-                    // Расшифровываем ключ чата
-                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
-                    let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-                    
-                    // Сохраняем в менеджер ключей
-                    ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
-                    
-                    print("🔑 Восстановлен ключ для чата: \(chatId)")
-                    
-                } catch {
-                    print("❌ Ошибка восстановления ключа для чата \(chatId): \(error)")
-                }
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+                print("🔑 Восстановлен ключ для чата: \(chatId)")
+            } catch {
+                print("❌ Ошибка восстановления ключа чата: \(error)")
             }
         }
-        
-        print("✅ Восстановление ключей чатов завершено")
     }
     
-    // Полная очистка всех данных
-    func wipeAllData() {
-        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
-        keychainService.wipeAllData()
-        LocalDatabase.shared.clearAllData()
+    // MARK: - Auto Login
+    
+    func autoLogin() {
+        print("🔄 Пытаемся выполнить автоматический вход...")
+        
+        Task {
+            await restoreSession()
+        }
+    }
+    
+    // MARK: - Logout & Cleanup
+    
+    func logout() {
+        print("🚪 Выход из системы...")
+        
+        // 1. Отключаем WebSocket
+        WebSocketService.shared.disconnect()
+        
+        // 2. Сохраняем ключи чатов во временное хранилище
+        if let userId = currentUser?.id {
+            saveChatKeysForRecovery(userId: userId)
+        }
+        
+        // 3. Очищаем состояние
         currentUser = nil
         nickname = ""
         AppState.shared.logout()
+        
+        print("✅ Выход выполнен")
+    }
+    
+    private func saveChatKeysForRecovery(userId: UUID) {
+        let allKeys = keychainService.getAllKeys()
+        let chatKeyPrefix = "chat_key_"
+        var chatKeys: [String] = []
+        
+        for key in allKeys where key.hasPrefix(chatKeyPrefix) {
+            chatKeys.append(key)
+        }
+        
+        UserDefaults.standard.set(chatKeys, forKey: "recovery_chat_keys_\(userId.uuidString)")
+        print("💾 Сохранены ключи \(chatKeys.count) чатов для восстановления")
+    }
+    
+    func wipeAllData() {
+        print("💣 Полная очистка данных...")
+        
+        // 1. Отключаем WebSocket
+        WebSocketService.shared.disconnect()
+        
+        // 2. Очищаем Keychain
+        keychainService.wipeAllData()
+        
+        // 3. Очищаем локальную БД
+        LocalDatabase.shared.clearAllData()
+        
+        // 4. Очищаем память
+        ChatKeyManager.shared.clearAllKeys()
+        
+        // 5. Очищаем состояние
+        currentUser = nil
+        nickname = ""
+        AppState.shared.logout()
+        
+        // 6. Сбрасываем Device ID
+        cryptoService.resetDeviceId()
+        
         print("✅ Все данные очищены")
     }
     
-    // Проверяем, есть ли сохраненный пользователь
+    // MARK: - Utility Methods
+    
     func hasSavedUser() -> Bool {
         let hasUser = keychainService.load(key: "user_id") != nil
-        print("🔍 Проверка сохраненного пользователя: \(hasUser ? "ДА" : "НЕТ")")
-        return hasUser
+        let hasDeviceId = keychainService.loadDeviceId() != nil
+        return hasUser && hasDeviceId
     }
 }
 
@@ -3383,40 +3248,32 @@ import CryptoKit
 
 class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
-    @Published var showingCreateChat = false
+        @Published var isLoading = false
+        @Published var errorMessage: String?
+        @Published var showingCreateChat = false
+        
     
-    // Сделаем currentUser публичным для установки извне
     var currentUser: User? {
-        didSet {
-            print("ChatListViewModel: текущий пользователь обновлен: \(currentUser?.nickname ?? "nil")")
+            return AppState.shared.currentUser
         }
-    }
     
     private let apiService = APIService.shared
     private let keychainService = KeychainService.shared
     
     var deviceId: String? {
-        keychainService.loadDeviceId()
-    }
+            return KeychainService.shared.loadDeviceId()
+        }
     
     func loadChats() async {
-        // 1. Сначала показываем чаты из локальной базы
+        // Сначала показываем локальные чаты
         let localChats = LocalDatabase.shared.getChats()
-        LocalDatabase.shared.printDatabaseInfo()
         
-        await MainActor.run {
-            self.chats = localChats
-            self.isLoading = true
-        }
-        
-        guard let userId = currentUser?.id,
-              let deviceId = deviceId else {
-            await MainActor.run {
-                isLoading = false
-            }
-            return
+        guard let userId = AppState.shared.currentUser?.id,
+                      let deviceId = deviceId else {
+                    await MainActor.run {
+                        isLoading = false
+                    }
+                    return
         }
         
         do {
@@ -3437,7 +3294,6 @@ class ChatListViewModel: ObservableObject {
             await restoreChatKeys(for: serverChats, userId: userId)
             
             await MainActor.run {
-                // Обновляем список чатов
                 chats = serverChats
                 isLoading = false
                 print("✅ Всего чатов: \(chats.count)")
@@ -3446,36 +3302,25 @@ class ChatListViewModel: ObservableObject {
         } catch {
             print("❌ Ошибка загрузки чатов: \(error)")
             
-            // Если сервер недоступен, показываем локальные чаты
             await MainActor.run {
                 isLoading = false
                 if localChats.isEmpty {
-                    errorMessage = "Нет доступных чатов. Проверьте подключение к серверу."
+                    errorMessage = "Нет доступных чатов"
                 }
             }
         }
     }
     
-    // Добавьте метод восстановления ключей
     private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
         for chat in chats {
             // Проверяем, есть ли ключ чата в Keychain
             if let encryptedChatKeyData = keychainService.loadChatKey(chatId: chat.id) {
                 do {
                     print("🔄 Восстановление ключа для чата \(chat.name)...")
-                    print("🔐 Зашифрованный ключ размером: \(encryptedChatKeyData.count) байт")
                     
                     // Получаем наш приватный ключ
                     guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
                         print("❌ Нет приватного ключа для чата \(chat.name)")
-                        continue
-                    }
-                    
-                    print("🔑 Приватный ключ размером: \(privateKeyData.count) байт")
-                    
-                    // Проверяем размеры данных
-                    if privateKeyData.count != 32 {
-                        print("⚠️ Неправильный размер приватного ключа: \(privateKeyData.count)")
                         continue
                     }
                     
@@ -3493,8 +3338,6 @@ class ChatListViewModel: ObservableObject {
                     
                 } catch {
                     print("❌ Ошибка восстановления ключа для чата \(chat.name): \(error)")
-                    print("🔍 Пробуем удалить поврежденный ключ...")
-                    _ = keychainService.deleteChatKey(chatId: chat.id)
                 }
             } else {
                 print("⚠️ Ключ не найден для чата: \(chat.name)")
@@ -3585,7 +3428,7 @@ class ChatSelectionViewModel: ObservableObject {
     }
     
     // Обновляем метод addContactToChat:
-
+    
     func addContactToChat(_ chat: Chat) async -> Bool {
         guard let deviceId = KeychainService.shared.loadDeviceId() else {
             print("❌ Device ID not found")
@@ -3595,13 +3438,12 @@ class ChatSelectionViewModel: ObservableObject {
         do {
             print("📤 Приглашаем пользователя \(contact.nickname) в чат \(chat.name)...")
             
-            let result = try await apiService.inviteUserToChat(
+            // Функция возвращает Bool напрямую
+            let success = try await apiService.inviteUserToChat(
                 chatId: chat.id,
                 userId: contact.userId,
                 deviceId: deviceId
             )
-            
-            let success = result["success"] as? Bool ?? false
             
             if success {
                 print("✅ Пользователь успешно приглашен в чат")
@@ -3678,13 +3520,12 @@ class ChatSidebarViewModel: ObservableObject {
         do {
             print("📤 Добавляем пользователя в чат \(chat.name)...")
             
-            let result = try await apiService.inviteUserToChat(
+            // Функция возвращает Bool напрямую
+            let success = try await apiService.inviteUserToChat(
                 chatId: chat.id,
                 userId: userId,
                 deviceId: deviceId
             )
-            
-            let success = result["success"] as? Bool ?? false
             
             if success {
                 print("✅ Пользователь успешно добавлен в чат")
@@ -4447,8 +4288,7 @@ struct ChatListView: View {
     // MARK: - Methods
     
     private func initializeView() async {
-        // Обновляем пользователя в viewModel
-        viewModel.currentUser = authViewModel.currentUser ?? appState.currentUser
+
         await viewModel.loadChats()
         
         // Обновляем контакты
@@ -4495,6 +4335,10 @@ struct ChatListView: View {
                 // Обновляем список чатов
                 viewModel.chats.insert(chat, at: 0)
             }
+            
+            // АВТОМАТИЧЕСКИ ПОДКЛЮЧАЕМ WebSocket К НОВОМУ ЧАТУ
+            // НЕ НУЖНО! WebSocket уже подключен к пользователю
+            // НЕ ДЕЛАЙТЕ: WebSocketService.shared.connect(userId: userId) еще раз
             
         } catch {
             await MainActor.run {
@@ -5135,9 +4979,9 @@ import SwiftUI
 
 struct SideMenuView: View {
     @EnvironmentObject var appState: AppState
-    @EnvironmentObject var contactService: ContactService
-    @ObservedObject var authViewModel: AuthViewModel
-    @Binding var isShowing: Bool
+        @EnvironmentObject var contactService: ContactService
+        @ObservedObject var authViewModel: AuthViewModel
+        @Binding var isShowing: Bool
     
     // Новые binding переменные для управления показами View
     @Binding var showSearchView: Bool
@@ -5319,7 +5163,7 @@ struct SideMenuView: View {
         .alert("Очистить все данные", isPresented: $showWipeAlert) {
             Button("Отмена", role: .cancel) { }
             Button("Очистить", role: .destructive) {
-                authViewModel.completeWipe()
+                authViewModel.wipeAllData()
                 withAnimation(.spring()) {
                     isShowing = false
                 }

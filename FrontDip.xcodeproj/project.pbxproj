@@ -68,6 +68,7 @@
 				MessengerApp/Resources/Assets.xcassets,
 				MessengerApp/Resources/Localizable.strings,
 				MessengerApp/Services/Auth/AuthService.swift,
+				MessengerApp/Services/Auth/SessionManager.swift,
 				MessengerApp/Services/Auth/UserManager.swift,
 				MessengerApp/Services/Auth/UserSession.swift,
 				MessengerApp/Services/Database/ChatRepository.swift,

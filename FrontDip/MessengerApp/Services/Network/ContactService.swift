@@ -7,28 +7,32 @@ class ContactService: ObservableObject {
     
     @Published var contacts: [Contact] = []
     @Published var pendingRequests: [ContactRequest] = []
+    @Published var isLoading = false
     
     private let database = LocalDatabase.shared
     private let webSocketService = WebSocketService.shared
     private let apiService = APIService.shared
-    private let keychainService = KeychainService.shared
-    
     private var cancellables = Set<AnyCancellable>()
+    
+    private var pendingContactRequestsQueue: [(UserPublicResponse, UUID)] = []
     
     private init() {
         loadContacts()
         loadPendingRequests()
         setupWebSocketHandlers()
-        
-        // Обновляем данные при каждом появлении пользователя
-        NotificationCenter.default.publisher(for: .userLoggedIn)
+        setupBindings()
+    }
+    
+    private func setupBindings() {
+        // Отправляем запросы из очереди при подключении WebSocket
+        NotificationCenter.default.publisher(for: .websocketConnected)
             .sink { [weak self] _ in
-                self?.refreshAllData()
+                self?.sendQueuedContactRequests()
             }
             .store(in: &cancellables)
     }
     
-    // MARK: - Загрузка данных
+    // MARK: - Data Loading
     
     func loadContacts() {
         contacts = database.getContacts()
@@ -43,37 +47,23 @@ class ContactService: ObservableObject {
     func refreshAllData() {
         loadContacts()
         loadPendingRequests()
-        
-        // Уведомляем UI о новых запросах
-        if !pendingRequests.isEmpty {
-            NotificationCenter.default.post(
-                name: .showNotification,
-                object: NotificationData(
-                    type: .info,
-                    message: "У вас \(pendingRequests.count) новых запросов"
-                )
-            )
-        }
     }
     
-    // MARK: - Поиск пользователей
+    // MARK: - User Search
     
     func searchUsers(query: String) async throws -> [UserPublicResponse] {
-        guard let deviceId = keychainService.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1, userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
+        guard let deviceId = KeychainService.shared.loadDeviceId() else {
+            throw NSError(domain: "Auth", code: 1,
+                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
         }
         
-        do {
-            let users = try await apiService.searchUsers(query: query, deviceId: deviceId)
-            print("✅ Найдено пользователей: \(users.count)")
-            return users
-        } catch {
-            print("❌ Ошибка поиска пользователей: \(error)")
-            throw error
-        }
+        return try await apiService.searchUsers(
+            query: query,
+            deviceId: deviceId
+        )
     }
     
-    // MARK: - Управление контактами
+    // MARK: - Contact Management
     
     func addContact(_ user: UserPublicResponse) {
         let contact = Contact(
@@ -101,11 +91,25 @@ class ContactService: ObservableObject {
         return database.isContact(userId: userId)
     }
     
-    // MARK: - Запросы на контакт
+    // MARK: - Contact Requests
     
     func sendContactRequest(to user: UserPublicResponse) {
         guard let currentUser = AppState.shared.currentUser else {
             print("❌ Текущий пользователь не найден")
+            return
+        }
+        
+        // Проверяем, что не отправляем самому себе
+        guard currentUser.id != user.user_id else {
+            print("⚠️ Нельзя отправить запрос самому себе")
+            NotificationService.shared.showError("Нельзя отправить запрос самому себе")
+            return
+        }
+        
+        // Проверяем, что пользователь уже не в контактах
+        guard !isContact(userId: user.user_id) else {
+            print("⚠️ Пользователь уже в контактах")
+            NotificationService.shared.showInfo("Пользователь уже в контактах")
             return
         }
         
@@ -126,11 +130,29 @@ class ContactService: ObservableObject {
             print("✅ Запрос сохранен локально")
         }
         
-        // Отправляем через WebSocket
-        webSocketService.sendContactRequest(to: user.user_id)  // ✅ Используем правильный метод
+        // Отправляем через WebSocket, если подключен
+        if webSocketService.isConnected {
+            webSocketService.sendContactRequest(to: user.user_id)
+        } else {
+            // Сохраняем в очередь для отправки позже
+            pendingContactRequestsQueue.append((user, request.id))
+            print("⏳ WebSocket не подключен, запрос добавлен в очередь")
+            NotificationService.shared.showInfo("Запрос будет отправлен при подключении")
+        }
         
-        // Показываем уведомление
         NotificationService.shared.showInfo("Запрос отправлен пользователю \(user.nickname)")
+    }
+    
+    private func sendQueuedContactRequests() {
+        guard !pendingContactRequestsQueue.isEmpty else { return }
+        
+        print("📤 Отправка запросов из очереди: \(pendingContactRequestsQueue.count)")
+        
+        for (user, requestId) in pendingContactRequestsQueue {
+            webSocketService.sendContactRequest(to: user.user_id)
+        }
+        
+        pendingContactRequestsQueue.removeAll()
     }
     
     func acceptContactRequest(_ request: ContactRequest) {
@@ -155,19 +177,21 @@ class ContactService: ObservableObject {
         }
         
         // Отправляем подтверждение через WebSocket
-        webSocketService.sendContactAccept(to: request.fromUserId)  // ✅ Используем правильный метод
+        webSocketService.sendContactAccept(to: request.fromUserId)
         
         print("✅ Подтверждение отправлено")
+        NotificationService.shared.showSuccess("Контакт \(request.fromNickname) добавлен")
     }
     
     func declineContactRequest(_ request: ContactRequest) {
         if database.updateContactRequestStatus(request.id, status: "declined") {
             loadPendingRequests()
             print("❌ Запрос отклонен")
+            NotificationService.shared.showInfo("Запрос отклонен")
         }
     }
     
-    // MARK: - WebSocket обработчики
+    // MARK: - WebSocket Handlers
     
     private func setupWebSocketHandlers() {
         NotificationCenter.default.publisher(for: .newContactRequest)
@@ -185,32 +209,31 @@ class ContactService: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        
-        NotificationCenter.default.publisher(for: .websocketConnected)
-            .sink { [weak self] _ in
-                print("🔗 WebSocket подключен, обновляем контакты...")
-                self?.refreshAllData()
-            }
-            .store(in: &cancellables)
     }
     
-     func handleIncomingContactRequest(_ request: ContactRequest) {
+    func handleIncomingContactRequest(_ request: ContactRequest) {
         print("📩 Получен запрос на контакт от \(request.fromNickname)")
+        
+        // Проверяем, что запрос не от нас самих
+        guard let currentUserId = AppState.shared.currentUser?.id,
+              request.fromUserId != currentUserId else {
+            print("⚠️ Получен запрос от самого себя, игнорируем")
+            return
+        }
+        
+        // Проверяем, что пользователь уже не в контактах
+        guard !isContact(userId: request.fromUserId) else {
+            print("⚠️ Пользователь уже в контактах")
+            return
+        }
         
         // Сохраняем входящий запрос
         if database.saveContactRequest(request) {
             loadPendingRequests()
             
-            // Показываем уведомление
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: .showNotification,
-                    object: NotificationData(
-                        type: .info,
-                        message: "Новый запрос на контакт от \(request.fromNickname)"
-                    )
-                )
-            }
+            NotificationService.shared.showInfo(
+                "Новый запрос на контакт от \(request.fromNickname)"
+            )
         }
     }
     
@@ -221,16 +244,9 @@ class ContactService: ObservableObject {
         if database.saveContact(contact) {
             loadContacts()
             
-            // Показываем уведомление
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: .showNotification,
-                    object: NotificationData(
-                        type: .success,
-                        message: "\(contact.nickname) принял(а) ваш запрос на контакт"
-                    )
-                )
-            }
+            NotificationService.shared.showSuccess(
+                "\(contact.nickname) принял(а) ваш запрос на контакт"
+            )
         }
     }
 }

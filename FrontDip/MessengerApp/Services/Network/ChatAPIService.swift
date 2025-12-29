@@ -5,7 +5,7 @@ class ChatAPIService {
     static let shared = ChatAPIService()
     
     private let baseURL = "http://localhost:8000/api/v1"
-    private let decoder = JSONDecoder.iso8601WithMilliseconds
+    private let decoder = JSONDecoder.flexibleISO8601
     
     // Создать чат
     func createChat(name: String, creatorId: UUID, deviceId: String) async throws -> Chat {

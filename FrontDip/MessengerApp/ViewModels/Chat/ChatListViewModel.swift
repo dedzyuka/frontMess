@@ -5,40 +5,32 @@ import CryptoKit
 
 class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
-    @Published var showingCreateChat = false
+        @Published var isLoading = false
+        @Published var errorMessage: String?
+        @Published var showingCreateChat = false
+        
     
-    // Сделаем currentUser публичным для установки извне
     var currentUser: User? {
-        didSet {
-            print("ChatListViewModel: текущий пользователь обновлен: \(currentUser?.nickname ?? "nil")")
+            return AppState.shared.currentUser
         }
-    }
     
     private let apiService = APIService.shared
     private let keychainService = KeychainService.shared
     
     var deviceId: String? {
-        keychainService.loadDeviceId()
-    }
+            return KeychainService.shared.loadDeviceId()
+        }
     
     func loadChats() async {
-        // 1. Сначала показываем чаты из локальной базы
+        // Сначала показываем локальные чаты
         let localChats = LocalDatabase.shared.getChats()
-        LocalDatabase.shared.printDatabaseInfo()
         
-        await MainActor.run {
-            self.chats = localChats
-            self.isLoading = true
-        }
-        
-        guard let userId = currentUser?.id,
-              let deviceId = deviceId else {
-            await MainActor.run {
-                isLoading = false
-            }
-            return
+        guard let userId = AppState.shared.currentUser?.id,
+                      let deviceId = deviceId else {
+                    await MainActor.run {
+                        isLoading = false
+                    }
+                    return
         }
         
         do {
@@ -59,7 +51,6 @@ class ChatListViewModel: ObservableObject {
             await restoreChatKeys(for: serverChats, userId: userId)
             
             await MainActor.run {
-                // Обновляем список чатов
                 chats = serverChats
                 isLoading = false
                 print("✅ Всего чатов: \(chats.count)")
@@ -68,36 +59,25 @@ class ChatListViewModel: ObservableObject {
         } catch {
             print("❌ Ошибка загрузки чатов: \(error)")
             
-            // Если сервер недоступен, показываем локальные чаты
             await MainActor.run {
                 isLoading = false
                 if localChats.isEmpty {
-                    errorMessage = "Нет доступных чатов. Проверьте подключение к серверу."
+                    errorMessage = "Нет доступных чатов"
                 }
             }
         }
     }
     
-    // Добавьте метод восстановления ключей
     private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
         for chat in chats {
             // Проверяем, есть ли ключ чата в Keychain
             if let encryptedChatKeyData = keychainService.loadChatKey(chatId: chat.id) {
                 do {
                     print("🔄 Восстановление ключа для чата \(chat.name)...")
-                    print("🔐 Зашифрованный ключ размером: \(encryptedChatKeyData.count) байт")
                     
                     // Получаем наш приватный ключ
                     guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
                         print("❌ Нет приватного ключа для чата \(chat.name)")
-                        continue
-                    }
-                    
-                    print("🔑 Приватный ключ размером: \(privateKeyData.count) байт")
-                    
-                    // Проверяем размеры данных
-                    if privateKeyData.count != 32 {
-                        print("⚠️ Неправильный размер приватного ключа: \(privateKeyData.count)")
                         continue
                     }
                     
@@ -115,8 +95,6 @@ class ChatListViewModel: ObservableObject {
                     
                 } catch {
                     print("❌ Ошибка восстановления ключа для чата \(chat.name): \(error)")
-                    print("🔍 Пробуем удалить поврежденный ключ...")
-                    _ = keychainService.deleteChatKey(chatId: chat.id)
                 }
             } else {
                 print("⚠️ Ключ не найден для чата: \(chat.name)")

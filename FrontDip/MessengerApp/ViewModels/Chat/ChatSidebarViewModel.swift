@@ -50,13 +50,12 @@ class ChatSidebarViewModel: ObservableObject {
         do {
             print("📤 Добавляем пользователя в чат \(chat.name)...")
             
-            let result = try await apiService.inviteUserToChat(
+            // Функция возвращает Bool напрямую
+            let success = try await apiService.inviteUserToChat(
                 chatId: chat.id,
                 userId: userId,
                 deviceId: deviceId
             )
-            
-            let success = result["success"] as? Bool ?? false
             
             if success {
                 print("✅ Пользователь успешно добавлен в чат")

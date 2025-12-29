@@ -1,25 +1,44 @@
 import Foundation
 
+// Вместо текущего декодера, использовать этот:
 extension JSONDecoder {
-    static let iso8601WithMilliseconds: JSONDecoder = {
+    static let flexibleISO8601: JSONDecoder = {
         let decoder = JSONDecoder()
         
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let dateString = try container.decode(String.self)
             
-            // Пробуем разные форматы дат
-            let formatters: [DateFormatter] = [
+            // Форматы для сервера FastAPI
+            let formatters: [ISO8601DateFormatter] = [
                 {
-                    let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS" // 6 цифр микросекунд
-                    f.locale = Locale(identifier: "en_US_POSIX")
-                    f.timeZone = TimeZone(secondsFromGMT: 0)
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                     return f
                 }(),
                 {
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withInternetDateTime]
+                    return f
+                }(),
+                {
+                    let f = ISO8601DateFormatter()
+                    f.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
+                    return f
+                }()
+            ]
+            
+            for formatter in formatters {
+                if let date = formatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // Пробуем старые форматы DateFormatter как fallback
+            let legacyFormatters: [DateFormatter] = [
+                {
                     let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS" // 3 цифры миллисекунд
+                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
                     f.locale = Locale(identifier: "en_US_POSIX")
                     f.timeZone = TimeZone(secondsFromGMT: 0)
                     return f
@@ -33,18 +52,10 @@ extension JSONDecoder {
                 }()
             ]
             
-            for formatter in formatters {
+            for formatter in legacyFormatters {
                 if let date = formatter.date(from: dateString) {
                     return date
                 }
-            }
-            
-            // Если ничего не сработало, пробуем ISO8601DateFormatter
-            let isoFormatter = ISO8601DateFormatter()
-            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            
-            if let date = isoFormatter.date(from: dateString) {
-                return date
             }
             
             throw DecodingError.dataCorruptedError(

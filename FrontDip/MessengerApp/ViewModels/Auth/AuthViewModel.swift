@@ -1,3 +1,4 @@
+// ./FrontDip/MessengerApp/ViewModels/Auth/AuthViewModel.swift
 import Foundation
 import CryptoKit
 import Combine
@@ -13,8 +14,6 @@ class AuthViewModel: ObservableObject {
     private let keychainService = KeychainService.shared
     
     var deviceId: String {
-        // Просто вызываем метод из CryptoService
-        // Теперь он сам управляет сохранением в UserDefaults
         return cryptoService.generateDeviceId()
     }
     
@@ -22,144 +21,8 @@ class AuthViewModel: ObservableObject {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
-    func logout() {
-        print("🚪 Выход из аккаунта...")
-        
-        // 1. НЕ удаляем user_id из Keychain - сохраняем для будущих входов
-        // _ = keychainService.delete(key: "user_id") // УБИРАЕМ ЭТУ СТРОКУ
-        
-        // 2. Сохраняем список чатов в UserDefaults
-        if let userId = currentUser?.id {
-            let chatKeys = keychainService.getAllKeys()
-                .filter { $0.hasPrefix("chat_key_") }
-                .map { $0.replacingOccurrences(of: "chat_key_", with: "") }
-            
-            UserDefaults.standard.set(chatKeys, forKey: "user_chats_\(userId.uuidString)")
-            print("💾 Сохранено \(chatKeys.count) чатов для пользователя \(userId)")
-        }
-        
-        // 3. Очищаем только состояние
-        currentUser = nil
-        nickname = ""
-        AppState.shared.logout()
-        
-        print("✅ Выполнен выход. Данные сохранены.")
-    }
-    func restoreChatsOnLogin(userId: UUID) {
-        print("🔄 Восстановление чатов после входа...")
-        
-        // 1. Проверяем, есть ли временные данные
-        let key = "temp_chat_data_\(userId.uuidString)"
-        guard let chatData = UserDefaults.standard.dictionary(forKey: key) as? [String: Data] else {
-            print("❌ Нет сохраненных чатов для восстановления")
-            return
-        }
-        
-        // 2. Восстанавливаем каждый ключ чата
-        for (chatKey, encryptedData) in chatData {
-            _ = keychainService.saveData(key: chatKey, value: encryptedData)
-            print("✅ Восстановлен ключ: \(chatKey)")
-        }
-        
-        // 3. Очищаем временные данные
-        UserDefaults.standard.removeObject(forKey: key)
-        print("✅ Чаты успешно восстановлены")
-    }
-
-    func completeWipe() {
-        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
-        
-        // Полностью очищаем Keychain
-        keychainService.wipeAllData()
-        
-        // Очищаем локальную базу сообщений
-        LocalDatabase.shared.clearAllData()
-        
-        // Очищаем все синглтоны
-        ChatKeyManager.shared.clearAllKeys()
-        
-        // Сбрасываем состояние
-        currentUser = nil
-        nickname = ""
-        
-        // Обновляем состояние приложения
-        AppState.shared.logout()
-        
-        print("✅ Все данные полностью очищены")
-    }
+    // MARK: - User Registration
     
-    private func restoreUserChats(userId: UUID) async {
-        print("🔄 Восстановление чатов пользователя...")
-        
-        // 1. Загружаем список ID чатов из UserDefaults
-        let key = "user_chats_\(userId.uuidString)"
-        guard let chatIds = UserDefaults.standard.array(forKey: key) as? [String] else {
-            print("Нет сохраненных чатов")
-            return
-        }
-        
-        print("📋 Найдено \(chatIds.count) сохраненных чатов")
-        
-        // 2. Загружаем каждый чат с сервера
-        for chatIdString in chatIds {
-            guard let chatId = UUID(uuidString: chatIdString) else { continue }
-            
-            // Проверяем, есть ли ключ чата в Keychain
-            if keychainService.loadChatKey(chatId: chatId) != nil {
-                print("✅ Чат \(chatIdString.prefix(8)) уже имеет ключ")
-                continue
-            }
-            
-            // TODO: Загрузить информацию о чате с сервера и восстановить ключ
-            print("⚠️ Чат \(chatIdString.prefix(8)) требует восстановления ключа")
-        }
-    }
-    
-    // Добавьте метод для восстановления пользователя
-    func restoreUser() async {
-        print("🔄 Восстановление пользователя...")
-        
-        // 1. Проверяем, есть ли сохраненный user_id
-        guard let userIdString = keychainService.load(key: "user_id"),
-              let userId = UUID(uuidString: userIdString) else {
-            print("❌ Нет сохраненного пользователя")
-            return
-        }
-        
-        print("🔑 Найден сохраненный user_id: \(userId)")
-        
-        // 2. Проверяем, есть ли приватный ключ
-        guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-            print("❌ Нет приватного ключа для восстановления")
-            return
-        }
-        
-        // 3. Загружаем пользователя с сервера
-        do {
-            let user = try await APIService.shared.getUser(userId: userId)
-            print("✅ Пользователь загружен: \(user.nickname)")
-            
-            await MainActor.run {
-                currentUser = user
-                AppState.shared.currentUser = user
-                AppState.shared.login()
-                print("🎉 ПОЛЬЗОВАТЕЛЬ ВОССТАНОВЛЕН!")
-                NotificationCenter.default.post(name: .userLoggedIn, object: nil)
-            }
-            
-        } catch {
-            print("❌ Ошибка восстановления: \(error)")
-            // Если пользователь не найден, удаляем сохраненные данные
-            if (error as NSError).domain == NSURLErrorDomain,
-               (error as NSError).code == NSURLErrorBadServerResponse {
-                print("⚠️ Пользователь не найден на сервере, очищаем данные")
-                await MainActor.run {
-                    completeWipe()
-                }
-            }
-        }
-    }
-    // Регистрация пользователя
     func register() async {
         guard canRegister else {
             await MainActor.run {
@@ -197,7 +60,6 @@ class AuthViewModel: ObservableObject {
             
             print("✅ Пользователь создан: \(user.id)")
             print("✅ Nickname: \(user.nickname)")
-            print("✅ Created at: \(user.createdAt)")
             
             // 4. Сохраняем приватный ключ
             let privateSaved = keychainService.savePrivateKey(privateKeyData, userId: user.id)
@@ -215,10 +77,17 @@ class AuthViewModel: ObservableObject {
             
             await MainActor.run {
                 currentUser = user
-                isLoading = false
-                AppState.shared.login()
                 AppState.shared.currentUser = user
+                AppState.shared.login()
+                isLoading = false
+                
                 print("🎉 РЕГИСТРАЦИЯ УСПЕШНА!")
+                
+                // 7. Подключаем WebSocket
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    print("🔗 Подключаем WebSocket после регистрации")
+                    WebSocketService.shared.connect(userId: user.id)
+                }
             }
             
         } catch {
@@ -230,9 +99,10 @@ class AuthViewModel: ObservableObject {
         }
     }
     
-    // Автоматический вход если есть сохраненный пользователь
-    func autoLogin() {
-        print("🔄 Пытаемся выполнить автоматический вход...")
+    // MARK: - Session Management
+    
+    func restoreSession() async {
+        print("🔄 Восстановление сессии...")
         
         guard let userIdString = keychainService.load(key: "user_id"),
               let userId = UUID(uuidString: userIdString) else {
@@ -240,99 +110,195 @@ class AuthViewModel: ObservableObject {
             return
         }
         
-        print("🔑 Найден сохраненный user_id: \(userId)")
+        // Проверяем Device ID
+        guard let deviceId = keychainService.loadDeviceId() else {
+            print("❌ Device ID не найден")
+            return
+        }
         
-        Task {
-            do {
-                let user = try await APIService.shared.getUser(userId: userId)
+        print("🔑 Найден сохраненный user_id: \(userId)")
+        print("📱 Device ID: \(deviceId.prefix(8))...")
+        
+        do {
+            let user = try await apiService.getUser(userId: userId)
+            
+            await MainActor.run {
+                currentUser = user
+                AppState.shared.currentUser = user
+                AppState.shared.login()
                 
-                await MainActor.run {
-                    currentUser = user
-                    AppState.shared.currentUser = user
-                    AppState.shared.login()
-                    
-                    print("🎉 АВТОМАТИЧЕСКИЙ ВХОД ВЫПОЛНЕН!")
-                    
-                    // Подключаем WebSocket после успешного входа
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
-                        WebSocketService.shared.connect(userId: user.id)
-                    }
-                    
-                    NotificationCenter.default.post(name: .userLoggedIn, object: nil)
+                print("✅ Сессия восстановлена: \(user.nickname)")
+                
+                // Подключаем WebSocket
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
+                    WebSocketService.shared.connect(userId: user.id)
                 }
                 
+                // Восстанавливаем ключи чатов и создаем их для существующих чатов
+                restoreAndCreateChatKeys(userId: user.id)
+                
+                NotificationCenter.default.post(name: .userLoggedIn, object: nil)
+            }
+            
+        } catch {
+            print("❌ Ошибка восстановления: \(error)")
+        }
+    }
+
+    private func restoreAndCreateChatKeys(userId: UUID) {
+        print("🔄 Восстановление и создание ключей чатов...")
+        
+        // Загружаем чаты пользователя
+        Task {
+            guard let deviceId = KeychainService.shared.loadDeviceId() else {
+                print("❌ Device ID не найден")
+                return
+            }
+            
+            do {
+                let chats = try await APIService.shared.getUserChats(
+                    userId: userId,
+                    deviceId: deviceId
+                )
+                
+                for chat in chats {
+                    // Проверяем, есть ли уже ключ для этого чата
+                    if keychainService.loadChatKey(chatId: chat.id) == nil {
+                        print("🔑 Создаем ключ для чата: \(chat.name)")
+                        
+                        // Генерируем новый ключ для чата
+                        let chatKey = cryptoService.generateSymmetricKey()
+                        
+                        guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                            print("❌ Публичный ключ не найден для чата \(chat.name)")
+                            continue
+                        }
+                        
+                        let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                        let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                        
+                        // Сохраняем в Keychain
+                        _ = keychainService.saveChatKey(encryptedChatKey, chatId: chat.id)
+                        
+                        // Сохраняем в памяти
+                        let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                        ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
+                        
+                        print("✅ Ключ создан для чата: \(chat.name)")
+                    } else {
+                        print("✅ Ключ уже существует для чата: \(chat.name)")
+                    }
+                }
             } catch {
-                print("❌ Ошибка автоматического входа: \(error)")
+                print("❌ Ошибка загрузки чатов для создания ключей: \(error)")
             }
         }
     }
-    func connectWebSocket() {
-        guard let user = currentUser else { return }
-        
-        print("🔗 Подключаем WebSocket для пользователя: \(user.nickname)")
-        WebSocketService.shared.connect(userId: user.id)
-        
-        // Проверить через 3 секунды
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            print("WebSocket подключен: \(WebSocketService.shared.isConnected)")
-        }
-    }
-    // Добавьте метод для восстановления ключей чатов
-    private func restoreChatKeys(userId: UUID) async {
+    
+    private func restoreChatKeys(userId: UUID) {
         print("🔄 Восстановление ключей чатов...")
         
+        // Получаем все chat_key_* из Keychain
         let allKeys = keychainService.getAllKeys()
         let chatKeyPrefix = "chat_key_"
         
-        for key in allKeys {
-            if key.hasPrefix(chatKeyPrefix) {
-                let chatIdString = key.replacingOccurrences(of: chatKeyPrefix, with: "")
-                guard let chatId = UUID(uuidString: chatIdString) else { continue }
+        for key in allKeys where key.hasPrefix(chatKeyPrefix) {
+            let chatIdString = key.replacingOccurrences(of: chatKeyPrefix, with: "")
+            guard let chatId = UUID(uuidString: chatIdString),
+                  let encryptedKey = keychainService.loadChatKey(chatId: chatId),
+                  let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
+                continue
+            }
+            
+            do {
+                let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
+                let chatKey = try cryptoService.decryptSymmetricKey(encryptedKey, with: privateKey)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
                 
-                do {
-                    // Загружаем зашифрованный ключ чата
-                    guard let encryptedChatKey = keychainService.loadChatKey(chatId: chatId),
-                          let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
-                        continue
-                    }
-                    
-                    let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
-                    let cryptoService = CryptoService.shared
-                    
-                    // Расшифровываем ключ чата
-                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKey, with: privateKey)
-                    let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-                    
-                    // Сохраняем в менеджер ключей
-                    ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
-                    
-                    print("🔑 Восстановлен ключ для чата: \(chatId)")
-                    
-                } catch {
-                    print("❌ Ошибка восстановления ключа для чата \(chatId): \(error)")
-                }
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
+                print("🔑 Восстановлен ключ для чата: \(chatId)")
+            } catch {
+                print("❌ Ошибка восстановления ключа чата: \(error)")
             }
         }
-        
-        print("✅ Восстановление ключей чатов завершено")
     }
     
-    // Полная очистка всех данных
-    func wipeAllData() {
-        print("💣 ПОЛНАЯ ОЧИСТКА ВСЕХ ДАННЫХ...")
-        keychainService.wipeAllData()
-        LocalDatabase.shared.clearAllData()
+    // MARK: - Auto Login
+    
+    func autoLogin() {
+        print("🔄 Пытаемся выполнить автоматический вход...")
+        
+        Task {
+            await restoreSession()
+        }
+    }
+    
+    // MARK: - Logout & Cleanup
+    
+    func logout() {
+        print("🚪 Выход из системы...")
+        
+        // 1. Отключаем WebSocket
+        WebSocketService.shared.disconnect()
+        
+        // 2. Сохраняем ключи чатов во временное хранилище
+        if let userId = currentUser?.id {
+            saveChatKeysForRecovery(userId: userId)
+        }
+        
+        // 3. Очищаем состояние
         currentUser = nil
         nickname = ""
         AppState.shared.logout()
+        
+        print("✅ Выход выполнен")
+    }
+    
+    private func saveChatKeysForRecovery(userId: UUID) {
+        let allKeys = keychainService.getAllKeys()
+        let chatKeyPrefix = "chat_key_"
+        var chatKeys: [String] = []
+        
+        for key in allKeys where key.hasPrefix(chatKeyPrefix) {
+            chatKeys.append(key)
+        }
+        
+        UserDefaults.standard.set(chatKeys, forKey: "recovery_chat_keys_\(userId.uuidString)")
+        print("💾 Сохранены ключи \(chatKeys.count) чатов для восстановления")
+    }
+    
+    func wipeAllData() {
+        print("💣 Полная очистка данных...")
+        
+        // 1. Отключаем WebSocket
+        WebSocketService.shared.disconnect()
+        
+        // 2. Очищаем Keychain
+        keychainService.wipeAllData()
+        
+        // 3. Очищаем локальную БД
+        LocalDatabase.shared.clearAllData()
+        
+        // 4. Очищаем память
+        ChatKeyManager.shared.clearAllKeys()
+        
+        // 5. Очищаем состояние
+        currentUser = nil
+        nickname = ""
+        AppState.shared.logout()
+        
+        // 6. Сбрасываем Device ID
+        cryptoService.resetDeviceId()
+        
         print("✅ Все данные очищены")
     }
     
-    // Проверяем, есть ли сохраненный пользователь
+    // MARK: - Utility Methods
+    
     func hasSavedUser() -> Bool {
         let hasUser = keychainService.load(key: "user_id") != nil
-        print("🔍 Проверка сохраненного пользователя: \(hasUser ? "ДА" : "НЕТ")")
-        return hasUser
+        let hasDeviceId = keychainService.loadDeviceId() != nil
+        return hasUser && hasDeviceId
     }
 }

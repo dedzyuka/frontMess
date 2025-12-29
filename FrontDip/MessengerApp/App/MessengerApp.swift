@@ -1,3 +1,4 @@
+// ./FrontDip/MessengerApp/App/MessengerApp.swift
 import SwiftUI
 
 @main
@@ -15,12 +16,11 @@ struct MessengerApp: App {
     }
 }
 
-// В ContentView.swift
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @StateObject private var authViewModel = AuthViewModel()
-    @StateObject private var webSocketService = WebSocketService.shared
-    @StateObject private var contactService = ContactService.shared  // Добавляем
+    @StateObject private var contactService = ContactService.shared
+    
     @State private var isCheckingAutoLogin = true
     
     var body: some View {
@@ -29,9 +29,8 @@ struct ContentView: View {
                 LoadingView()
             } else if appState.isAuthenticated {
                 ChatListView()
-                    .environmentObject(webSocketService)
                     .environmentObject(authViewModel)
-                    .environmentObject(contactService)  // Добавляем
+                    .environmentObject(contactService)
             } else {
                 LoginView()
                     .environmentObject(authViewModel)
@@ -41,39 +40,29 @@ struct ContentView: View {
             Button("OK") {
                 appState.errorMessage = nil
             }
-            
         } message: {
             Text(appState.errorMessage ?? "")
         }
         .onAppear {
-            // Проверяем автологин при запуске
             checkAutoLogin()
         }
-        Button("Debug: Recreate DB") {
-            LocalDatabase.shared.recreateTables()
-        }
-        .font(.caption)
-        .foregroundColor(.red)
     }
     
     private func checkAutoLogin() {
         print("🚀 Запуск приложения...")
         
-        // Проверяем, есть ли сохраненный пользователь
         if authViewModel.hasSavedUser() {
-            print("👤 Найден сохраненный пользователь, пытаемся войти...")
+            print("👤 Найден сохраненный пользователь")
             authViewModel.autoLogin()
             
-            
-            // Даем 2 секунды на попытку автологина
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 isCheckingAutoLogin = false
                 if !appState.isAuthenticated {
-                    print("⏱️ Автологин не удался, показываем экран входа")
+                    print("⏱️ Автологин не удался")
                 }
             }
         } else {
-            print("👤 Сохраненный пользователь не найден, показываем экран входа")
+            print("👤 Сохраненный пользователь не найден")
             isCheckingAutoLogin = false
         }
     }
