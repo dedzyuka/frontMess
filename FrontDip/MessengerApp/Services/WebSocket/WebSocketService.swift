@@ -441,14 +441,15 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         
         // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем, что запрос не от самого себя
         guard let currentUser = AppState.shared.currentUser else {
-            print("❌ Current user not found")
-            return
-        }
-        
-        if senderId == currentUser.id {
-            print("⚠️ Игнорируем запрос от самого себя")
-            return
-        }
+                print("❌ Current user not found")
+                return
+            }
+            
+            // Проверяем, что запрос НЕ от нас самих
+            if let senderId = message.senderId, senderId == currentUser.id {
+                print("⚠️ Игнорируем собственный запрос на контакт")
+                return
+            }
         
         let request = ContactRequest(
             id: requestId,
@@ -529,18 +530,23 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
+    private var reconnectAttempts = 0
+    private let maxReconnectDelay: TimeInterval = 300 // 5 минут
+
     private func scheduleReconnect() {
-        guard reconnectTimer == nil else { return }
+        reconnectTimer?.invalidate()
         
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
-            guard let self = self,
-                  let userId = self.currentUserId else {
-                return
-            }
-            
-            print("🔄 Attempting to reconnect...")
+        let delay = min(pow(2.0, Double(reconnectAttempts)) * 5, maxReconnectDelay)
+        reconnectAttempts += 1
+        
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self, let userId = self.currentUserId else { return }
+            print("🔄 Переподключение через \(delay) секунд (попытка \(self.reconnectAttempts))")
             self.connect(userId: userId)
         }
+    }
+    func urlSession(_ session: URLSession, didOpenWithProtocol protocol: String?) {
+        reconnectAttempts = 0 // Сброс счетчика
     }
     
     private func cancelReconnectTimer() {

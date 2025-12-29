@@ -84,6 +84,8 @@ class ContactService: ObservableObject {
         }
     }
     
+    // В ContactService.swift
+    // В ContactService.swift
     func respondToContactRequest(requestId: UUID, status: String) async throws -> Bool {
         guard let deviceId = KeychainService.shared.loadDeviceId() else {
             throw NSError(domain: "Auth", code: 1,
@@ -129,6 +131,59 @@ class ContactService: ObservableObject {
             
             if let responseString = String(data: data, encoding: .utf8) {
                 print("📥 Response body: \(responseString)")
+            }
+            
+            // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обработка статуса 400
+            if httpResponse.statusCode == 400 {
+                print("⚠️ Сервер говорит, что запрос уже обработан")
+                
+                // 1. Получаем детали ошибки
+                if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let errorDetail = errorDict["detail"] as? String {
+                    print("⚠️ Детали ошибки: \(errorDetail)")
+                }
+                
+                // 2. Проверяем текущий статус запроса в локальной БД
+                let pendingReqs = database.getPendingContactRequests()
+                if let localRequest = pendingReqs.first(where: { $0.id == requestId }) {
+                    print("⚠️ Локальный статус запроса: \(localRequest.status)")
+                    
+                    // 3. Если статус "pending" локально, но сервер говорит, что уже обработан
+                    //    обновляем локально на "accepted" или "declined" в зависимости от действия пользователя
+                    if localRequest.status == "pending" {
+                        print("⚠️ Синхронизируем локальное состояние с сервером")
+                        
+                        // ⚠️ ИСПРАВЛЕНИЕ: Используем правильное имя метода
+                        _ = updateContactRequestStatusLocally(requestId, status: "removed")
+                        
+                        // Обновляем UI
+                        await MainActor.run {
+                            loadPendingRequests()
+                        }
+                        
+                        // Если пользователь пытался принять, добавляем в контакты
+                        if status == "accepted" {
+                            // Добавляем контакт локально
+                            let contact = Contact(
+                                id: UUID(),
+                                userId: localRequest.fromUserId,
+                                nickname: localRequest.fromNickname,
+                                publicKey: localRequest.fromPublicKey,
+                                addedAt: Date()
+                            )
+                            
+                            if saveContactLocally(contact) {
+                                await MainActor.run {
+                                    loadContacts()
+                                    NotificationService.shared.showInfo("Контакт \(contact.nickname) уже был добавлен ранее")
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Возвращаем true, так как операция технически выполнена
+                return true
             }
             
             if httpResponse.statusCode == 200 {
@@ -294,7 +349,7 @@ class ContactService: ObservableObject {
                 
                 if success {
                     // Обновляем статус локально
-                    if updateContactRequestStatusLocally(request.id, status: "accepted") {
+                    if database.updateContactRequestStatus(request.id, status: "accepted") {
                         // Добавляем в контакты
                         let contact = Contact(
                             id: UUID(),
@@ -329,7 +384,7 @@ class ContactService: ObservableObject {
                 
                 if success {
                     // Обновляем статус локально
-                    if updateContactRequestStatusLocally(request.id, status: "declined") {
+                    if database.updateContactRequestStatus(request.id, status: "declined") {
                         await MainActor.run {
                             loadPendingRequests()
                             NotificationService.shared.showInfo("Запрос отклонен")
@@ -479,7 +534,7 @@ class ContactService: ObservableObject {
             
             // Обновляем статус исходящего запроса
             if let request = pendingRequests.first(where: { $0.fromUserId == contact.userId }) {
-                _ = updateContactRequestStatusLocally(request.id, status: "accepted")
+                _ = database.updateContactRequestStatus(request.id, status: "accepted")
                 loadPendingRequests()
             }
             

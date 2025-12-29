@@ -13,6 +13,10 @@ class MessageService: ObservableObject {
     
     private var pendingMessages: [UUID: Message] = [:] // messageId: Message
     private var retryTimers: [UUID: Timer] = [:] // Таймеры для повторной отправки
+    
+    private var retryAttempts: [UUID: Int] = [:] // Счетчик попыток для каждого сообщения
+        private let maxRetryAttempts = 3
+    
     private var cancellables = Set<AnyCancellable>()
     
     private init() {
@@ -76,62 +80,75 @@ class MessageService: ObservableObject {
     }
     
     private func startRetryTimer(for messageId: UUID, chatId: UUID) {
-        // Отменяем старый таймер, если есть
-        retryTimers[messageId]?.invalidate()
-        
-        // Создаем новый таймер
-        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
+            // Отменяем старый таймер
+            retryTimers[messageId]?.invalidate()
+            
+            // Увеличиваем счетчик попыток
+            let attempt = (retryAttempts[messageId] ?? 0) + 1
+            retryAttempts[messageId] = attempt
+            
+            // Если превысили лимит - удаляем из очереди
+            if attempt > maxRetryAttempts {
+                print("❌ Превышено максимальное количество попыток (\(maxRetryAttempts)) для сообщения \(messageId.uuidString.prefix(8))")
+                pendingMessages.removeValue(forKey: messageId)
+                retryAttempts.removeValue(forKey: messageId)
                 return
             }
             
-            // Проверяем, все ли еще сообщение в очереди
-            guard let message = self.pendingMessages[messageId] else {
-                print("✅ Сообщение \(messageId.uuidString.prefix(8)) удалено из очереди")
-                timer.invalidate()
-                self.retryTimers.removeValue(forKey: messageId)
-                return
+            // Экспоненциальная задержка: 5, 15, 45 секунд
+            let delay = TimeInterval(pow(3.0, Double(attempt - 1)) * 5)
+            
+            print("⏰ Установлен таймер повторной отправки через \(delay) секунд (попытка \(attempt)/\(maxRetryAttempts))")
+            
+            let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] timer in
+                guard let self = self else {
+                    timer.invalidate()
+                    return
+                }
+                
+                // Проверяем, все ли еще сообщение в очереди
+                guard let message = self.pendingMessages[messageId] else {
+                    print("✅ Сообщение \(messageId.uuidString.prefix(8)) удалено из очереди")
+                    timer.invalidate()
+                    self.retryTimers.removeValue(forKey: messageId)
+                    self.retryAttempts.removeValue(forKey: messageId)
+                    return
+                }
+                
+                print("🔄 Повторная отправка сообщения \(messageId.uuidString.prefix(8)) (попытка \(attempt)/\(maxRetryAttempts))...")
+                self.sendViaWebSocket(message: message, chatId: chatId)
             }
             
-            print("🔄 Повторная отправка сообщения \(messageId.uuidString.prefix(8))...")
-            self.sendViaWebSocket(message: message, chatId: chatId)
+            retryTimers[messageId] = timer
         }
-        
-        retryTimers[messageId] = timer
-    }
     
     private func stopRetryTimer(for messageId: UUID) {
-        retryTimers[messageId]?.invalidate()
-        retryTimers.removeValue(forKey: messageId)
-    }
+            retryTimers[messageId]?.invalidate()
+            retryTimers.removeValue(forKey: messageId)
+            retryAttempts.removeValue(forKey: messageId) // 🔥 ВАЖНО: очищаем счетчик
+            print("⏹️ Остановлен таймер для сообщения \(messageId.uuidString.prefix(8))")
+        }
     
     // MARK: - Обработка входящих сообщений
     
-    func handleIncomingMessages(_ messages: [Message]) {
+    private func handleIncomingMessages(_ messages: [Message]) {
         for message in messages {
-            // 1. Проверяем, нет ли уже такого сообщения
-            if let messageId = message.id, database.messageExists(messageId) {
-                print("⚠️ Сообщение \(messageId.uuidString.prefix(8)) уже есть в базе")
+            guard let messageId = message.id else { continue }
+            
+            // Проверка ДО обработки
+            if database.messageExists(messageId) {
+                print("⚠️ Пропускаем дубликат: \(messageId)")
                 continue
             }
             
-            // 2. Сохраняем в локальную БД
+            // Сохранение
             _ = database.saveMessage(message)
             
-            // 3. Отправляем подтверждение получения
+            // Отправка ACK
             sendMessageAck(for: message)
             
-            // 4. Уведомляем UI о новом сообщении
-            NotificationCenter.default.post(
-                name: .newMessageReceived,
-                object: message
-            )
-            
-            // 5. Увеличиваем счетчик непрочитанных
-            unreadMessagesCount += 1
-            
-            print("📩 Сообщение сохранено: \(message.content.prefix(30))...")
+            // Уведомление UI
+            NotificationCenter.default.post(name: .newMessageReceived, object: message)
         }
     }
     
@@ -158,8 +175,15 @@ class MessageService: ObservableObject {
     
     // MARK: - Обработка подтверждений
     
+    // В MessageService.swift
     func handleMessageAck(messageId: UUID, from recipientId: UUID) {
         print("✅ Подтверждение получения сообщения \(messageId.uuidString.prefix(8)) от \(recipientId.uuidString.prefix(8))")
+        
+        // 🔥 ДОБАВИТЬ: Проверяем, что сообщение еще в очереди
+        guard pendingMessages[messageId] != nil else {
+            print("⚠️ Сообщение уже удалено из очереди")
+            return
+        }
         
         // 1. Удаляем из очереди ожидания
         pendingMessages.removeValue(forKey: messageId)
@@ -168,11 +192,17 @@ class MessageService: ObservableObject {
         stopRetryTimer(for: messageId)
         
         // 3. Обновляем статус в локальной БД
-        database.updateMessageStatus(
+        let success = database.updateMessageStatus(
             messageId: messageId,
             isSent: true,
             isDelivered: true
         )
+        
+        if success {
+            print("✅ Статус сообщения обновлен: доставлено")
+        } else {
+            print("⚠️ Не удалось обновить статус сообщения")
+        }
     }
     
     // MARK: - Получение сообщений
@@ -188,16 +218,17 @@ class MessageService: ObservableObject {
     // MARK: - Очистка
     
     func clearAll() {
-        // Останавливаем все таймеры
-        for timer in retryTimers.values {
-            timer.invalidate()
+            // Останавливаем все таймеры
+            for timer in retryTimers.values {
+                timer.invalidate()
+            }
+            retryTimers.removeAll()
+            retryAttempts.removeAll() // 🔥 Очищаем счетчики
+            
+            // Очищаем очередь
+            pendingMessages.removeAll()
+            
+            // Сбрасываем счетчик
+            unreadMessagesCount = 0
         }
-        retryTimers.removeAll()
-        
-        // Очищаем очередь
-        pendingMessages.removeAll()
-        
-        // Сбрасываем счетчик
-        unreadMessagesCount = 0
-    }
 }

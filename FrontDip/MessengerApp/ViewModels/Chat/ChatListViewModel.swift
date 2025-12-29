@@ -68,6 +68,7 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
+    // В ChatListViewModel.swift
     private func restoreChatKeys(for chats: [Chat], userId: UUID) async {
         for chat in chats {
             // Проверяем, есть ли ключ чата в Keychain
@@ -75,17 +76,21 @@ class ChatListViewModel: ObservableObject {
                 do {
                     print("🔄 Восстановление ключа для чата \(chat.name)...")
                     
-                    // Получаем наш приватный ключ
+                    // Получаем наш приватный ключ (Data)
                     guard let privateKeyData = keychainService.loadPrivateKey(userId: userId) else {
                         print("❌ Нет приватного ключа для чата \(chat.name)")
                         continue
                     }
                     
+                    // 🔥 ИСПРАВЛЕНИЕ: Преобразуем Data в PrivateKey
                     let privateKey = try P256.KeyAgreement.PrivateKey(rawRepresentation: privateKeyData)
                     let cryptoService = CryptoService.shared
                     
                     // Расшифровываем ключ чата
-                    let chatKey = try cryptoService.decryptSymmetricKey(encryptedChatKeyData, with: privateKey)
+                    let chatKey = try cryptoService.decryptSymmetricKey(
+                        encryptedChatKeyData,
+                        with: privateKey
+                    )
                     let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
                     
                     // Сохраняем в менеджер ключей
@@ -93,12 +98,52 @@ class ChatListViewModel: ObservableObject {
                     
                     print("✅ Ключ восстановлен для чата: \(chat.name)")
                     
+                } catch let keyError as CryptoKit.CryptoKitError {
+                    print("❌ Ошибка CryptoKit: \(keyError)")
                 } catch {
                     print("❌ Ошибка восстановления ключа для чата \(chat.name): \(error)")
                 }
             } else {
                 print("⚠️ Ключ не найден для чата: \(chat.name)")
+                
+                // 🔥 ДОБАВЛЯЕМ: Автоматически создаем ключ, если его нет
+                await createChatKeyIfNeeded(chat: chat, userId: userId)
             }
+        }
+    }
+
+    private func createChatKeyIfNeeded(chat: Chat, userId: UUID) async {
+        print("🔑 Создаем новый ключ для чата: \(chat.name)")
+        
+        do {
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            
+            // 1. Генерируем симметричный ключ для чата
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            // 2. Получаем наш публичный ключ
+            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
+                print("❌ Публичный ключ не найден для создания ключа чата")
+                return
+            }
+            
+            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+            
+            // 3. Шифруем симметричный ключ нашим публичным ключом
+            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+            
+            // 4. Сохраняем зашифрованный ключ в Keychain
+            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chat.id)
+            
+            // 5. Сохраняем симметричный ключ в памяти
+            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chat.id)
+            
+            print("✅ Ключ создан и сохранен для чата: \(chat.name)")
+            
+        } catch {
+            print("❌ Ошибка создания ключа чата: \(error)")
         }
     }
 }
