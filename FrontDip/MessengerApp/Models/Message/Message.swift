@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Models/Message/Message.swift
 import Foundation
 
 enum MessageType: String, Codable {

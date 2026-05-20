@@ -24,11 +24,11 @@ struct ChatView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(chat.name)
+                    Text(chat.name ?? "Чат")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Text("\(chat.memberCount) участников")
+                    Text("\(chat.membersCount) участников")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }

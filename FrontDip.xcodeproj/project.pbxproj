@@ -14,6 +14,8 @@
 		1E0B45EC2EE44B7F00BFD58D /* SQLite in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E72EE44B7F00BFD58D /* SQLite */; };
 		1E0B45ED2EE44B7F00BFD58D /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E52EE44B7F00BFD58D /* KeychainAccess */; };
 		1E0B45EE2EE44B7F00BFD58D /* CombineExt in Frameworks */ = {isa = PBXBuildFile; productRef = 1E0B45E32EE44B7F00BFD58D /* CombineExt */; };
+		1E6E58882FBE319700C894AF /* Apollo in Frameworks */ = {isa = PBXBuildFile; productRef = 1E6E58872FBE319700C894AF /* Apollo */; };
+		1E6E588A2FBE319700C894AF /* ApolloWebSocket in Frameworks */ = {isa = PBXBuildFile; productRef = 1E6E58892FBE319700C894AF /* ApolloWebSocket */; };
 		1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 1E2DC4072EDD9E780067EDAA /* Alamofire */; };
 /* End PBXBuildFile section */
 
@@ -47,84 +49,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		1E0B45F52EE44B7F00BFD58D /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */ = {
+		1EB9759B2FBB11F70090F790 /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Assets.xcassets,
-				MessengerApp/App/AppConfig.swift,
-				MessengerApp/App/AppState.swift,
-				MessengerApp/Models/Chat/Chat.swift,
-				MessengerApp/Models/Chat/ChatDTO.swift,
-				MessengerApp/Models/Chat/ChatInviteResponse.swift,
-				MessengerApp/Models/Chat/ChatMember.swift,
-				MessengerApp/Models/Chat/ChatMemberDetailed.swift,
-				MessengerApp/Models/Chat/ChatMembersResponse.swift,
-				MessengerApp/Models/Enums/ChatType.swift,
-				MessengerApp/Models/Enums/MessageType.swift,
-				MessengerApp/Models/Message/Message.swift,
-				MessengerApp/Models/Message/MessageDTO.swift,
-				MessengerApp/Models/User/User.swift,
-				MessengerApp/Models/User/UserDTO.swift,
-				MessengerApp/Resources/Assets.xcassets,
-				MessengerApp/Resources/Localizable.strings,
-				MessengerApp/Services/Auth/AuthService.swift,
-				MessengerApp/Services/Auth/SessionManager.swift,
-				MessengerApp/Services/Auth/UserManager.swift,
-				MessengerApp/Services/Auth/UserSession.swift,
-				MessengerApp/Services/Database/ChatRepository.swift,
 				MessengerApp/Services/Database/LocalDatabase.swift,
-				MessengerApp/Services/Database/MessageRepository.swift,
-				MessengerApp/Services/KeyManagement/ChatKeyManager.swift,
-				MessengerApp/Services/Message/MessageService.swift,
-				MessengerApp/Services/Network/APIEndpoints.swift,
-				MessengerApp/Services/Network/APIService.swift,
-				MessengerApp/Services/Network/ChatAPIService.swift,
 				MessengerApp/Services/Network/ContactService.swift,
-				MessengerApp/Services/Network/NetworkManager.swift,
-				MessengerApp/Services/Notification/NotificationService.swift,
-				MessengerApp/Services/Security/CryptoService.swift,
-				MessengerApp/Services/Security/KeychainService.swift,
-				MessengerApp/Services/Security/KeyManager.swift,
-				MessengerApp/Services/WebSocket/WebSocketManager.swift,
-				MessengerApp/Services/WebSocket/WebSocketService.swift,
-				MessengerApp/Utils/Constants/AppColors.swift,
-				MessengerApp/Utils/Constants/AppConstants.swift,
-				"MessengerApp/Utils/Extensions/Color+Extensions.swift",
-				"MessengerApp/Utils/Extensions/Date+Extensions.swift",
-				"MessengerApp/Utils/Extensions/View+Extensions.swift",
-				MessengerApp/Utils/Formatters/DateFormatter.swift,
-				MessengerApp/Utils/Formatters/MessageFormatter.swift,
-				"MessengerApp/Utils/JSONDecoder+ISO8601.swift",
-				MessengerApp/Utils/Validators/InputValidator.swift,
-				MessengerApp/ViewModels/Auth/AuthViewModel.swift,
-				MessengerApp/ViewModels/Auth/RegistrationViewModel.swift,
-				MessengerApp/ViewModels/Chat/ChatListViewModel.swift,
-				MessengerApp/ViewModels/Chat/ChatSelectionViewModel.swift,
-				MessengerApp/ViewModels/Chat/ChatSidebarViewModel.swift,
-				MessengerApp/ViewModels/Chat/ChatViewModel.swift,
-				MessengerApp/ViewModels/Chat/CreateChatViewModel.swift,
-				MessengerApp/ViewModels/Message/MessageViewModel.swift,
-				MessengerApp/ViewModels/Profile/ProfileViewModel.swift,
-				MessengerApp/Views/Auth/LoginView.swift,
-				MessengerApp/Views/Auth/RegisterView.swift,
-				MessengerApp/Views/Auth/WelcomeView.swift,
-				MessengerApp/Views/Chat/AddContactToChatView.swift,
-				MessengerApp/Views/Chat/ChatListView.swift,
-				MessengerApp/Views/Chat/ChatRow.swift,
-				MessengerApp/Views/Chat/ChatSidebarView.swift,
-				MessengerApp/Views/Chat/ChatView.swift,
-				MessengerApp/Views/Chat/CreateChatView.swift,
-				MessengerApp/Views/Chat/InviteShareView.swift,
-				MessengerApp/Views/Common/EmptyStateView.swift,
-				MessengerApp/Views/Common/ErrorView.swift,
-				MessengerApp/Views/Common/LoadingView.swift,
-				MessengerApp/Views/Common/SearchView.swift,
-				MessengerApp/Views/Common/SideMenuView.swift,
-				MessengerApp/Views/Message/MessageBubbleView.swift,
-				MessengerApp/Views/Message/MessageInputView.swift,
-				MessengerApp/Views/Message/MessageListView.swift,
-				MessengerApp/Views/Profile/ProfileView.swift,
-				MessengerApp/Views/Profile/SettingsView.swift,
 			);
 			target = 1E0B45E02EE44B7F00BFD58D /* FrontDipUser2 */;
 		};
@@ -134,7 +63,7 @@
 		1E2DC35E2EDD995F0067EDAA /* FrontDip */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				1E0B45F52EE44B7F00BFD58D /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */,
+				1EB9759B2FBB11F70090F790 /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */,
 			);
 			path = FrontDip;
 			sourceTree = "<group>";
@@ -157,6 +86,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1E6E58882FBE319700C894AF /* Apollo in Frameworks */,
+				1E6E588A2FBE319700C894AF /* ApolloWebSocket in Frameworks */,
 				1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */,
 				1E081FE02EDDB4A0002C6FD5 /* SQLite in Frameworks */,
 				1E081FDD2EDDB496002C6FD5 /* KeychainAccess in Frameworks */,
@@ -245,6 +176,8 @@
 				1E081FD92EDDB486002C6FD5 /* CombineExt */,
 				1E081FDC2EDDB496002C6FD5 /* KeychainAccess */,
 				1E081FDF2EDDB4A0002C6FD5 /* SQLite */,
+				1E6E58872FBE319700C894AF /* Apollo */,
+				1E6E58892FBE319700C894AF /* ApolloWebSocket */,
 			);
 			productName = FrontDip;
 			productReference = 1E2DC35C2EDD995F0067EDAA /* FrontDip.app */;
@@ -279,6 +212,7 @@
 				1E081FD82EDDB486002C6FD5 /* XCRemoteSwiftPackageReference "CombineExt" */,
 				1E081FDB2EDDB496002C6FD5 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
 				1E081FDE2EDDB4A0002C6FD5 /* XCRemoteSwiftPackageReference "SQLite.swift" */,
+				1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1E2DC35D2EDD995F0067EDAA /* Products */;
@@ -520,9 +454,13 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -547,9 +485,13 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = Mtec.FrontDip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -650,6 +592,14 @@
 				minimumVersion = 5.10.2;
 			};
 		};
+		1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apollographql/apollo-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -692,6 +642,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1E2DC4062EDD9E780067EDAA /* XCRemoteSwiftPackageReference "Alamofire" */;
 			productName = Alamofire;
+		};
+		1E6E58872FBE319700C894AF /* Apollo */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */;
+			productName = Apollo;
+		};
+		1E6E58892FBE319700C894AF /* ApolloWebSocket */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */;
+			productName = ApolloWebSocket;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

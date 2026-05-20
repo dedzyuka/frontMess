@@ -6,11 +6,8 @@ class ChatSelectionViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     
-    private let apiService = APIService.shared
-    private let contactService = ContactService.shared
-    
+    private let graphQL = GraphQLClient.shared
     let contact: Contact
-    private var chatListViewModel = ChatListViewModel()
     
     init(contact: Contact) {
         self.contact = contact
@@ -23,8 +20,7 @@ class ChatSelectionViewModel: ObservableObject {
                 errorMessage = nil
             }
             
-            guard let currentUser = AppState.shared.currentUser,
-                  let deviceId = KeychainService.shared.loadDeviceId() else {
+            guard let currentUser = AppState.shared.currentUser else {
                 await MainActor.run {
                     isLoading = false
                     errorMessage = "Не удалось получить информацию о пользователе"
@@ -33,35 +29,43 @@ class ChatSelectionViewModel: ObservableObject {
             }
             
             do {
-                // Загружаем чаты пользователя
-                let userChats = try await apiService.getUserChats(
-                    userId: currentUser.id,
-                    deviceId: deviceId
+                let variables: [String: Any] = ["userId": currentUser.id.uuidString]
+                let response: ListChatsResponse = try await graphQL.perform(
+                    query: GraphQLQueries.listChats,
+                    variables: variables,
+                    responseType: ListChatsResponse.self
                 )
                 
-                // Для каждого чата проверяем, есть ли в нем контакт
-                var chatsWithInfo: [ChatWithContactInfo] = []
+                let userChats = response.listChats.chats.map { chatResponse in
+                    Chat(
+                        id: chatResponse.chatId,
+                        chatType: "group",
+                        name: chatResponse.name ?? "Chat",
+                        description: nil,
+                        avatarUrl: nil,
+                        creatorId: nil,
+                        isPublic: false,
+                        membersCount: chatResponse.membersCount,
+                        createdAt: chatResponse.createdAt,
+                        updatedAt: chatResponse.createdAt,
+                        lastMessagePreview: nil
+                    )
+                }
                 
+                var chatsWithInfo: [ChatWithContactInfo] = []
                 for chat in userChats {
                     let isContactInChat = await checkIfContactInChat(chatId: chat.id)
-                    let chatInfo = ChatWithContactInfo(
-                        chat: chat,
-                        isContactInChat: isContactInChat
-                    )
-                    chatsWithInfo.append(chatInfo)
+                    chatsWithInfo.append(ChatWithContactInfo(chat: chat, isContactInChat: isContactInChat))
                 }
                 
                 await MainActor.run {
                     self.chats = chatsWithInfo
                     self.isLoading = false
-                    print("✅ Загружено чатов: \(chatsWithInfo.count)")
                 }
-                
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
                     self.isLoading = false
-                    print("❌ Ошибка загрузки чатов: \(error)")
                 }
             }
         }
@@ -69,48 +73,32 @@ class ChatSelectionViewModel: ObservableObject {
     
     private func checkIfContactInChat(chatId: UUID) async -> Bool {
         do {
-            let members = try await apiService.getChatMembers(chatId: chatId)
-            return members.contains { $0.user_id == contact.userId }
+            let variables: [String: Any] = ["chatId": chatId.uuidString]
+            let response: ChatMembersListResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMembers,
+                variables: variables,
+                responseType: ChatMembersListResponse.self
+            )
+            return response.listChatMembers.members.contains { $0.userId == contact.userId }
         } catch {
-            print("❌ Ошибка проверки участников чата: \(error)")
             return false
         }
     }
     
-    // Обновляем метод addContactToChat:
-    
     func addContactToChat(_ chat: Chat) async -> Bool {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            print("❌ Device ID not found")
-            return false
-        }
-        
+        let variables: [String: Any] = [
+            "chatId": chat.id.uuidString,
+            "userId": contact.userId.uuidString
+        ]
         do {
-            print("📤 Приглашаем пользователя \(contact.nickname) в чат \(chat.name)...")
-            
-            // Функция возвращает Bool напрямую
-            let success = try await apiService.inviteUserToChat(
-                chatId: chat.id,
-                userId: contact.userId,
-                deviceId: deviceId
+            let _: AddChatMemberResponse = try await graphQL.perform(
+                query: GraphQLQueries.addChatMember,
+                variables: variables,
+                responseType: AddChatMemberResponse.self
             )
-            
-            if success {
-                print("✅ Пользователь успешно приглашен в чат")
-                
-                await MainActor.run {
-                    // Обновляем список чатов
-                    loadChats()
-                }
-                
-                return true
-            } else {
-                print("❌ Не удалось пригласить пользователя")
-                return false
-            }
-            
+            await MainActor.run { loadChats() }
+            return true
         } catch {
-            print("❌ Ошибка приглашения пользователя в чат: \(error)")
             return false
         }
     }

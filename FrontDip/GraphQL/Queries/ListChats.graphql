@@ -1,0 +1,11 @@
+query ListChats($userId: UUID!) {
+  listChats(user_id: $userId) {
+    chats {
+      chat_id
+      name
+      members_count
+      created_at
+    }
+    total_count
+  }
+}

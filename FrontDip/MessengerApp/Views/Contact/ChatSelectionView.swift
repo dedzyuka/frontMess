@@ -74,7 +74,7 @@ struct ChatSelectionView: View {
                 
                 if success {
                     // Используем NotificationService
-                    NotificationService.shared.showSuccess("\(contact.nickname) добавлен в чат \(chat.name)")
+                    NotificationService.shared.showSuccess("\(contact.nickname) добавлен в чат \(chat.name ?? "Неизвестное")")
                     
                     // Закрываем через 1 секунду
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -97,10 +97,10 @@ struct ChatSelectionRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chatInfo.chat.name)
+                Text(chatInfo.chat.name ?? "Неизвестное")
                     .font(.headline)
                 
-                Text("\(chatInfo.chat.memberCount) участников")
+                Text("\(chatInfo.chat.membersCount) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

@@ -70,10 +70,11 @@ struct NotificationsView: View {
     
     private func refreshRequests() {
         isLoading = true
-        contactService.syncPendingRequests()
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            isLoading = false
+        Task {
+            await contactService.syncPendingRequests()
+            await MainActor.run {
+                isLoading = false
+            }
         }
     }
 }

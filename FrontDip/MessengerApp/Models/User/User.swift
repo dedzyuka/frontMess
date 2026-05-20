@@ -1,28 +1,45 @@
-// ./FrontDip/MessengerApp/Models/User/User.swift
 import Foundation
 
 struct User: Identifiable, Codable {
     let id: UUID
-    let nickname: String
-    let publicKey: String
-    let deviceId: String
-    let createdAt: String?  // Изменяем на опциональное
+    let nickName: String
+    let firstName: String?
+    let lastName: String?
+    let avatarUrl: String?
+    let bio: String?
+    let isOnline: Bool
+    let lastSeen: Date?
+    let createdAt: Date
+    let updatedAt: Date
+    let email: String?
     
     enum CodingKeys: String, CodingKey {
         case id = "user_id"
-        case nickname
-        case publicKey = "public_key"
-        case deviceId = "device_id"
+        case nickName = "nick_name"
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case avatarUrl = "avatar_url"
+        case bio
+        case isOnline = "is_online"
+        case lastSeen = "last_seen"
         case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case email
     }
     
-    // Кастомный инициализатор для обработки отсутствующего created_at
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        nickname = try container.decode(String.self, forKey: .nickname)
-        publicKey = try container.decode(String.self, forKey: .publicKey)
-        deviceId = try container.decode(String.self, forKey: .deviceId)
-        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+    init(id: UUID, nickName: String, email: String?, createdAt: Date, updatedAt: Date,
+         firstName: String? = nil, lastName: String? = nil, avatarUrl: String? = nil,
+         bio: String? = nil, isOnline: Bool = false, lastSeen: Date? = nil) {
+        self.id = id
+        self.nickName = nickName
+        self.email = email
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.firstName = firstName
+        self.lastName = lastName
+        self.avatarUrl = avatarUrl
+        self.bio = bio
+        self.isOnline = isOnline
+        self.lastSeen = lastSeen
     }
 }

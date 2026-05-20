@@ -118,10 +118,10 @@ struct ChatListView: View {
         
         var body: some View {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chat.name)
+                Text(chat.name ?? "Без названия")
                     .font(.headline)
                 
-                Text("\(chat.memberCount) участников")
+                Text("\(chat.membersCount) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -162,7 +162,7 @@ struct ChatListView: View {
                     .fill(Color.blue.opacity(0.8))
                     .frame(width: 32, height: 32)
                     .overlay(
-                        Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                        Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
                             .font(.caption)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
@@ -265,41 +265,61 @@ struct ChatListView: View {
     }
     
     private func createChat() async {
-        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
-              let deviceId = KeychainService.shared.loadDeviceId() else {
+        guard let currentUser = AppState.shared.currentUser else {
+            await MainActor.run {
+                viewModel.errorMessage = "Пользователь не авторизован"
+            }
             return
         }
         
+        let chatNameTrimmed = newChatName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !chatNameTrimmed.isEmpty else { return }
+        
         isLoadingChat = true
         
+        let variables: [String: Any] = [
+            "input": [
+                "chat_type": "group",
+                "name": chatNameTrimmed,
+                "member_ids": [currentUser.id.uuidString],
+                "is_public": false
+            ]
+        ]
+        
         do {
-            let chat = try await APIService.shared.createChat(
-                name: newChatName,
-                creatorId: userId,
-                deviceId: deviceId
+            let response: CreateChatGraphQLResponse = try await GraphQLClient.shared.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatGraphQLResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
             
-            // Генерируем и сохраняем ключ чата
-            await saveChatKey(for: chat.id, userId: userId)
+            let newChat = response.createChat
             
-            await MainActor.run {
-                inviteKey = chat.id.uuidString
-                showInviteSheet = true
-                newChatName = ""
-                isLoadingChat = false
-                
-                // Обновляем список чатов
-                viewModel.chats.insert(chat, at: 0)
+            // Генерация и сохранение ключа чата
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            let chatKey = cryptoService.generateSymmetricKey()
+            
+            if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
+                let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chatId)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chatId)
             }
             
-            // АВТОМАТИЧЕСКИ ПОДКЛЮЧАЕМ WebSocket К НОВОМУ ЧАТУ
-            // НЕ НУЖНО! WebSocket уже подключен к пользователю
-            // НЕ ДЕЛАЙТЕ: WebSocketService.shared.connect(userId: userId) еще раз
-            
+            await MainActor.run {
+                isLoadingChat = false
+                inviteKey = newChat.chatId.uuidString
+                showInviteSheet = true
+                newChatName = ""
+                Task { await viewModel.loadChats() }
+            }
         } catch {
             await MainActor.run {
-                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
                 isLoadingChat = false
+                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
             }
         }
     }

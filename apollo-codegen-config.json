@@ -1,0 +1,28 @@
+{
+  "schemaNamespace" : "MessengerAPI",
+  "input" : {
+    "operationSearchPaths" : [
+      "GraphQL/Queries/**/*.graphql",
+      "GraphQL/Mutations/**/*.graphql"
+    ],
+    "schemaSearchPaths" : [
+      "schema.graphqls"
+    ]
+  },
+  "output" : {
+    "testMocks" : {
+      "none" : {}
+    },
+    "schemaTypes" : {
+      "path" : "MessengerApp/Generated",
+      "moduleType" : {
+        "other" : {}
+      }
+    },
+    "operations" : {
+      "relative" : {
+        "prefix" : "Operations"
+      }
+    }
+  }
+}

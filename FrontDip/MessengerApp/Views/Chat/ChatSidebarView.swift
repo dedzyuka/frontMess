@@ -16,13 +16,13 @@ struct ChatSidebarView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Заголовок чата
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(chat.name)
+                    Text(chat.name ?? "Чат")
                         .font(.largeTitle)
                         .fontWeight(.bold)
                         .padding(.top, 20)
                     
                     HStack {
-                        Label("\(chat.memberCount) участников", systemImage: "person.2")
+                        Label("\(chat.membersCount) участников", systemImage: "person.2")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         

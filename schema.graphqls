@@ -1,0 +1,35 @@
+scalar UUID
+scalar DateTime
+scalar JSON
+
+type User {
+  user_id: UUID!
+  nick_name: String!
+  created_at: DateTime!
+}
+
+type Chat {
+  chat_id: UUID!
+  name: String
+  created_at: DateTime!
+  members_count: Int!
+}
+
+type Query {
+  getUser(user_id: UUID!): User!
+  listChats(user_id: UUID!): ChatsListResponse!
+}
+
+type ChatsListResponse {
+  chats: [Chat!]!
+  total_count: Int!
+}
+
+type Mutation {
+  createChat(input: CreateChatInput!): Chat!
+}
+
+input CreateChatInput {
+  name: String!
+  member_ids: [UUID!]!
+}

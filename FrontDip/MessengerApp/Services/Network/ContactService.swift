@@ -1,6 +1,21 @@
-// ./FrontDip/MessengerApp/Services/Network/ContactService.swift
 import Foundation
 import Combine
+
+// MARK: - SearchResponse (вынесен вне класса для доступности)
+struct SearchResponse: Decodable {
+    let user: UserSearchResult
+}
+
+struct UserSearchResult: Decodable {
+    let search: [SearchedUser]
+}
+
+struct SearchedUser: Decodable {
+    let user_id: String
+    let nick_name: String
+    let avatar_url: String?
+    let is_online: Bool
+}
 
 class ContactService: ObservableObject {
     static let shared = ContactService()
@@ -9,8 +24,7 @@ class ContactService: ObservableObject {
     @Published var pendingRequests: [ContactRequest] = []
     @Published var isLoading = false
     
-    private let apiService = APIService.shared
-    private let webSocketService = WebSocketService.shared
+    private let graphQL = GraphQLClient.shared
     private let database = LocalDatabase.shared
     private var cancellables = Set<AnyCancellable>()
     
@@ -20,247 +34,83 @@ class ContactService: ObservableObject {
         setupWebSocketHandlers()
     }
     
-    // MARK: - REST API Methods
+    // MARK: - GraphQL Mutations & Queries
     
-    func sendContactRequest(to userId: UUID) async throws -> Bool {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
-        }
-        
-        let url = URL(string: "\(apiService.baseURL)/contacts/requests")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let body: [String: Any] = [
-            "to_user_id": userId.uuidString
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        if httpResponse.statusCode == 201 {
-            // После успешной отправки, отправляем WebSocket уведомление
-            webSocketService.sendContactRequest(to: userId)
-            return true
-        } else {
-            throw URLError(.badServerResponse)
-        }
+    func sendContactRequest(to userId: String) async throws -> Bool {
+        let variables: [String: Any] = ["contactUserId": userId]
+        let _: AddContactResponse = try await graphQL.perform(
+            query: GraphQLQueries.addContact,
+            variables: variables,
+            responseType: AddContactResponse.self
+        )
+        return true
     }
     
     func getPendingRequests() async throws -> [ContactRequest] {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
-        }
-        
-        let url = URL(string: "\(apiService.baseURL)/contacts/requests/pending")!
-        
-        var request = URLRequest(url: url)
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        
-        let decoder = JSONDecoder.flexibleISO8601
-        let response = try decoder.decode(ContactRequestListResponse.self, from: data)
-        
-        return response.requests.map { apiRequest in
+        let variables: [String: Any] = ["status": "pending"]
+        let response: ListContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.listContacts,
+            variables: variables,
+            responseType: ListContactsResponse.self
+        )
+        return response.contacts.map { apiContact in
             ContactRequest(
-                id: apiRequest.id,
-                fromUserId: apiRequest.from_user_id,
-                fromNickname: apiRequest.from_nickname,
-                fromPublicKey: "", // TODO: Получить с сервера
-                status: apiRequest.status,
-                createdAt: apiRequest.created_at
+                id: UUID(),
+                fromUserId: UUID(uuidString: apiContact.contactUserId.uuidString) ?? UUID(),
+                fromNickname: apiContact.contactUser?.nickName ?? "",
+                fromPublicKey: apiContact.contactUser?.publicKey ?? "",
+                status: apiContact.status,
+                createdAt: apiContact.createdAt
             )
         }
     }
     
-    // В ContactService.swift
-    // В ContactService.swift
-    func respondToContactRequest(requestId: UUID, status: String) async throws -> Bool {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
+    func respondToContactRequest(requestId: String, status: String) async throws -> Bool {
+        let variables: [String: Any] = ["contactUserId": requestId]
+        if status == "accepted" {
+            let _: AcceptContactResponse = try await graphQL.perform(
+                query: GraphQLQueries.acceptContact,
+                variables: variables,
+                responseType: AcceptContactResponse.self
+            )
+        } else {
+            let _: RemoveContactResponse = try await graphQL.perform(
+                query: GraphQLQueries.removeContact,
+                variables: variables,
+                responseType: RemoveContactResponse.self
+            )
         }
-        
-        let urlString = "\(apiService.baseURL)/contacts/requests/\(requestId.uuidString)/respond"
-        print("📤 Отправляем ответ на запрос контакта: \(urlString)")
-        print("📤 Status: \(status)")
-        
-        guard let url = URL(string: urlString) else {
-            print("❌ Invalid URL: \(urlString)")
-            throw URLError(.badURL)
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let body: [String: Any] = [
-            "status": status
-        ]
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        } catch {
-            print("❌ Error encoding body: \(error)")
-            throw error
-        }
-        
-        print("📤 Request headers: \(request.allHTTPHeaderFields ?? [:])")
-        
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                print("❌ Not an HTTP response")
-                throw URLError(.badServerResponse)
-            }
-            
-            print("📥 Response status: \(httpResponse.statusCode)")
-            
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("📥 Response body: \(responseString)")
-            }
-            
-            // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обработка статуса 400
-            if httpResponse.statusCode == 400 {
-                print("⚠️ Сервер говорит, что запрос уже обработан")
-                
-                // 1. Получаем детали ошибки
-                if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let errorDetail = errorDict["detail"] as? String {
-                    print("⚠️ Детали ошибки: \(errorDetail)")
-                }
-                
-                // 2. Проверяем текущий статус запроса в локальной БД
-                let pendingReqs = database.getPendingContactRequests()
-                if let localRequest = pendingReqs.first(where: { $0.id == requestId }) {
-                    print("⚠️ Локальный статус запроса: \(localRequest.status)")
-                    
-                    // 3. Если статус "pending" локально, но сервер говорит, что уже обработан
-                    //    обновляем локально на "accepted" или "declined" в зависимости от действия пользователя
-                    if localRequest.status == "pending" {
-                        print("⚠️ Синхронизируем локальное состояние с сервером")
-                        
-                        // ⚠️ ИСПРАВЛЕНИЕ: Используем правильное имя метода
-                        _ = updateContactRequestStatusLocally(requestId, status: "removed")
-                        
-                        // Обновляем UI
-                        await MainActor.run {
-                            loadPendingRequests()
-                        }
-                        
-                        // Если пользователь пытался принять, добавляем в контакты
-                        if status == "accepted" {
-                            // Добавляем контакт локально
-                            let contact = Contact(
-                                id: UUID(),
-                                userId: localRequest.fromUserId,
-                                nickname: localRequest.fromNickname,
-                                publicKey: localRequest.fromPublicKey,
-                                addedAt: Date()
-                            )
-                            
-                            if saveContactLocally(contact) {
-                                await MainActor.run {
-                                    loadContacts()
-                                    NotificationService.shared.showInfo("Контакт \(contact.nickname) уже был добавлен ранее")
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Возвращаем true, так как операция технически выполнена
-                return true
-            }
-            
-            if httpResponse.statusCode == 200 {
-                print("✅ Contact request responded successfully")
-                
-                // Отправляем WebSocket уведомление
-                if status == "accepted" {
-                    // Получаем информацию о запросе
-                    if let request = pendingRequests.first(where: { $0.id == requestId }) {
-                        webSocketService.sendContactAccept(to: request.fromUserId)
-                    }
-                }
-                return true
-            } else {
-                // Пытаемся получить детали ошибки
-                if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    let errorMessage = errorDict["detail"] as? String ?? "Unknown error"
-                    print("❌ Server error: \(errorMessage)")
-                    throw NSError(domain: "API", code: httpResponse.statusCode,
-                                 userInfo: [NSLocalizedDescriptionKey: errorMessage])
-                } else {
-                    print("❌ Unknown server error: \(httpResponse.statusCode)")
-                    throw URLError(.badServerResponse)
-                }
-            }
-        } catch {
-            print("❌ Network error: \(error)")
-            throw error
-        }
+        return true
     }
     
     func getContactsFromServer() async throws -> [Contact] {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
-        }
-        
-        let url = URL(string: "\(apiService.baseURL)/contacts/")!
-        
-        var request = URLRequest(url: url)
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        
-        let decoder = JSONDecoder.flexibleISO8601
-        let response = try decoder.decode(ContactListResponse.self, from: data)
-        
+        let variables: [String: Any] = ["status": "accepted"]
+        let response: ListContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.listContacts,
+            variables: variables,
+            responseType: ListContactsResponse.self
+        )
         return response.contacts.map { apiContact in
-            Contact(
+            let contactUserId = UUID(uuidString: apiContact.contactUserId.uuidString) ?? UUID()
+            return Contact(
                 id: UUID(),
-                userId: apiContact.user_id,
-                nickname: apiContact.nickname,
-                publicKey: apiContact.public_key,
-                addedAt: Date() // TODO: Использовать created_at с сервера
+                userId: contactUserId,
+                contactUserId: contactUserId,
+                nickname: apiContact.contactUser?.nickName ?? "",
+                publicKey: apiContact.contactUser?.publicKey ?? "",
+                addedAt: apiContact.createdAt
             )
         }
     }
     
-    func removeContactFromServer(userId: UUID) async throws -> Bool {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
-        }
-        
-        let url = URL(string: "\(apiService.baseURL)/contacts/\(userId.uuidString)")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        return httpResponse.statusCode == 200
+    func removeContactFromServer(userId: String) async throws -> Bool {
+        let variables: [String: Any] = ["contactUserId": userId]
+        let _: RemoveContactResponse = try await graphQL.perform(
+            query: GraphQLQueries.removeContact,
+            variables: variables,
+            responseType: RemoveContactResponse.self
+        )
+        return true
     }
     
     // MARK: - Local Database Methods
@@ -293,39 +143,31 @@ class ContactService: ObservableObject {
     
     func sendContactRequest(to user: UserPublicResponse) {
         guard let currentUser = AppState.shared.currentUser else {
-            print("❌ Текущий пользователь не найден")
+            NotificationService.shared.showError("Текущий пользователь не найден")
             return
         }
-        
-        // Проверяем, что не отправляем самому себе
         guard currentUser.id != user.user_id else {
             NotificationService.shared.showError("Нельзя отправить запрос самому себе")
             return
         }
-        
-        // Проверяем, что пользователь уже не в контактах
         guard !isContact(userId: user.user_id) else {
             NotificationService.shared.showInfo("Пользователь уже в контактах")
             return
         }
         
-        print("📤 Отправляем запрос на контакт пользователю \(user.nickname)")
-        
         Task {
             do {
-                let success = try await sendContactRequest(to: user.user_id)
-                
+                // Передаём строку, используя .uuidString
+                let success = try await sendContactRequest(to: user.user_id.uuidString)
                 if success {
-                    // Сохраняем локально как исходящий запрос
                     let request = ContactRequest(
                         id: UUID(),
                         fromUserId: currentUser.id,
-                        fromNickname: currentUser.nickname,
-                        fromPublicKey: currentUser.publicKey,
+                        fromNickname: currentUser.nickName,
+                        fromPublicKey: "",
                         status: "pending",
                         createdAt: Date()
                     )
-                    
                     if saveContactRequestLocally(request) {
                         await MainActor.run {
                             loadPendingRequests()
@@ -334,7 +176,6 @@ class ContactService: ObservableObject {
                     }
                 }
             } catch {
-                print("❌ Ошибка отправки запроса: \(error)")
                 await MainActor.run {
                     NotificationService.shared.showError("Ошибка отправки запроса: \(error.localizedDescription)")
                 }
@@ -345,31 +186,26 @@ class ContactService: ObservableObject {
     func acceptContactRequest(_ request: ContactRequest) {
         Task {
             do {
-                let success = try await respondToContactRequest(requestId: request.id, status: "accepted")
-                
-                if success {
-                    // Обновляем статус локально
-                    if database.updateContactRequestStatus(request.id, status: "accepted") {
-                        // Добавляем в контакты
-                        let contact = Contact(
-                            id: UUID(),
-                            userId: request.fromUserId,
-                            nickname: request.fromNickname,
-                            publicKey: request.fromPublicKey,
-                            addedAt: Date()
-                        )
-                        
-                        if saveContactLocally(contact) {
-                            await MainActor.run {
-                                loadContacts()
-                                loadPendingRequests()
-                                NotificationService.shared.showSuccess("Контакт \(request.fromNickname) добавлен")
-                            }
+                // Преобразуем UUID в String через .uuidString
+                let success = try await respondToContactRequest(requestId: request.fromUserId.uuidString, status: "accepted")
+                if success && database.updateContactRequestStatus(request.id, status: "accepted") {
+                    let contact = Contact(
+                        id: UUID(),
+                        userId: request.fromUserId,
+                        contactUserId: request.fromUserId,
+                        nickname: request.fromNickname,
+                        publicKey: request.fromPublicKey,
+                        addedAt: Date()
+                    )
+                    if saveContactLocally(contact) {
+                        await MainActor.run {
+                            loadContacts()
+                            loadPendingRequests()
+                            NotificationService.shared.showSuccess("Контакт \(request.fromNickname) добавлен")
                         }
                     }
                 }
             } catch {
-                print("❌ Ошибка принятия запроса: \(error)")
                 await MainActor.run {
                     NotificationService.shared.showError("Ошибка принятия запроса: \(error.localizedDescription)")
                 }
@@ -380,19 +216,14 @@ class ContactService: ObservableObject {
     func declineContactRequest(_ request: ContactRequest) {
         Task {
             do {
-                let success = try await respondToContactRequest(requestId: request.id, status: "declined")
-                
-                if success {
-                    // Обновляем статус локально
-                    if database.updateContactRequestStatus(request.id, status: "declined") {
-                        await MainActor.run {
-                            loadPendingRequests()
-                            NotificationService.shared.showInfo("Запрос отклонен")
-                        }
+                let success = try await respondToContactRequest(requestId: request.fromUserId.uuidString, status: "declined")
+                if success && database.updateContactRequestStatus(request.id, status: "declined") {
+                    await MainActor.run {
+                        loadPendingRequests()
+                        NotificationService.shared.showInfo("Запрос отклонен")
                     }
                 }
             } catch {
-                print("❌ Ошибка отклонения запроса: \(error)")
                 await MainActor.run {
                     NotificationService.shared.showError("Ошибка отклонения запроса: \(error.localizedDescription)")
                 }
@@ -403,18 +234,14 @@ class ContactService: ObservableObject {
     func removeContact(userId: UUID) {
         Task {
             do {
-                let success = try await removeContactFromServer(userId: userId)
-                
-                if success {
-                    if removeContactLocally(userId: userId) {
-                        await MainActor.run {
-                            loadContacts()
-                            NotificationService.shared.showInfo("Контакт удален")
-                        }
+                let success = try await removeContactFromServer(userId: userId.uuidString)
+                if success && removeContactLocally(userId: userId) {
+                    await MainActor.run {
+                        loadContacts()
+                        NotificationService.shared.showInfo("Контакт удален")
                     }
                 }
             } catch {
-                print("❌ Ошибка удаления контакта: \(error)")
                 await MainActor.run {
                     NotificationService.shared.showError("Ошибка удаления контакта: \(error.localizedDescription)")
                 }
@@ -426,17 +253,12 @@ class ContactService: ObservableObject {
         Task {
             do {
                 let serverContacts = try await getContactsFromServer()
-                
-                // Синхронизируем с локальной базой
                 for contact in serverContacts {
                     if !isContact(userId: contact.userId) {
                         _ = saveContactLocally(contact)
                     }
                 }
-                
-                await MainActor.run {
-                    loadContacts()
-                }
+                await MainActor.run { loadContacts() }
             } catch {
                 print("❌ Ошибка синхронизации контактов: \(error)")
             }
@@ -447,18 +269,12 @@ class ContactService: ObservableObject {
         Task {
             do {
                 let serverRequests = try await getPendingRequests()
-                
-                // Синхронизируем с локальной базой
                 for request in serverRequests {
-                    // Проверяем, нет ли уже такого запроса
                     if !pendingRequests.contains(where: { $0.id == request.id }) {
                         _ = saveContactRequestLocally(request)
                     }
                 }
-                
-                await MainActor.run {
-                    loadPendingRequests()
-                }
+                await MainActor.run { loadPendingRequests() }
             } catch {
                 print("❌ Ошибка синхронизации запросов: \(error)")
             }
@@ -469,8 +285,36 @@ class ContactService: ObservableObject {
         return contacts.contains(where: { $0.userId == userId })
     }
     
-    // MARK: - WebSocket Handlers
+    // MARK: - Search Users
+    func searchUsers(query: String) async throws -> [UserPublicResponse] {
+        let searchQuery = """
+        query Search($query: String!) {
+            user {
+                search(query: $query, page: 1, page_size: 20) {
+                    user_id
+                    nick_name
+                    avatar_url
+                    is_online
+                }
+            }
+        }
+        """
+        let variables = ["query": query]
+        let response: SearchResponse = try await graphQL.perform(
+            query: searchQuery,
+            variables: variables,
+            responseType: SearchResponse.self
+        )
+        return response.user.search.map { apiUser in
+            UserPublicResponse(
+                user_id: UUID(uuidString: apiUser.user_id)!,
+                nickname: apiUser.nick_name,
+                public_key: ""
+            )
+        }
+    }
     
+    // MARK: - WebSocket Handlers
     private func setupWebSocketHandlers() {
         NotificationCenter.default.publisher(for: .newContactRequest)
             .sink { [weak self] notification in
@@ -490,73 +334,25 @@ class ContactService: ObservableObject {
     }
     
     func handleIncomingContactRequest(_ request: ContactRequest) {
-        print("📩 Получен запрос на контакт от \(request.fromNickname)")
-        
-        // Усиленная проверка: убедимся, что запрос не от самого себя
-        guard let currentUserId = AppState.shared.currentUser?.id else {
-            print("❌ Текущий пользователь не найден")
-            return
-        }
-        
-        // Проверяем, что запрос не от нас самих
-        if request.fromUserId == currentUserId {
-            print("⚠️ Получен запрос от самого себя, игнорируем")
-            return
-        }
-        
-        // Проверяем, что пользователь уже не в контактах
-        guard !isContact(userId: request.fromUserId) else {
-            print("⚠️ Пользователь уже в контактах")
-            return
-        }
-        
-        // Проверяем, не существует ли уже такого запроса
-        let existingRequest = pendingRequests.first { $0.fromUserId == request.fromUserId && $0.status == "pending" }
-        if existingRequest != nil {
-            print("⚠️ Запрос уже существует")
-            return
-        }
+        guard let currentUserId = AppState.shared.currentUser?.id else { return }
+        guard request.fromUserId != currentUserId else { return }
+        guard !isContact(userId: request.fromUserId) else { return }
+        guard !pendingRequests.contains(where: { $0.fromUserId == request.fromUserId && $0.status == "pending" }) else { return }
         
         if saveContactRequestLocally(request) {
             loadPendingRequests()
-            
-            NotificationService.shared.showInfo(
-                "Новый запрос на контакт от \(request.fromNickname)"
-            )
+            NotificationService.shared.showInfo("Новый запрос на контакт от \(request.fromNickname)")
         }
     }
     
     func handleContactRequestAccepted(_ contact: Contact) {
-        print("✅ Запрос на контакт принят: \(contact.nickname)")
-        
         if saveContactLocally(contact) {
             loadContacts()
-            
-            // Обновляем статус исходящего запроса
             if let request = pendingRequests.first(where: { $0.fromUserId == contact.userId }) {
                 _ = database.updateContactRequestStatus(request.id, status: "accepted")
                 loadPendingRequests()
             }
-            
-            NotificationService.shared.showSuccess(
-                "\(contact.nickname) принял(а) ваш запрос на контакт"
-            )
+            NotificationService.shared.showSuccess("\(contact.nickname) принял(а) ваш запрос")
         }
-    }
-    
-    // MARK: - Search
-    
-    func searchUsers(query: String) async throws -> [UserPublicResponse] {
-        guard let deviceId = KeychainService.shared.loadDeviceId() else {
-            throw NSError(domain: "Auth", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "Device ID не найден"])
-        }
-        
-        return try await apiService.searchUsers(
-            query: query,
-            deviceId: deviceId
-        )
     }
 }
-
-

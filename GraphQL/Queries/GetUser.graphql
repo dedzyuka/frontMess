@@ -1,0 +1,6 @@
+query GetUser($userId: UUID!) {
+  getUser(user_id: $userId) {
+    user_id
+    nick_name
+  }
+}

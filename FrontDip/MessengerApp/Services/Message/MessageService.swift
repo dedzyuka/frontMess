@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Services/Message/MessageService.swift
 import Foundation
 import Combine
 
@@ -7,15 +6,13 @@ class MessageService: ObservableObject {
     
     private let webSocketService = WebSocketService.shared
     private let database = LocalDatabase.shared
-    private let keychainService = KeychainService.shared
     
     @Published var unreadMessagesCount: Int = 0
     
-    private var pendingMessages: [UUID: Message] = [:] // messageId: Message
-    private var retryTimers: [UUID: Timer] = [:] // Таймеры для повторной отправки
-    
-    private var retryAttempts: [UUID: Int] = [:] // Счетчик попыток для каждого сообщения
-        private let maxRetryAttempts = 3
+    private var pendingMessages: [UUID: Message] = [:]
+    private var retryTimers: [UUID: Timer] = [:]
+    private var retryAttempts: [UUID: Int] = [:]
+    private let maxRetryAttempts = 3
     
     private var cancellables = Set<AnyCancellable>()
     
@@ -24,7 +21,6 @@ class MessageService: ObservableObject {
     }
     
     private func setupWebSocketHandlers() {
-        // Подписываемся на входящие сообщения через NotificationCenter
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .sink { [weak self] notification in
                 if let message = notification.object as? Message {
@@ -34,178 +30,81 @@ class MessageService: ObservableObject {
             .store(in: &cancellables)
     }
     
-    // MARK: - Отправка сообщений
-    
     func sendMessage(_ message: Message, to chatId: UUID) {
-        guard let messageId = message.id else {
-            print("❌ Ошибка: у сообщения нет ID")
-            return
-        }
+        guard let messageId = message.id else { return }
+        print("📤 Sending message to chat \(chatId)")
         
-        print("📤 Отправка сообщения в чат \(chatId.uuidString.prefix(8))...")
-        
-        // 1. Проверяем, нет ли уже такого сообщения в базе
-        if database.messageExists(messageId) {
-            print("⚠️ Сообщение уже существует в базе, пропускаем сохранение")
-        } else {
-            // 2. Сохраняем в локальную БД
+        if !database.messageExists(messageId) {
             _ = database.saveMessage(message)
         }
-        
-        // 3. Добавляем в очередь ожидания
         pendingMessages[messageId] = message
-        
-        // 4. Отправляем через WebSocket
-        sendViaWebSocket(message: message, chatId: chatId)
-        
-        // 5. Запускаем таймер для повторной отправки
-        startRetryTimer(for: messageId, chatId: chatId)
+        sendViaWebSocket(message: message)
+        startRetryTimer(for: messageId)
     }
     
-    private func sendViaWebSocket(message: Message, chatId: UUID) {
-        guard let messageId = message.id else {
-            print("❌ Message ID is nil")
-            return
-        }
-        
-        let webSocketMessage = WebSocketMessage(
+    private func sendViaWebSocket(message: Message) {
+        guard let messageId = message.id else { return }
+        let wsMessage = WebSocketMessage(
             type: "chat_message",
-            chatId: chatId,
+            chatId: message.chatId,
             content: message.content,
             messageId: messageId,
             timestamp: message.timestamp
         )
-        
-        webSocketService.sendMessage(webSocketMessage)
+        webSocketService.sendMessage(wsMessage)
     }
     
-    private func startRetryTimer(for messageId: UUID, chatId: UUID) {
-            // Отменяем старый таймер
-            retryTimers[messageId]?.invalidate()
-            
-            // Увеличиваем счетчик попыток
-            let attempt = (retryAttempts[messageId] ?? 0) + 1
-            retryAttempts[messageId] = attempt
-            
-            // Если превысили лимит - удаляем из очереди
-            if attempt > maxRetryAttempts {
-                print("❌ Превышено максимальное количество попыток (\(maxRetryAttempts)) для сообщения \(messageId.uuidString.prefix(8))")
-                pendingMessages.removeValue(forKey: messageId)
-                retryAttempts.removeValue(forKey: messageId)
-                return
-            }
-            
-            // Экспоненциальная задержка: 5, 15, 45 секунд
-            let delay = TimeInterval(pow(3.0, Double(attempt - 1)) * 5)
-            
-            print("⏰ Установлен таймер повторной отправки через \(delay) секунд (попытка \(attempt)/\(maxRetryAttempts))")
-            
-            let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] timer in
-                guard let self = self else {
-                    timer.invalidate()
-                    return
-                }
-                
-                // Проверяем, все ли еще сообщение в очереди
-                guard let message = self.pendingMessages[messageId] else {
-                    print("✅ Сообщение \(messageId.uuidString.prefix(8)) удалено из очереди")
-                    timer.invalidate()
-                    self.retryTimers.removeValue(forKey: messageId)
-                    self.retryAttempts.removeValue(forKey: messageId)
-                    return
-                }
-                
-                print("🔄 Повторная отправка сообщения \(messageId.uuidString.prefix(8)) (попытка \(attempt)/\(maxRetryAttempts))...")
-                self.sendViaWebSocket(message: message, chatId: chatId)
-            }
-            
-            retryTimers[messageId] = timer
+    private func startRetryTimer(for messageId: UUID) {
+        retryTimers[messageId]?.invalidate()
+        let attempt = (retryAttempts[messageId] ?? 0) + 1
+        retryAttempts[messageId] = attempt
+        if attempt > maxRetryAttempts {
+            pendingMessages.removeValue(forKey: messageId)
+            retryAttempts.removeValue(forKey: messageId)
+            return
         }
+        let delay = TimeInterval(pow(3.0, Double(attempt - 1)) * 5)
+        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self, let msg = self.pendingMessages[messageId] else { return }
+            self.sendViaWebSocket(message: msg)
+        }
+        retryTimers[messageId] = timer
+    }
     
     private func stopRetryTimer(for messageId: UUID) {
-            retryTimers[messageId]?.invalidate()
-            retryTimers.removeValue(forKey: messageId)
-            retryAttempts.removeValue(forKey: messageId) // 🔥 ВАЖНО: очищаем счетчик
-            print("⏹️ Остановлен таймер для сообщения \(messageId.uuidString.prefix(8))")
-        }
-    
-    // MARK: - Обработка входящих сообщений
+        retryTimers[messageId]?.invalidate()
+        retryTimers.removeValue(forKey: messageId)
+        retryAttempts.removeValue(forKey: messageId)
+    }
     
     private func handleIncomingMessages(_ messages: [Message]) {
         for message in messages {
             guard let messageId = message.id else { continue }
-            
-            // Проверка ДО обработки
-            if database.messageExists(messageId) {
-                print("⚠️ Пропускаем дубликат: \(messageId)")
-                continue
-            }
-            
-            // Сохранение
+            if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
-            
-            // Отправка ACK
             sendMessageAck(for: message)
-            
-            // Уведомление UI
             NotificationCenter.default.post(name: .newMessageReceived, object: message)
         }
     }
     
     private func sendMessageAck(for message: Message) {
-        guard let messageId = message.id,
-              let currentUser = AppState.shared.currentUser else { return }
-        
-        // Исправленный порядок аргументов
+        guard let messageId = message.id, let currentUser = AppState.shared.currentUser else { return }
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            chatId: nil,
-            content: nil, // content должен идти перед originalSenderId
             messageId: messageId,
             timestamp: Date(),
-            senderId: nil,
-            recipientId: nil,
-            originalSenderId: message.senderId, // теперь originalSenderId после recipientId
-            requestId: nil,
+            originalSenderId: message.senderId,
             ackSenderId: currentUser.id
         )
-        
         webSocketService.sendMessage(ackMessage)
     }
     
-    // MARK: - Обработка подтверждений
-    
-    // В MessageService.swift
     func handleMessageAck(messageId: UUID, from recipientId: UUID) {
-        print("✅ Подтверждение получения сообщения \(messageId.uuidString.prefix(8)) от \(recipientId.uuidString.prefix(8))")
-        
-        // 🔥 ДОБАВИТЬ: Проверяем, что сообщение еще в очереди
-        guard pendingMessages[messageId] != nil else {
-            print("⚠️ Сообщение уже удалено из очереди")
-            return
-        }
-        
-        // 1. Удаляем из очереди ожидания
+        guard pendingMessages[messageId] != nil else { return }
         pendingMessages.removeValue(forKey: messageId)
-        
-        // 2. Останавливаем таймер
         stopRetryTimer(for: messageId)
-        
-        // 3. Обновляем статус в локальной БД
-        let success = database.updateMessageStatus(
-            messageId: messageId,
-            isSent: true,
-            isDelivered: true
-        )
-        
-        if success {
-            print("✅ Статус сообщения обновлен: доставлено")
-        } else {
-            print("⚠️ Не удалось обновить статус сообщения")
-        }
+        _ = database.updateMessageStatus(messageId: messageId, isSent: true, isDelivered: true)
     }
-    
-    // MARK: - Получение сообщений
     
     func getMessages(for chatId: UUID) -> [Message] {
         return database.getMessages(for: chatId)
@@ -215,20 +114,11 @@ class MessageService: ObservableObject {
         database.clearMessages(for: chatId)
     }
     
-    // MARK: - Очистка
-    
     func clearAll() {
-            // Останавливаем все таймеры
-            for timer in retryTimers.values {
-                timer.invalidate()
-            }
-            retryTimers.removeAll()
-            retryAttempts.removeAll() // 🔥 Очищаем счетчики
-            
-            // Очищаем очередь
-            pendingMessages.removeAll()
-            
-            // Сбрасываем счетчик
-            unreadMessagesCount = 0
-        }
+        for timer in retryTimers.values { timer.invalidate() }
+        retryTimers.removeAll()
+        retryAttempts.removeAll()
+        pendingMessages.removeAll()
+        unreadMessagesCount = 0
+    }
 }

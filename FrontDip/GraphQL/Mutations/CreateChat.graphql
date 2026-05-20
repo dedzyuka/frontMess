@@ -1,0 +1,9 @@
+
+mutation CreateChat($input: CreateChatInput!) {
+  createChat(input: $input) {
+    chat_id
+    name
+    members_count
+    created_at
+  }
+}

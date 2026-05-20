@@ -6,9 +6,7 @@ class ChatSidebarViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     
-    private let apiService = APIService.shared
-    private let keychainService = KeychainService.shared
-    
+    private let graphQL = GraphQLClient.shared
     let chat: Chat
     
     init(chat: Chat) {
@@ -23,56 +21,51 @@ class ChatSidebarViewModel: ObservableObject {
             }
             
             do {
-                let members = try await apiService.getChatMembers(chatId: chat.id)
+                let variables: [String: Any] = ["chatId": chat.id.uuidString]
+                let response: ChatMembersListResponse = try await graphQL.perform(
+                    query: GraphQLQueries.listChatMembers,
+                    variables: variables,
+                    responseType: ChatMembersListResponse.self
+                )
+                
+                let loadedMembers = response.listChatMembers.members.map { member in
+                    ChatMemberDetailed(
+                        user_id: member.userId,
+                        nickname: member.nickname,
+                        public_key: member.publicKey,
+                        joined_at: member.joinedAt,
+                        device_id: member.deviceId
+                    )
+                }
                 
                 await MainActor.run {
-                    self.members = members
+                    self.members = loadedMembers
                     self.isLoading = false
-                    print("✅ Загружено участников чата: \(members.count)")
                 }
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Ошибка загрузки участников: \(error.localizedDescription)"
                     self.isLoading = false
-                    print("❌ Ошибка загрузки участников чата: \(error)")
                 }
             }
         }
     }
-
-
+    
     func addUserToChat(_ userId: UUID) async -> Bool {
-        guard let deviceId = keychainService.loadDeviceId() else {
-            print("❌ Device ID not found")
-            return false
-        }
-        
+        let variables: [String: Any] = [
+            "chatId": chat.id.uuidString,
+            "userId": userId.uuidString
+        ]
         do {
-            print("📤 Добавляем пользователя в чат \(chat.name)...")
-            
-            // Функция возвращает Bool напрямую
-            let success = try await apiService.inviteUserToChat(
-                chatId: chat.id,
-                userId: userId,
-                deviceId: deviceId
+            let _: AddChatMemberResponse = try await graphQL.perform(
+                query: GraphQLQueries.addChatMember,
+                variables: variables,
+                responseType: AddChatMemberResponse.self
             )
-            
-            if success {
-                print("✅ Пользователь успешно добавлен в чат")
-                
-                await MainActor.run {
-                    // Обновляем список участников
-                    loadMembers()
-                }
-                
-                return true
-            } else {
-                print("❌ Не удалось добавить пользователя")
-                return false
-            }
-            
+            await loadMembers()
+            return true
         } catch {
-            print("❌ Ошибка добавления пользователя в чат: \(error)")
+            print("❌ Ошибка добавления пользователя: \(error)")
             return false
         }
     }
