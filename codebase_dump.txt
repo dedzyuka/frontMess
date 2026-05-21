@@ -397,13 +397,14 @@ struct UserPublicResponse: Identifiable, Codable {
 
 ./FrontDip/MessengerApp/Models/WebSocketMessage.swift
 
+// WebSocketMessage.swift
 import Foundation
 
 struct WebSocketMessage: Codable {
     let type: String
     var chatId: UUID?
     var content: String?
-    var messageId: UUID?
+    var messageId: Int64?          // ← изменено с UUID? на Int64?
     var timestamp: Date?
     var senderId: UUID?
     var recipientId: UUID?
@@ -416,7 +417,7 @@ struct WebSocketMessage: Codable {
     var acceptedUserId: UUID?
     var acceptedNickname: String?
     var acceptedPublicKey: String?
-    
+
     enum CodingKeys: String, CodingKey {
         case type
         case chatId = "chat_id"
@@ -439,7 +440,7 @@ struct WebSocketMessage: Codable {
     init(type: String,
          chatId: UUID? = nil,
          content: String? = nil,
-         messageId: UUID? = nil,
+         messageId: Int64? = nil,
          timestamp: Date? = nil,
          senderId: UUID? = nil,
          recipientId: UUID? = nil,
@@ -1058,6 +1059,7 @@ class ChatKeyManager {
 
 ./FrontDip/MessengerApp/Services/Message/MessageService.swift
 
+// MessageService.swift
 import Foundation
 import Combine
 
@@ -1069,9 +1071,9 @@ class MessageService: ObservableObject {
     
     @Published var unreadMessagesCount: Int = 0
     
-    private var pendingMessages: [UUID: Message] = [:]
-    private var retryTimers: [UUID: Timer] = [:]
-    private var retryAttempts: [UUID: Int] = [:]
+    private var pendingMessages: [Int64: Message] = [:]      // ключ Int64
+    private var retryTimers: [Int64: Timer] = [:]           // ключ Int64
+    private var retryAttempts: [Int64: Int] = [:]           // ключ Int64
     private let maxRetryAttempts = 3
     
     private var cancellables = Set<AnyCancellable>()
@@ -1091,7 +1093,7 @@ class MessageService: ObservableObject {
     }
     
     func sendMessage(_ message: Message, to chatId: UUID) {
-        guard let messageId = message.id else { return }
+        let messageId = message.message_id   // Int64
         print("📤 Sending message to chat \(chatId)")
         
         if !database.messageExists(messageId) {
@@ -1103,18 +1105,18 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message) {
-        guard let messageId = message.id else { return }
+        let messageId = message.message_id
         let wsMessage = WebSocketMessage(
             type: "chat_message",
-            chatId: message.chatId,
+            chatId: message.chat_id,
             content: message.content,
             messageId: messageId,
-            timestamp: message.timestamp
+            timestamp: message.created_at
         )
         webSocketService.sendMessage(wsMessage)
     }
     
-    private func startRetryTimer(for messageId: UUID) {
+    private func startRetryTimer(for messageId: Int64) {
         retryTimers[messageId]?.invalidate()
         let attempt = (retryAttempts[messageId] ?? 0) + 1
         retryAttempts[messageId] = attempt
@@ -1131,7 +1133,7 @@ class MessageService: ObservableObject {
         retryTimers[messageId] = timer
     }
     
-    private func stopRetryTimer(for messageId: UUID) {
+    private func stopRetryTimer(for messageId: Int64) {
         retryTimers[messageId]?.invalidate()
         retryTimers.removeValue(forKey: messageId)
         retryAttempts.removeValue(forKey: messageId)
@@ -1139,7 +1141,7 @@ class MessageService: ObservableObject {
     
     private func handleIncomingMessages(_ messages: [Message]) {
         for message in messages {
-            guard let messageId = message.id else { continue }
+            let messageId = message.message_id
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
             sendMessageAck(for: message)
@@ -1148,18 +1150,18 @@ class MessageService: ObservableObject {
     }
     
     private func sendMessageAck(for message: Message) {
-        guard let messageId = message.id, let currentUser = AppState.shared.currentUser else { return }
+        guard let currentUser = AppState.shared.currentUser else { return }
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            messageId: messageId,
+            messageId: message.message_id,
             timestamp: Date(),
-            originalSenderId: message.senderId,
+            originalSenderId: message.sender_id,
             ackSenderId: currentUser.id
         )
         webSocketService.sendMessage(ackMessage)
     }
     
-    func handleMessageAck(messageId: UUID, from recipientId: UUID) {
+    func handleMessageAck(messageId: Int64, from recipientId: UUID) {
         guard pendingMessages[messageId] != nil else { return }
         pendingMessages.removeValue(forKey: messageId)
         stopRetryTimer(for: messageId)
@@ -1210,7 +1212,7 @@ class ContactService: ObservableObject {
     // MARK: - GraphQL
     
     func sendContactRequest(to userId: String) async throws -> Bool {
-        let variables: [String: Any] = ["contact_user_id": userId]
+        let variables: [String: Any] = ["contactUserId": userId]
         let _: AddContactResponse = try await graphQL.perform(
             query: GraphQLQueries.addContact,
             variables: variables,
@@ -1221,7 +1223,7 @@ class ContactService: ObservableObject {
     }
     
     func acceptContact(contactUserId: String) async throws -> Bool {
-        let variables: [String: Any] = ["contact_user_id": contactUserId]
+        let variables: [String: Any] = ["contactUserId": contactUserId]
         let _: AcceptContactResponse = try await graphQL.perform(
             query: GraphQLQueries.acceptContact,
             variables: variables,
@@ -1232,7 +1234,7 @@ class ContactService: ObservableObject {
     }
     
     func removeContact(userId: String) async throws -> Bool {
-        let variables: [String: Any] = ["contact_user_id": userId]
+        let variables: [String: Any] = ["contactUserId": userId]
         let _: RemoveContactResponse = try await graphQL.perform(
             query: GraphQLQueries.removeContact,
             variables: variables,
@@ -1243,36 +1245,78 @@ class ContactService: ObservableObject {
     }
     
     func fetchContacts(status: String? = "accepted") async throws -> [Contact] {
-        var variables: [String: Any] = [:]
-        if let status = status { variables["status"] = status }
-        let response: ListContactsResponse = try await graphQL.perform(
-            query: GraphQLQueries.listContacts,
-            variables: variables,
-            responseType: ListContactsResponse.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        return response.contact.list.map { apiContact in
-            Contact(
-                id: UUID(),
-                user_id: apiContact.user_id,
-                contact_user_id: apiContact.contact_user_id,
-                status: apiContact.status,
-                created_at: apiContact.created_at,
-                updated_at: apiContact.updated_at,
-                contact_user: apiContact.contact_user
+            var variables: [String: Any] = [:]
+            if let status = status { variables["status"] = status }
+            let response: ListContactsResponse = try await graphQL.perform(
+                query: GraphQLQueries.listContacts,
+                variables: variables,
+                responseType: ListContactsResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
+            // Преобразуем ContactResponseData в Contact
+            return response.contact.list.map { apiContact in
+                Contact(
+                    id: UUID(),   // локальный ID, можно сгенерировать
+                    user_id: apiContact.user_id,
+                    contact_user_id: apiContact.contact_user_id,
+                    status: apiContact.status,
+                    created_at: apiContact.created_at,
+                    updated_at: apiContact.updated_at,
+                    contact_user: apiContact.contact_user.map { contactUserInfo in
+                        User(
+                            user_id: contactUserInfo.user_id,
+                            nick_name: contactUserInfo.nick_name,
+                            first_name: nil,
+                            last_name: nil,
+                            middle_name: nil,
+                            email: nil,
+                            phone: nil,
+                            avatar_url: contactUserInfo.avatar_url,
+                            bio: nil,
+                            last_seen: nil,
+                            is_online: false,
+                            status: "active",
+                            email_verified: false,
+                            phone_verified: false,
+                            is_admin: false,
+                            created_at: Date(),
+                            updated_at: Date()
+                        )
+                    }
+                )
+            }
         }
-    }
-    
-    func fetchIncomingRequests() async throws -> [Contact] {
-        let response: ListContactsResponse = try await graphQL.perform(
-            query: GraphQLQueries.incomingRequests,
-            variables: [:],
-            responseType: ListContactsResponse.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        return response.contact.list
-    }
+        
+        func fetchIncomingRequests() async throws -> [Contact] {
+            let response: ListContactsResponse = try await graphQL.perform(
+                query: GraphQLQueries.incomingRequests,
+                variables: [:],
+                responseType: ListContactsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.contact.list.map { apiContact in
+                Contact(
+                    id: UUID(),
+                    user_id: apiContact.user_id,
+                    contact_user_id: apiContact.contact_user_id,
+                    status: apiContact.status,
+                    created_at: apiContact.created_at,
+                    updated_at: apiContact.updated_at,
+                    contact_user: apiContact.contact_user.map { contactUserInfo in
+                        User(
+                            user_id: contactUserInfo.user_id,
+                            nick_name: contactUserInfo.nick_name,
+                            first_name: nil, last_name: nil, middle_name: nil,
+                            email: nil, phone: nil,
+                            avatar_url: contactUserInfo.avatar_url,
+                            bio: nil, last_seen: nil, is_online: false,
+                            status: "active", email_verified: false, phone_verified: false,
+                            is_admin: false, created_at: Date(), updated_at: Date()
+                        )
+                    }
+                )
+            }
+        }
     
     // MARK: - Local
     
@@ -1302,96 +1346,95 @@ class ContactService: ObservableObject {
     func syncPendingRequests() { loadPendingRequests() }
     
     func isContact(userId: UUID) -> Bool {
-        contacts.contains(where: { $0.contactUserId == userId })
-    }
-    
-    // MARK: - Business
-    
-    func sendContactRequest(to user: UserPublicResponse) {
-        guard let currentUser = AppState.shared.currentUser else { return }
-        guard currentUser.id != user.user_id else { return }
-        guard !isContact(userId: user.user_id) else { return }
-        
-        Task {
-            do {
-                _ = try await sendContactRequest(to: user.user_id.uuidString)
-                await MainActor.run {
-                    NotificationService.shared.showSuccess("Запрос отправлен \(user.nickname)")
-                }
-            } catch {
-                await MainActor.run {
-                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
-    func acceptContactRequest(_ request: Contact) {
-        Task {
-            do {
-                _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
-                await MainActor.run {
-                    loadContacts()
-                    loadPendingRequests()
-                    NotificationService.shared.showSuccess("Контакт добавлен")
-                }
-            } catch {
-                await MainActor.run {
-                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
-    func declineContactRequest(_ request: Contact) {
-        Task {
-            do {
-                _ = try await removeContact(userId: request.contactUserId.uuidString)
-                await MainActor.run {
-                    loadPendingRequests()
-                    NotificationService.shared.showInfo("Запрос отклонён")
-                }
-            } catch {
-                await MainActor.run {
-                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
-    func removeContact(userId: UUID) {
-        Task {
-            do {
-                _ = try await removeContact(userId: userId.uuidString)
-                await MainActor.run {
-                    loadContacts()
-                    NotificationService.shared.showInfo("Контакт удалён")
-                }
-            } catch {
-                await MainActor.run {
-                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                }
-            }
-        }
-    }
-    
-    func searchUsers(query: String) async throws -> [UserPublicResponse] {
-        let variables: [String: Any] = ["query": query]
-        let response: SearchUsersResponse = try await graphQL.perform(
-            query: GraphQLQueries.searchUsers,
-            variables: variables,
-            responseType: SearchUsersResponse.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        return response.user.search.map { apiUser in
-            UserPublicResponse(
-                user_id: apiUser.user_id,
-                nickname: apiUser.nick_name,
-                public_key: ""
-            )
-        }
-    }
-}
+           contacts.contains(where: { $0.contact_user_id == userId })
+       }
+       
+       func sendContactRequest(to user: UserPublicResponse) {
+           guard let currentUser = AppState.shared.currentUser else { return }
+           guard currentUser.id != user.user_id else { return }
+           guard !isContact(userId: user.user_id) else { return }
+           
+           Task {
+               do {
+                   _ = try await sendContactRequest(to: user.user_id.uuidString)
+                   await MainActor.run {
+                       NotificationService.shared.showSuccess("Запрос отправлен \(user.nick_name)")
+                   }
+               } catch {
+                   await MainActor.run {
+                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                   }
+               }
+           }
+       }
+       
+       func acceptContactRequest(_ request: Contact) {
+           Task {
+               do {
+                   _ = try await acceptContact(contactUserId: request.contact_user_id.uuidString)
+                   await MainActor.run {
+                       loadContacts()
+                       loadPendingRequests()
+                       NotificationService.shared.showSuccess("Контакт добавлен")
+                   }
+               } catch {
+                   await MainActor.run {
+                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                   }
+               }
+           }
+       }
+       
+       func declineContactRequest(_ request: Contact) {
+           Task {
+               do {
+                   _ = try await removeContact(userId: request.contact_user_id.uuidString)
+                   await MainActor.run {
+                       loadPendingRequests()
+                       NotificationService.shared.showInfo("Запрос отклонён")
+                   }
+               } catch {
+                   await MainActor.run {
+                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                   }
+               }
+           }
+       }
+       
+       func removeContact(userId: UUID) {
+           Task {
+               do {
+                   _ = try await removeContact(userId: userId.uuidString)
+                   await MainActor.run {
+                       loadContacts()
+                       NotificationService.shared.showInfo("Контакт удалён")
+                   }
+               } catch {
+                   await MainActor.run {
+                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                   }
+               }
+           }
+       }
+       
+       func searchUsers(query: String) async throws -> [UserPublicResponse] {
+           let variables: [String: Any] = ["query": query]
+           let response: SearchUsersResponse = try await graphQL.perform(
+               query: GraphQLQueries.searchUsers,
+               variables: variables,
+               responseType: SearchUsersResponse.self,
+               authToken: TokenManager.shared.accessToken
+           )
+           return response.user.search.map { apiUser in
+               UserPublicResponse(
+                   user_id: apiUser.user_id,
+                   nick_name: apiUser.nick_name,
+                   avatar_url: apiUser.avatar_url,
+                   is_online: apiUser.is_online
+               )
+           }
+       }
+   }
 
 ./FrontDip/MessengerApp/Services/Network/GraphQLClient.swift
 
@@ -1429,7 +1472,7 @@ struct GraphQLErrorDetail: Decodable {
 // MARK: - GraphQL Client
 class GraphQLClient {
     static let shared = GraphQLClient()
-    private let baseURL = "http://localhost:8000/graphql"
+    private let baseURL = "http://localhost:8002/graphql"
     private let session = URLSession.shared
     
     private init() {}
@@ -1468,9 +1511,9 @@ class GraphQLClient {
             throw GraphQLError.httpError(httpResponse.statusCode, errorMessage)
         }
         
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        // Используем ваш гибкий декодер дат
+        let decoder = JSONDecoder.flexibleISO8601
+        // НЕ преобразуем ключи, так как модели и сервер используют snake_case
         
         let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
         
@@ -2063,6 +2106,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
+    // WebSocketService.swift
     private func processJSON(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -2072,11 +2116,18 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         case "message.new":
             if let payload = json["payload"] as? [String: Any],
                let messageId = payload["message_id"] as? Int64,
-               let chatId = payload["chat_id"] as? String,
-               let senderId = payload["sender_id"] as? String,
+               let chatIdString = payload["chat_id"] as? String,
+               let senderIdString = payload["sender_id"] as? String,
                let content = payload["content"] as? String,
                let createdAtString = payload["created_at"] as? String,
                let createdAt = ISO8601DateFormatter().date(from: createdAtString) {
+                
+                // Преобразуем строки в UUID
+                guard let chatId = UUID(uuidString: chatIdString),
+                      let senderId = UUID(uuidString: senderIdString) else {
+                    print("Invalid UUID in message payload")
+                    return
+                }
                 
                 let message = Message(
                     message_id: messageId,
@@ -2093,6 +2144,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }
         case "message.ack":
+            // обработать подтверждение при необходимости
             break
         case "pong":
             print("Pong received")
@@ -2293,6 +2345,36 @@ extension JSONDecoder {
     }()
 }
 
+import Foundation
+
+extension JSONDecoder {
+    static var snakeCaseDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: dateString) {
+                return date
+            }
+            
+            let fallbackFormatter = DateFormatter()
+            fallbackFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+            fallbackFormatter.locale = Locale(identifier: "en_US_POSIX")
+            fallbackFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+            if let date = fallbackFormatter.date(from: dateString) {
+                return date
+            }
+            
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+        }
+        return decoder
+    }
+}
+
 ./FrontDip/MessengerApp/Utils/Validators/InputValidator.swift
 
 
@@ -2340,7 +2422,7 @@ class AuthViewModel: ObservableObject {
             
             // Создание пользователя через GraphQL
             let variables: [String: Any] = [
-                "nick_name": cleanedNickname,
+                "nickName": cleanedNickname,
                 "email": cleanedEmail,
                 "password": password,
                 "phone": cleanedPhone
@@ -2659,8 +2741,8 @@ class ChatSelectionViewModel: ObservableObject {
     
     func addContactToChat(_ chat: Chat) async -> Bool {
         let variables: [String: Any] = [
-            "chat_id": chat.chat_id.uuidString,
-            "user_id": contact.contact_user_id.uuidString
+            "chatId": chat.chat_id.uuidString,
+            "userId": contact.contact_user_id.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
@@ -2697,7 +2779,7 @@ class ChatSidebarViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["chat_id": chat.chat_id.uuidString]
+                let variables: [String: Any] = ["chatId": chat.chat_id.uuidString]
                 let response: ChatMembersResponse = try await graphQL.perform(
                     query: GraphQLQueries.getChatMembers,
                     variables: variables,
@@ -2718,8 +2800,8 @@ class ChatSidebarViewModel: ObservableObject {
 
     func addUserToChat(_ userId: UUID) async -> Bool {
         let variables: [String: Any] = [
-            "chat_id": chat.chat_id.uuidString,
-            "user_id": userId.uuidString
+            "chatId": chat.chat_id.uuidString,
+            "userId": userId.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
@@ -2887,10 +2969,10 @@ class CreateChatViewModel: ObservableObject {
         
         let trimmedName = chatName.trimmingCharacters(in: .whitespacesAndNewlines)
         let variables: [String: Any] = [
-            "chat_type": "group",
+            "chatType": "group",
             "name": trimmedName,
-            "member_ids": [currentUser.id.uuidString],
-            "is_public": false
+            "memberIds": [currentUser.id.uuidString],
+            "isPublic": false
         ]
         
         do {
@@ -3077,7 +3159,6 @@ struct LoginView: View {
 
 ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 
-// ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 import SwiftUI
 
 struct AddContactToChatView: View {
@@ -3113,11 +3194,10 @@ struct AddContactToChatView: View {
                         ForEach(contactService.contacts) { contact in
                             ContactSelectionRow(
                                 contact: contact,
-                                isSelected: selectedContacts.contains(contact.userId),
-                                isAlreadyInChat: viewModel.isUserInChat(contact.userId)
-                            ) {
-                                toggleContactSelection(contact.userId)
-                            }
+                                isSelected: selectedContacts.contains(contact.id),
+                                isAlreadyInChat: viewModel.isUserInChat(contact.contact_user_id),
+                                onToggle: { toggleContactSelection(contact.id) }
+                            )
                         }
                     }
                     .listStyle(PlainListStyle())
@@ -3127,16 +3207,11 @@ struct AddContactToChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Отмена") {
-                        dismiss()
-                    }
+                    Button("Отмена") { dismiss() }
                 }
-                
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Добавить") {
-                        addSelectedContacts()
-                    }
-                    .disabled(selectedContacts.isEmpty || isLoading)
+                    Button("Добавить") { addSelectedContacts() }
+                        .disabled(selectedContacts.isEmpty || isLoading)
                 }
             }
             .onAppear {
@@ -3162,18 +3237,12 @@ struct AddContactToChatView: View {
             
             for userId in selectedContacts {
                 let success = await viewModel.addUserToChat(userId)
-                if success {
-                    addedCount += 1
-                } else {
-                    failedCount += 1
-                }
+                if success { addedCount += 1 } else { failedCount += 1 }
             }
             
             await MainActor.run {
                 isLoading = false
                 dismiss()
-                
-                // Используем NotificationService вместо прямого вызова NotificationCenter
                 let message = "Добавлено: \(addedCount), не удалось: \(failedCount)"
                 if addedCount > 0 {
                     NotificationService.shared.showSuccess(message)
@@ -3197,15 +3266,14 @@ struct ContactSelectionRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(contact.nickname.prefix(1).uppercased())
+                    Text((contact.contact_user?.nick_name ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(contact.nickname)
+                Text(contact.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
-                
                 if isAlreadyInChat {
                     Text("Уже в чате")
                         .font(.caption)
@@ -3340,7 +3408,7 @@ struct ChatListView: View {
                             .fill(Color.blue.opacity(0.8))
                             .frame(width: 32, height: 32)
                             .overlay(
-                                Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
+                                Text(authViewModel.currentUser?.nick_name.prefix(1).uppercased() ?? "?")
                                     .font(.caption)
                                     .fontWeight(.bold)
                                     .foregroundColor(.white)
@@ -3372,10 +3440,10 @@ struct ChatListView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(chat.name ?? "Без названия")
                     .font(.headline)
-                Text("\(chat.membersCount) участников")
+                Text("\(chat.members_count) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text(formatDate(chat.createdAt))
+                Text(formatDate(chat.created_at))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -3449,10 +3517,10 @@ struct ChatListView: View {
         isLoadingChat = true
         
         let variables: [String: Any] = [
-            "chat_type": "group",
+            "chatType": "group",
             "name": chatNameTrimmed,
-            "member_ids": [currentUser.id.uuidString],
-            "is_public": false
+            "memberIds": [currentUser.id.uuidString],
+            "isPublic": false
         ]
         
         do {
@@ -3595,13 +3663,11 @@ struct ChatSidebarView: View {
                         .padding(.top, 20)
                     
                     HStack {
-                        Label("\(chat.membersCount) участников", systemImage: "person.2")
+                        Label("\(chat.members_count) участников", systemImage: "person.2")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
-                        
                         Spacer()
-                        
-                        Text(formatDate(chat.createdAt))
+                        Text(formatDate(chat.created_at))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -3614,12 +3680,8 @@ struct ChatSidebarView: View {
                     HStack {
                         Text("Участники")
                             .font(.headline)
-                        
                         Spacer()
-                        
-                        Button(action: {
-                            showingAddContact = true
-                        }) {
+                        Button(action: { showingAddContact = true }) {
                             Image(systemName: "person.badge.plus")
                                 .foregroundColor(.blue)
                         }
@@ -3636,7 +3698,7 @@ struct ChatSidebarView: View {
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(viewModel.members) { member in
+                                ForEach(viewModel.members, id: \.user_id) { member in
                                     ChatMemberRow(member: member)
                                         .padding(.horizontal)
                                         .padding(.vertical, 8)
@@ -3645,19 +3707,21 @@ struct ChatSidebarView: View {
                         }
                     }
                 }
-                
                 Spacer()
             }
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(trailing: Button("Готово") {
-                dismiss()
-            })
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
+            }
         }
         .onAppear {
             viewModel.loadMembers()
         }
         .sheet(isPresented: $showingAddContact) {
             AddContactToChatView(chat: chat, viewModel: viewModel)
+                .environmentObject(ContactService.shared)
         }
     }
     
@@ -3671,7 +3735,7 @@ struct ChatSidebarView: View {
 }
 
 struct ChatMemberRow: View {
-    let member: ChatMemberDetailed
+    let member: ChatMemberItem   // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
         HStack {
@@ -3687,22 +3751,18 @@ struct ChatMemberRow: View {
             VStack(alignment: .leading) {
                 Text(member.nickname)
                     .font(.headline)
-                
                 HStack {
                     Text("ID: \(member.user_id.uuidString.prefix(8))...")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
                     Text("•")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
                     Text("Присоединился: \(formatDate(member.joined_at))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
-            
             Spacer()
         }
     }
@@ -3733,7 +3793,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок чата (как в Telegram)
+            // Заголовок чата
             HStack {
                 Button(action: {
                     presentationMode.wrappedValue.dismiss()
@@ -3748,7 +3808,7 @@ struct ChatView: View {
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Text("\(chat.membersCount) участников")
+                    Text("\(chat.members_count) участников")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }
@@ -3774,7 +3834,7 @@ struct ChatView: View {
                         ForEach(viewModel.messages) { message in
                             MessageBubbleView(
                                 message: message,
-                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId)
+                                isCurrentUser: viewModel.isCurrentUser(senderId: message.sender_id)
                             )
                             .id(message.id)
                         }
@@ -4012,13 +4072,13 @@ struct SearchResultRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(user.nickname.prefix(1).uppercased())
+                    Text(user.nick_name.prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(user.nickname)
+                Text(user.nick_name)
                     .font(.headline)
                 Text("ID: \(user.user_id.uuidString.prefix(8))...")
                     .font(.caption)
@@ -4041,7 +4101,7 @@ struct SearchResultRow: View {
                 onAdd()
             }
         } message: {
-            Text("Отправить запрос на добавление в контакты пользователю \(user.nickname)?")
+            Text("Отправить запрос на добавление в контакты пользователю \(user.nick_name)?")
         }
     }
 }
@@ -4095,14 +4155,14 @@ struct SideMenuView: View {
                             .fill(Color.blue.opacity(0.8))
                             .frame(width: 60, height: 60)
                             .overlay(
-                                Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
+                                Text(authViewModel.currentUser?.nick_name.prefix(1).uppercased() ?? "?")
                                     .font(.title)
                                     .fontWeight(.bold)
                                     .foregroundColor(.white)
                             )
                         
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(authViewModel.currentUser?.nickName ?? "Пользователь")
+                            Text(authViewModel.currentUser?.nick_name ?? "Пользователь")
                                 .font(.title2)
                                 .fontWeight(.semibold)
                             
@@ -4307,7 +4367,6 @@ struct MenuItem: View {
 
 ./FrontDip/MessengerApp/Views/Contact/ChatSelectionView.swift
 
-// ./FrontDip/MessengerApp/Views/Contact/ChatSelectionView.swift
 import SwiftUI
 
 struct ChatSelectionView: View {
@@ -4315,6 +4374,7 @@ struct ChatSelectionView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSelectionViewModel
     @State private var isLoadingAction = false
+    @State private var contactsInChat: [UUID: Bool] = [:]  // кэш: чат -> есть ли контакт
     
     init(contact: Contact) {
         self.contact = contact
@@ -4345,14 +4405,18 @@ struct ChatSelectionView: View {
                     }
                     Spacer()
                 } else {
-                    List(viewModel.chats) { chatInfo in
-                        ChatSelectionRow(
-                            chatInfo: chatInfo,
-                            isLoading: isLoadingAction,
-                            onAdd: {
-                                addContactToChat(chatInfo.chat)
+                    List {
+                        ForEach(viewModel.chats) { chat in
+                            ChatSelectionRow(
+                                chat: chat,
+                                isContactInChat: contactsInChat[chat.id] ?? false,
+                                isLoading: isLoadingAction,
+                                onAdd: { addContactToChat(chat) }
+                            )
+                            .onAppear {
+                                checkIfContactInChat(chat)
                             }
-                        )
+                        }
                     }
                     .listStyle(PlainListStyle())
                 }
@@ -4372,29 +4436,34 @@ struct ChatSelectionView: View {
         }
     }
     
+    private func checkIfContactInChat(_ chat: Chat) {
+        // Проверяем, если уже закэшировано – не делаем повторный запрос
+        guard contactsInChat[chat.id] == nil else { return }
+        
+        Task {
+            let isInChat = await viewModel.isContactInChat(chat)
+            await MainActor.run {
+                contactsInChat[chat.id] = isInChat
+            }
+        }
+    }
+    
     private func addContactToChat(_ chat: Chat) {
         isLoadingAction = true
         
         Task {
             let success = await viewModel.addContactToChat(chat)
-            if success {
-                NotificationService.shared.showSuccess("\(contact.contact_user_id) добавлен в чат")
-            }
             
             await MainActor.run {
                 isLoadingAction = false
                 
                 if success {
-                    // Используем NotificationService
-                    NotificationService.shared.showSuccess("\(contact.contact_user?.nick_name ?? "Неизвестный") добавлен в чат \(chat.name ?? "Неизвестное")")
-                    
-                    // Закрываем через 1 секунду
+                    NotificationService.shared.showSuccess("\(contact.contact_user?.nick_name ?? "Контакт") добавлен в чат \(chat.name ?? "Неизвестное")")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                         dismiss()
                     }
                 } else {
-                    // Используем NotificationService
-                    NotificationService.shared.showError("Не удалось добавить \(contact.contact_user?.nick_name ?? "Неизвестный") в чат")
+                    NotificationService.shared.showError("Не удалось добавить \(contact.contact_user?.nick_name ?? "Контакт") в чат")
                 }
             }
         }
@@ -4402,24 +4471,25 @@ struct ChatSelectionView: View {
 }
 
 struct ChatSelectionRow: View {
-    let chatInfo: ChatWithContactInfo
+    let chat: Chat
+    let isContactInChat: Bool
     let isLoading: Bool
     let onAdd: () -> Void
     
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chatInfo.chat.name ?? "Неизвестное")
+                Text(chat.name ?? "Неизвестное")
                     .font(.headline)
                 
-                Text("\(chatInfo.chat.members_count) участников")
+                Text("\(chat.members_count) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             
             Spacer()
             
-            if chatInfo.isContactInChat {
+            if isContactInChat {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
@@ -4432,7 +4502,7 @@ struct ChatSelectionRow: View {
                 Button(action: onAdd) {
                     if isLoading {
                         ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
                             .frame(width: 20, height: 20)
                     } else {
                         Image(systemName: "plus.circle.fill")
@@ -4444,7 +4514,7 @@ struct ChatSelectionRow: View {
             }
         }
         .padding(.vertical, 8)
-        .opacity(chatInfo.isContactInChat ? 0.6 : 1.0)
+        .opacity(isContactInChat ? 0.6 : 1.0)
     }
 }
 
@@ -4568,7 +4638,7 @@ struct MessageBubbleView: View {
             
             VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
                 // Текст сообщения
-                Text(message.content)
+                Text(message.content ?? "")
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(isCurrentUser ? Color.blue : Color(.systemGray5))
@@ -4576,7 +4646,7 @@ struct MessageBubbleView: View {
                     .cornerRadius(18)
                     .contextMenu {
                         Button("Копировать") {
-                            UIPasteboard.general.string = message.content
+                            UIPasteboard.general.string = message.content ?? ""
                         }
                         
                         Button("Переслать") {
@@ -4592,18 +4662,12 @@ struct MessageBubbleView: View {
                 
                 // Время и статус
                 HStack(spacing: 4) {
-                    Text(formatTime(message.timestamp))
+                    Text(formatTime(message.created_at))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     
                     if isCurrentUser {
-                        if message.isEncrypted {
-                            Image(systemName: "lock.fill")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        // Статус доставки
+                        // Статус доставки (упрощённо)
                         Image(systemName: "checkmark")
                             .font(.caption2)
                             .foregroundColor(.blue)
@@ -4634,10 +4698,8 @@ struct MessageBubbleView: View {
 
 ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
 
-// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 import SwiftUI
 
-// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 struct NotificationsView: View {
     @EnvironmentObject var contactService: ContactService
     @Environment(\.dismiss) var dismiss
@@ -4715,8 +4777,9 @@ struct NotificationsView: View {
     }
 }
 
+// Переработанная строка для входящего запроса на основе модели Contact
 struct ContactRequestRow: View {
-    let request: ContactRequest
+    let request: Contact
     @State private var showingActionSheet = false
     
     var body: some View {
@@ -4725,20 +4788,20 @@ struct ContactRequestRow: View {
                 .fill(Color.orange.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(request.fromNickname.prefix(1).uppercased())
+                    Text((request.contact_user?.nick_name ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.orange)
                 )
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(request.fromNickname)
+                Text(request.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
                 
                 Text("Запрос на контакт")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                Text(formatDate(request.createdAt))
+                Text(formatDate(request.created_at))
                     .font(.caption2)
                     .foregroundColor(.gray)
             }

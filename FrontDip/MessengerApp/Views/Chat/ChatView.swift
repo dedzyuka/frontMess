@@ -4,55 +4,42 @@ struct ChatView: View {
     let chat: Chat
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
-    @State private var showChatSidebar = false
-    
+
     init(chat: Chat) {
         self.chat = chat
         _viewModel = StateObject(wrappedValue: ChatViewModel(chat: chat))
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок чата
+            // Кастомный заголовок
             HStack {
-                Button(action: {
+                Button {
                     presentationMode.wrappedValue.dismiss()
-                }) {
+                } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.title2)
                         .foregroundColor(.blue)
                 }
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(chat.name ?? "Чат")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Text("\(chat.members_count) участников")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                }
-                
                 Spacer()
-                
-                Button(action: {
-                    showChatSidebar = true
-                }) {
+                Text(chat.name ?? "Чат")
+                    .font(.headline)
+                Spacer()
+                NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
-                        .font(.system(size: 20))
+                        .font(.title2)
                         .foregroundColor(.blue)
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 12)
+            .padding()
             .background(Color(.systemBackground))
-            
-            // Сообщения
+
+            // Список сообщений
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 12) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubbleView(
+                            MessageBubble(
                                 message: message,
                                 isCurrentUser: viewModel.isCurrentUser(senderId: message.sender_id)
                             )
@@ -60,50 +47,66 @@ struct ChatView: View {
                         }
                     }
                     .padding(.horizontal)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 12)
                 }
                 .onChange(of: viewModel.messages.count) { _ in
-                    if let lastMessage = viewModel.messages.last {
+                    if let last = viewModel.messages.last {
                         withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
             }
             .background(Color(.systemGroupedBackground))
-            
+
             // Поле ввода
             HStack(spacing: 12) {
-                Button(action: {
-                    // Прикрепление файла
-                }) {
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 20))
-                        .foregroundColor(.gray)
-                }
-                
-                TextField("Сообщение", text: $viewModel.newMessage)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                TextField("Сообщение", text: $viewModel.newMessageText)
+                    .padding(12)
                     .background(Color(.systemGray6))
-                    .cornerRadius(18)
-                
-                Button(action: {
+                    .cornerRadius(25)
+                Button {
                     viewModel.sendMessage()
-                }) {
+                } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 32))
-                        .foregroundColor(viewModel.newMessage.isEmpty ? .gray : .blue)
+                        .foregroundColor(viewModel.newMessageText.isEmpty ? .gray : .blue)
                 }
-                .disabled(viewModel.newMessage.isEmpty)
+                .disabled(viewModel.newMessageText.isEmpty)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            .padding()
             .background(Color(.systemBackground))
         }
         .navigationBarHidden(true)
-        .sheet(isPresented: $showChatSidebar) {
-            ChatSidebarView(chat: chat)
+    }
+}
+
+struct MessageBubble: View {
+    let message: Message
+    let isCurrentUser: Bool
+
+    var body: some View {
+        HStack {
+            if isCurrentUser { Spacer() }
+            VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
+                Text(message.content ?? "")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(20)
+                Text(formatTime(message.created_at))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            if !isCurrentUser { Spacer() }
         }
+        .padding(.horizontal, 8)
+    }
+
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 }

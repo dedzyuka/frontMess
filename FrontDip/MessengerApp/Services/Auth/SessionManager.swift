@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Services/Auth/SessionManager.swift
 import Foundation
 import Combine
 
@@ -45,9 +44,14 @@ class SessionManager: ObservableObject {
             .store(in: &cancellables)
     }
     
-    func register(nickname: String) async -> Bool {
-        await authViewModel.register()
-        return authViewModel.currentUser != nil
+    // ✅ Исправленный метод регистрации
+    func register(nickname: String, email: String, password: String, phone: String = "") async -> Bool {
+        return await authViewModel.register(nickname: nickname, email: email, password: password, phone: phone)
+    }
+    
+    // ✅ Добавлен метод логина
+    func login(login: String, password: String) async -> Bool {
+        return await authViewModel.login(login: login, password: password)
     }
     
     func logout() {

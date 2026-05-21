@@ -311,9 +311,11 @@ struct CreateChatWrapper: Decodable {
 }
 struct CreatedChat: Decodable {
     let chat_id: UUID
+    let chat_type: String
     let name: String?
-    let members_count: Int
     let created_at: Date
+    let updated_at: Date
+    let members_count: Int
 }
 
 // Chat members
