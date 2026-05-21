@@ -1,3 +1,5 @@
+// ./FrontDip/MessengerApp/Services/Network/ContactService.swift
+
 import Foundation
 import Combine
 
@@ -13,11 +15,19 @@ class ContactService: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     private init() {
-        loadContacts()
-        loadPendingRequests()
+        setupNotifications()
     }
     
-    // MARK: - GraphQL
+    private func setupNotifications() {
+        NotificationCenter.default.publisher(for: .userLoggedIn)
+            .sink { [weak self] _ in
+                self?.loadContacts()
+                self?.loadPendingRequests()
+            }
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - GraphQL Requests
     
     func sendContactRequest(to userId: String) async throws -> Bool {
         let variables: [String: Any] = ["contactUserId": userId]
@@ -53,89 +63,58 @@ class ContactService: ObservableObject {
     }
     
     func fetchContacts(status: String? = "accepted") async throws -> [Contact] {
-            var variables: [String: Any] = [:]
-            if let status = status { variables["status"] = status }
-            let response: ListContactsResponse = try await graphQL.perform(
-                query: GraphQLQueries.listContacts,
-                variables: variables,
-                responseType: ListContactsResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            // Преобразуем ContactResponseData в Contact
-            return response.contact.list.map { apiContact in
-                Contact(
-                    id: UUID(),   // локальный ID, можно сгенерировать
-                    user_id: apiContact.user_id,
-                    contact_user_id: apiContact.contact_user_id,
-                    status: apiContact.status,
-                    created_at: apiContact.created_at,
-                    updated_at: apiContact.updated_at,
-                    contact_user: apiContact.contact_user.map { contactUserInfo in
-                        User(
-                            user_id: contactUserInfo.user_id,
-                            nick_name: contactUserInfo.nick_name,
-                            first_name: nil,
-                            last_name: nil,
-                            middle_name: nil,
-                            email: nil,
-                            phone: nil,
-                            avatar_url: contactUserInfo.avatar_url,
-                            bio: nil,
-                            last_seen: nil,
-                            is_online: false,
-                            status: "active",
-                            email_verified: false,
-                            phone_verified: false,
-                            is_admin: false,
-                            created_at: Date(),
-                            updated_at: Date()
-                        )
-                    }
-                )
-            }
-        }
-        
-        func fetchIncomingRequests() async throws -> [Contact] {
-            let response: ListContactsResponse = try await graphQL.perform(
-                query: GraphQLQueries.incomingRequests,
-                variables: [:],
-                responseType: ListContactsResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            return response.contact.list.map { apiContact in
-                Contact(
-                    id: UUID(),
-                    user_id: apiContact.user_id,
-                    contact_user_id: apiContact.contact_user_id,
-                    status: apiContact.status,
-                    created_at: apiContact.created_at,
-                    updated_at: apiContact.updated_at,
-                    contact_user: apiContact.contact_user.map { contactUserInfo in
-                        User(
-                            user_id: contactUserInfo.user_id,
-                            nick_name: contactUserInfo.nick_name,
-                            first_name: nil, last_name: nil, middle_name: nil,
-                            email: nil, phone: nil,
-                            avatar_url: contactUserInfo.avatar_url,
-                            bio: nil, last_seen: nil, is_online: false,
-                            status: "active", email_verified: false, phone_verified: false,
-                            is_admin: false, created_at: Date(), updated_at: Date()
-                        )
-                    }
-                )
-            }
-        }
+        var variables: [String: Any] = [:]
+        if let status = status { variables["status"] = status }
+        let response: ListContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.listContacts,
+            variables: variables,
+            responseType: ListContactsResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.contact.list
+    }
     
-    // MARK: - Local
+    func fetchIncomingRequests() async throws -> [Contact] {
+        let response: IncomingContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.incomingRequests,
+            variables: [:],
+            responseType: IncomingContactsResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.contact.incoming
+    }
+    
+    func searchUsers(query: String) async throws -> [UserPublicResponse] {
+        let variables: [String: Any] = ["query": query]
+        let response: SearchUsersResponse = try await graphQL.perform(
+            query: GraphQLQueries.searchUsers,
+            variables: variables,
+            responseType: SearchUsersResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.user.search
+    }
+    
+    // MARK: - Local Data Management
     
     func loadContacts() {
         guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
                 let fetched = try await fetchContacts()
-                await MainActor.run { self.contacts = fetched }
+                await MainActor.run {
+                    self.contacts = fetched
+                    // Сохраняем в локальную БД для офлайн‑доступа
+                    for contact in fetched {
+                        _ = self.database.saveContact(contact)
+                    }
+                }
             } catch {
                 print("Failed to load contacts: \(error)")
+                // Пытаемся загрузить из кэша
+                await MainActor.run {
+                    self.contacts = self.database.getContacts()
+                }
             }
         }
     }
@@ -145,9 +124,45 @@ class ContactService: ObservableObject {
         Task {
             do {
                 let fetched = try await fetchIncomingRequests()
-                await MainActor.run { self.pendingRequests = fetched.filter { $0.status == "pending" } }
+                let pending = fetched.filter { $0.status.lowercased() == "pending" }
+                await MainActor.run {
+                    self.pendingRequests = pending
+                    for req in pending {
+                        let contactRequest = ContactRequest(
+                            fromUserId: req.contactUserId,
+                            fromNickname: req.contactUser?.nickName ?? "Unknown",
+                            fromAvatarUrl: req.contactUser?.avatarUrl,
+                            status: req.status,
+                            createdAt: req.createdAt
+                        )
+                        _ = self.database.saveContactRequest(contactRequest)
+                    }
+                }
             } catch {
-                print("Failed to load pending: \(error)")
+                print("Failed to load pending requests: \(error)")
+                // загружаем из базы
+                let stored = self.database.getPendingContactRequests()
+                await MainActor.run {
+                    self.pendingRequests = stored.compactMap { req in
+                        Contact(
+                            userId: req.fromUserId,
+                            contactUserId: req.fromUserId,
+                            status: req.status,
+                            createdAt: req.createdAt,
+                            updatedAt: req.createdAt,
+                            contactUser: User(
+                                userId: req.fromUserId,
+                                nickName: req.fromNickname,
+                                firstName: nil, lastName: nil, middleName: nil,
+                                email: nil, phone: nil,
+                                avatarUrl: req.fromAvatarUrl,
+                                bio: nil, lastSeen: nil, isOnline: false,
+                                status: "active", emailVerified: false, phoneVerified: false,
+                                isAdmin: false, createdAt: Date(), updatedAt: Date()
+                            )
+                        )
+                    }
+                }
             }
         }
     }
@@ -155,93 +170,77 @@ class ContactService: ObservableObject {
     func syncContacts() { loadContacts() }
     func syncPendingRequests() { loadPendingRequests() }
     
+    // MARK: - Helpers
+    
     func isContact(userId: UUID) -> Bool {
-           contacts.contains(where: { $0.contact_user_id == userId })
-       }
-       
-       func sendContactRequest(to user: UserPublicResponse) {
-           guard let currentUser = AppState.shared.currentUser else { return }
-           guard currentUser.id != user.user_id else { return }
-           guard !isContact(userId: user.user_id) else { return }
-           
-           Task {
-               do {
-                   _ = try await sendContactRequest(to: user.user_id.uuidString)
-                   await MainActor.run {
-                       NotificationService.shared.showSuccess("Запрос отправлен \(user.nick_name)")
-                   }
-               } catch {
-                   await MainActor.run {
-                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                   }
-               }
-           }
-       }
-       
-       func acceptContactRequest(_ request: Contact) {
-           Task {
-               do {
-                   _ = try await acceptContact(contactUserId: request.contact_user_id.uuidString)
-                   await MainActor.run {
-                       loadContacts()
-                       loadPendingRequests()
-                       NotificationService.shared.showSuccess("Контакт добавлен")
-                   }
-               } catch {
-                   await MainActor.run {
-                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                   }
-               }
-           }
-       }
-       
-       func declineContactRequest(_ request: Contact) {
-           Task {
-               do {
-                   _ = try await removeContact(userId: request.contact_user_id.uuidString)
-                   await MainActor.run {
-                       loadPendingRequests()
-                       NotificationService.shared.showInfo("Запрос отклонён")
-                   }
-               } catch {
-                   await MainActor.run {
-                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                   }
-               }
-           }
-       }
-       
-       func removeContact(userId: UUID) {
-           Task {
-               do {
-                   _ = try await removeContact(userId: userId.uuidString)
-                   await MainActor.run {
-                       loadContacts()
-                       NotificationService.shared.showInfo("Контакт удалён")
-                   }
-               } catch {
-                   await MainActor.run {
-                       NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
-                   }
-               }
-           }
-       }
-       
-       func searchUsers(query: String) async throws -> [UserPublicResponse] {
-           let variables: [String: Any] = ["query": query]
-           let response: SearchUsersResponse = try await graphQL.perform(
-               query: GraphQLQueries.searchUsers,
-               variables: variables,
-               responseType: SearchUsersResponse.self,
-               authToken: TokenManager.shared.accessToken
-           )
-           return response.user.search.map { apiUser in
-               UserPublicResponse(
-                   user_id: apiUser.user_id,
-                   nick_name: apiUser.nick_name,
-                   avatar_url: apiUser.avatar_url,
-                   is_online: apiUser.is_online
-               )
-           }
-       }
-   }
+        return contacts.contains(where: { $0.contactUserId == userId })
+    }
+    
+    func sendContactRequest(to user: UserPublicResponse) {
+        guard let currentUser = AppState.shared.currentUser else { return }
+        guard currentUser.id != user.userId else { return }
+        guard !isContact(userId: user.userId) else { return }
+        
+        Task {
+            do {
+                _ = try await sendContactRequest(to: user.userId.uuidString)
+                await MainActor.run {
+                    NotificationService.shared.showSuccess("Запрос отправлен \(user.nickName)")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func acceptContactRequest(_ request: Contact) {
+        Task {
+            do {
+                _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
+                await MainActor.run {
+                    loadContacts()
+                    loadPendingRequests()
+                    NotificationService.shared.showSuccess("Контакт добавлен")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func declineContactRequest(_ request: Contact) {
+        Task {
+            do {
+                _ = try await removeContact(userId: request.contactUserId.uuidString)
+                await MainActor.run {
+                    loadPendingRequests()
+                    NotificationService.shared.showInfo("Запрос отклонён")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func removeContact(userId: UUID) {
+        Task {
+            do {
+                _ = try await removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    loadContacts()
+                    NotificationService.shared.showInfo("Контакт удалён")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+}

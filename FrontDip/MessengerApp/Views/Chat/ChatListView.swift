@@ -125,14 +125,13 @@ struct ChatRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(chat.name ?? "Чат")
                     .font(.headline)
-                Text(chat.last_message_preview?.text_preview ?? "Нет сообщений")
+                Text(chat.lastMessage ?? "Нет сообщений")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            Text(formatDate(chat.updated_at ?? DateFormatter().date(from: "2026-05-21") ?? Date()))
-
+            Text(chat.lastMessage ?? formatDate(chat.createdAt))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

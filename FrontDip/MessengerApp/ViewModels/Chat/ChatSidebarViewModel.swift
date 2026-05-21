@@ -17,11 +17,12 @@ class ChatSidebarViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["chatId": chat.chat_id.uuidString]
+                let variables: [String: Any] = ["chatId": chat.id.uuidString]
                 let response: ChatMembersResponse = try await graphQL.perform(
                     query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersResponse.self
+                    responseType: ChatMembersResponse.self,
+                    authToken: TokenManager.shared.accessToken
                 )
                 await MainActor.run {
                     self.members = response.chat.members
@@ -35,17 +36,18 @@ class ChatSidebarViewModel: ObservableObject {
             }
         }
     }
-
+    
     func addUserToChat(_ userId: UUID) async -> Bool {
         let variables: [String: Any] = [
-            "chatId": chat.chat_id.uuidString,
+            "chatId": chat.id.uuidString,
             "userId": userId.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
                 query: GraphQLQueries.addChatMember,
                 variables: variables,
-                responseType: AddChatMemberResponse.self
+                responseType: AddChatMemberResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
             await loadMembers()
             return true
@@ -55,6 +57,6 @@ class ChatSidebarViewModel: ObservableObject {
     }
     
     func isUserInChat(_ userId: UUID) -> Bool {
-        return members.contains(where: { $0.user_id == userId })
+        return members.contains(where: { $0.userId == userId })
     }
 }

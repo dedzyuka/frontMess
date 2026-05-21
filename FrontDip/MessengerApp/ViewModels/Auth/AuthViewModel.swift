@@ -56,9 +56,9 @@ class AuthViewModel: ObservableObject {
     // MARK: - Login
     func login(login: String, password: String) async -> Bool {
         await MainActor.run { isLoading = true; errorMessage = nil }
-
+        
         let variables: [String: Any] = ["login": login, "password": password]
-
+        
         do {
             let response: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.login,
@@ -66,42 +66,43 @@ class AuthViewModel: ObservableObject {
                 responseType: LoginResponse.self,
                 authToken: nil
             )
-
             let loginResult = response.auth.login
             let accessToken = loginResult.accessToken
             let refreshToken = loginResult.refreshToken
             let userData = loginResult.user
-
-            print("✅ Получен access token: \(accessToken.prefix(20))...")
-            print("✅ Пользователь: \(userData.nickName) (\(userData.id))")
-
+            
             await MainActor.run {
                 TokenManager.shared.accessToken = accessToken
                 TokenManager.shared.refreshToken = refreshToken
-
+                
                 let user = User(
-                    user_id: userData.id,
-                    nick_name: userData.nickName,
-                    first_name: nil, last_name: nil, middle_name: nil,
-                    email: nil, phone: nil,
-                    avatar_url: nil, bio: nil,
-                    last_seen: nil, is_online: true,
-                    status: "active", email_verified: false, phone_verified: false,
-                    is_admin: false,
-                    created_at: Date(), updated_at: Date()
+                    userId: userData.userId,
+                    nickName: userData.nickName,
+                    firstName: nil, lastName: nil, middleName: nil,
+                    email: userData.email,
+                    phone: nil,
+                    avatarUrl: userData.avatarUrl,
+                    bio: nil,
+                    lastSeen: nil,
+                    isOnline: userData.isOnline,
+                    status: "active",
+                    emailVerified: false,
+                    phoneVerified: false,
+                    isAdmin: false,
+                    createdAt: Date(),
+                    updatedAt: Date()
                 )
-
+                
                 AppState.shared.currentUser = user
                 AppState.shared.login()
                 self.isLoading = false
+                
                 WebSocketService.shared.connect(userId: user.id)
-
                 ContactService.shared.loadContacts()
                 ContactService.shared.loadPendingRequests()
             }
             return true
         } catch {
-            print("❌ Ошибка входа: \(error)")
             await MainActor.run {
                 errorMessage = "Ошибка входа: \(error.localizedDescription)"
                 isLoading = false
@@ -139,15 +140,23 @@ class AuthViewModel: ObservableObject {
                 TokenManager.shared.refreshToken = newRefreshToken
 
                 let user = User(
-                    user_id: userData.id,
-                    nick_name: userData.nickName,
-                    first_name: nil, last_name: nil, middle_name: nil,
-                    email: nil, phone: nil,
-                    avatar_url: nil, bio: nil,
-                    last_seen: nil, is_online: true,
-                    status: "active", email_verified: false, phone_verified: false,
-                    is_admin: false,
-                    created_at: Date(), updated_at: Date()
+                    userId: userData.userId,
+                    nickName: userData.nickName,
+                    firstName: nil,
+                    lastName: nil,
+                    middleName: nil,
+                    email: userData.email,
+                    phone: nil,
+                    avatarUrl: userData.avatarUrl,
+                    bio: nil,
+                    lastSeen: nil,
+                    isOnline: userData.isOnline,
+                    status: "active",
+                    emailVerified: false,
+                    phoneVerified: false,
+                    isAdmin: false,
+                    createdAt: Date(),
+                    updatedAt: Date()
                 )
 
                 AppState.shared.currentUser = user

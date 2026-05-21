@@ -41,7 +41,6 @@ class CreateChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             
-            // ✅ Исправлено: response.chat.create
             let newChat = response.chat.create
             
             // Генерация и сохранение ключа чата (опционально)
@@ -49,13 +48,13 @@ class CreateChatViewModel: ObservableObject {
             if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
                 let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
                 let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chat_id)
+                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chatId)
                 let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chat_id)
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chatId)
             }
             
             await MainActor.run {
-                inviteKey = newChat.chat_id.uuidString
+                inviteKey = newChat.chatId.uuidString
                 showInviteSheet = true
                 isLoading = false
                 chatName = ""

@@ -41,7 +41,7 @@ struct MessageBubbleView: View {
                 
                 // Время и статус
                 HStack(spacing: 4) {
-                    Text(formatTime(message.created_at))
+                    Text(formatTime(message.createdAt))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     

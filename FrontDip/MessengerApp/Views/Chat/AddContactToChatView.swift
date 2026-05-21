@@ -34,7 +34,7 @@ struct AddContactToChatView: View {
                             ContactSelectionRow(
                                 contact: contact,
                                 isSelected: selectedContacts.contains(contact.id),
-                                isAlreadyInChat: viewModel.isUserInChat(contact.contact_user_id),
+                                isAlreadyInChat: viewModel.isUserInChat(contact.contactUserId),
                                 onToggle: { toggleContactSelection(contact.id) }
                             )
                         }
@@ -105,13 +105,13 @@ struct ContactSelectionRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text((contact.contact_user?.nick_name ?? "?").prefix(1).uppercased())
+                    Text((contact.contactUser?.nickName ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(contact.contact_user?.nick_name ?? "Неизвестный")
+                Text(contact.contactUser?.nickName ?? "Неизвестный")
                     .font(.headline)
                 if isAlreadyInChat {
                     Text("Уже в чате")

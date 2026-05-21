@@ -27,8 +27,8 @@ class SearchViewModel: ObservableObject {
                 let results = try await contactService.searchUsers(query: searchQuery)
                 let currentUserId = AppState.shared.currentUser?.id
                 let filtered = results.filter { user in
-                    let isSelf = currentUserId == user.user_id
-                    let isContact = self.contactService.isContact(userId: user.user_id)
+                    let isSelf = currentUserId == user.userId
+                    let isContact = self.contactService.isContact(userId: user.userId)
                     return !isSelf && !isContact
                 }
                 await MainActor.run {
@@ -45,9 +45,23 @@ class SearchViewModel: ObservableObject {
     }
     
     func sendContactRequest(to user: UserPublicResponse) {
-        contactService.sendContactRequest(to: user)
-        DispatchQueue.main.async {
-            self.searchResults.removeAll { $0.user_id == user.user_id }
+        guard let currentUser = AppState.shared.currentUser else { return }
+        guard currentUser.id != user.userId else { return }
+        guard !contactService.isContact(userId: user.userId) else { return }
+        
+        Task {
+            do {
+                _ = try await contactService.sendContactRequest(to: user.userId.uuidString)
+                await MainActor.run {
+                    NotificationService.shared.showSuccess("Запрос отправлен \(user.nickName)")
+                    // Удаляем из результатов поиска
+                    self.searchResults.removeAll { $0.userId == user.userId }
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
         }
     }
 }

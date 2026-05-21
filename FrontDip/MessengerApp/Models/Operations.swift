@@ -1,83 +1,78 @@
 import Foundation
 
+import Foundation
+
 struct GraphQLQueries {
-    // MARK: - Users
-    static let createUser = """
-        mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) {
-            user {
-                createUser(nickName: $nickName, email: $email, password: $password, phone: $phone) {
-                                            id
-                                            userId
-                                            nickName
-                                            
-        
-                }
-            }
-        }
-        """
-    
+    // MARK: - Auth
     static let login = """
-        mutation Login($login: String!, $password: String!) {
-            auth {
-                login(login: $login, password: $password) {
-                    accessToken
-                    refreshToken
-                    expiresIn
-                    user {
-                        id
-                        userId
-                        nickName
-                        
-                    }
+    mutation Login($login: String!, $password: String!) {
+        auth {
+            login(login: $login, password: $password) {
+                accessToken
+                refreshToken
+                expiresIn
+                user {
+                    userId
+                    nickName
+                    avatarUrl
+                    isOnline
                 }
             }
         }
-        """
+    }
+    """
     
     static let refreshToken = """
-        mutation RefreshToken($refreshToken: String!) {
-            auth {
-                refreshToken(refreshToken: $refreshToken) {
-                    accessToken
-                    refreshToken
-                    expiresIn
-                    user {
-                                                id
-                                                nickName
-                                                email
-                                                createdAt
-                                                updatedAt
-                                                avatarUrl
-                                                isOnline
-                    }
+    mutation RefreshToken($refreshToken: String!) {
+        auth {
+            refreshToken(refreshToken: $refreshToken) {
+                accessToken
+                refreshToken
+                expiresIn
+                user {
+                    userId
+                    nickName
+                    email
+                    createdAt
+                    updatedAt
+                    avatarUrl
+                    isOnline
                 }
             }
         }
-        """
+    }
+    """
+    
+    static let createUser = """
+    mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) {
+        user {
+            create(nickName: $nickName, email: $email, password: $password, phone: $phone) {
+                userId
+                nickName
+                email
+            }
+        }
+    }
+    """
     
     // MARK: - Chats
     static let listChats = """
     query ListChats {
-        chat {
-            list {
-                chatId
-                chatType
-                name
-                description
-                avatarUrl
-                creatorId
-                isPublic
-                maxMembers
-                membersCount
-                createdAt
-                lastMessage {
-                    messageId
-                    senderId
-                    content
-                    createdAt
-                }
-            }
+      chat {
+        list {
+          chatId
+          chatType
+          name
+          description
+          avatarUrl
+          creatorId
+          isPublic
+          maxMembers
+          membersCount
+          createdAt
+          lastMessage
         }
+      }
     }
     """
     
@@ -86,9 +81,11 @@ struct GraphQLQueries {
         chat {
             create(chatType: $chatType, name: $name, memberIds: $memberIds, isPublic: $isPublic) {
                 chatId
+                chatType
                 name
-                membersCount
                 createdAt
+                updatedAt
+                membersCount
             }
         }
     }
@@ -116,6 +113,42 @@ struct GraphQLQueries {
     }
     """
     
+    // MARK: - Messages
+    static let listMessages = """
+    query ListMessages($chatId: String!, $page: Int, $pageSize: Int) {
+        message {
+            listMessages(chatId: $chatId, page: $page, pageSize: $pageSize) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                replyToId
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+    
+    static let sendMessage = """
+    mutation SendMessage($chatId: String!, $content: String!) {
+        message {
+            sendMessage(chatId: $chatId, content: $content) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+    
     // MARK: - Contacts
     static let listContacts = """
     query ListContacts($status: String) {
@@ -130,6 +163,7 @@ struct GraphQLQueries {
                     userId
                     nickName
                     avatarUrl
+                    isOnline
                 }
             }
         }
@@ -188,41 +222,6 @@ struct GraphQLQueries {
     }
     """
     
-    // MARK: - Messages
-    static let listMessages = """
-    query ListMessages($chatId: String!, $limit: Int, $offset: Int) {
-        message {
-            listMessages(chatId: $chatId, limit: $limit, offset: $offset) {
-                messageId
-                chatId
-                senderId
-                content
-                type
-                createdAt
-                updatedAt
-                isEdited
-            }
-        }
-    }
-    """
-    
-    static let sendMessage = """
-    mutation SendMessage($chatId: String!, $content: String!) {
-        message {
-            sendMessage(chatId: $chatId, content: $content) {
-                messageId
-                chatId
-                senderId
-                content
-                type
-                createdAt
-                updatedAt
-                isEdited
-            }
-        }
-    }
-    """
-    
     // MARK: - Search
     static let searchUsers = """
     query SearchUsers($query: String!) {
@@ -241,60 +240,6 @@ struct GraphQLQueries {
 
 // User
 
-struct CreateUserData: Decodable {
-    let user: CreateUserResult
-}
-struct CreateUserResult: Decodable {
-    let id: UUID
-    let nickName: String
-}
-struct UserResponseWrapper: Decodable {
-    let create: UserData
-}
-struct UserData: Decodable {
-    let id: UUID
-    let userId: UUID
-    let nickName: String
-}
-// MARK: - Login Response
-struct LoginResponse: Decodable {
-    let auth: AuthLogin
-}
-struct AuthLogin: Decodable {
-    let login: LoginResult
-}
-
-struct LoginData: Decodable {
-    let auth: AuthLogin
-}
-
-
-struct LoginResult: Decodable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresIn: Int
-    let user: UserData
-}
-
-// MARK: - Refresh Response
-struct RefreshResponse: Decodable {
-    let auth: AuthRefresh
-}
-struct AuthRefresh: Decodable {
-    let refreshToken: RefreshResult
-}
-
-struct RefreshResult: Decodable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresIn: Int
-    let user: UserData
-}
-struct CreateUserResponse: Decodable {
-    let user: CreateUserResult   // или сразу User, смотри по реальному ответу
-}
-
-// MARK: - User (camelCase, как отдаёт сервер)
 
 // Auth
 
@@ -310,143 +255,4 @@ struct Tokens: Decodable {
     }
 }
 
-// Chat list
-struct ListChatsResponse: Decodable {
-    let chat: ChatListWrapper
-}
-struct ChatListWrapper: Decodable {
-    let list: [ChatResponse]
-}
-struct ChatResponse: Decodable {
-    let chat_id: UUID
-    let chat_type: String
-    let name: String?
-    let description: String?
-    let avatar_url: String?
-    let creator_id: UUID?
-    let is_public: Bool
-    let max_members: Int          // ← добавить (если нужно)
-    let members_count: Int
-    let created_at: Date
-    let last_message: MessageResponse?   // ← заменили
-}
-struct MessagePreviewResponse: Decodable {
-    let message_id: Int
-    let sender_id: String
-    let type: String
-    let text_preview: String?
-    let created_at: Date
-    let is_deleted: Bool
-}
 
-// Create chat
-struct CreateChatResponse: Decodable {
-    let chat: CreateChatWrapper
-}
-struct CreateChatWrapper: Decodable {
-    let create: CreatedChat
-}
-struct CreatedChat: Decodable {
-    let chat_id: UUID
-    let chat_type: String
-    let name: String?
-    let created_at: Date
-    let updated_at: Date
-    let members_count: Int
-}
-
-// Chat members
-struct ChatMembersResponse: Decodable {
-    let chat: ChatMembersWrapper
-}
-struct ChatMembersWrapper: Decodable {
-    let members: [ChatMemberItem]
-}
-
-struct AddChatMemberResponse: Decodable {
-    let chat: AddChatMemberWrapper
-}
-struct AddChatMemberWrapper: Decodable {
-    let add_member: AddMemberResult
-}
-struct AddMemberResult: Decodable {
-    let user_id: UUID
-}
-
-// Contacts
-struct ListContactsResponse: Decodable {
-    let contact: ContactListWrapper
-}
-struct ContactListWrapper: Decodable {
-    let list: [ContactResponseData]
-}
-struct ContactResponseData: Decodable {
-    let user_id: UUID
-    let contact_user_id: UUID
-    let status: String
-    let created_at: Date
-    let updated_at: Date
-    let contact_user: ContactUserInfo?
-}
-
-struct ContactUserInfo: Decodable {
-    let user_id: UUID
-    let nick_name: String
-    let avatar_url: String?
-}
-struct AddContactResponse: Decodable {
-    let contact: ContactAddWrapper
-}
-struct ContactAddWrapper: Decodable {
-    let add: ContactResponseData
-}
-struct AcceptContactResponse: Decodable {
-    let contact: ContactAcceptWrapper
-}
-struct ContactAcceptWrapper: Decodable {
-    let accept: ContactResponseData
-}
-struct RemoveContactResponse: Decodable {
-    let contact: ContactRemoveWrapper
-}
-struct ContactRemoveWrapper: Decodable {
-    let remove: Bool
-}
-
-// Messages
-struct ListMessagesResponse: Decodable {
-    let message: MessageListWrapper
-}
-struct MessageListWrapper: Decodable {
-    let list_messages: [MessageResponse]
-}
-struct MessageResponse: Decodable {
-    let message_id: Int64
-    let chat_id: UUID
-    let sender_id: UUID
-    let content: String
-    let type: String
-    let created_at: Date
-    let updated_at: Date
-    let is_edited: Bool
-}
-struct SendMessageResponse: Decodable {
-    let message: SendMessageWrapper
-}
-struct SendMessageWrapper: Decodable {
-    let send_message: MessageResponse
-}
-
-// Search
-struct SearchUsersResponse: Decodable {
-    let user: SearchUsersWrapper
-}
-struct SearchUsersWrapper: Decodable {
-    let search: [SearchedUser]
-}
-struct SearchedUser: Decodable {
-    let user_id: UUID
-    let nick_name: String
-    let avatar_url: String?
-    let is_online: Bool
-}

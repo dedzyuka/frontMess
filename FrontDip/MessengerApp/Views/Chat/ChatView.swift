@@ -41,7 +41,7 @@ struct ChatView: View {
                         ForEach(viewModel.messages) { message in
                             MessageBubble(
                                 message: message,
-                                isCurrentUser: viewModel.isCurrentUser(senderId: message.sender_id)
+                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId)
                             )
                             .id(message.id)
                         }
@@ -95,7 +95,7 @@ struct MessageBubble: View {
                     .background(isCurrentUser ? Color.blue : Color(.systemGray5))
                     .foregroundColor(isCurrentUser ? .white : .primary)
                     .cornerRadius(20)
-                Text(formatTime(message.created_at))
+                Text(formatTime(message.createdAt))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

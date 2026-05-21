@@ -89,12 +89,12 @@ struct ChatSelectionView: View {
                 isLoadingAction = false
                 
                 if success {
-                    NotificationService.shared.showSuccess("\(contact.contact_user?.nick_name ?? "Контакт") добавлен в чат \(chat.name ?? "Неизвестное")")
+                    NotificationService.shared.showSuccess("\(contact.contactUser?.nickName ?? "Контакт") добавлен в чат \(chat.name ?? "Неизвестное")")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                         dismiss()
                     }
                 } else {
-                    NotificationService.shared.showError("Не удалось добавить \(contact.contact_user?.nick_name ?? "Контакт") в чат")
+                    NotificationService.shared.showError("Не удалось добавить \(contact.contactUser?.nickName ?? "Контакт") в чат")
                 }
             }
         }
@@ -113,7 +113,7 @@ struct ChatSelectionRow: View {
                 Text(chat.name ?? "Неизвестное")
                     .font(.headline)
                 
-                Text("\(chat.members_count) участников")
+                Text("\(chat.membersCount) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

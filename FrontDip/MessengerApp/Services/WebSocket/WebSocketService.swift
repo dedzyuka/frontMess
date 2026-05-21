@@ -13,7 +13,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                 print("No access token for WebSocket")
                 return
             }
-            let urlString = "ws://127.0.0.1:8000/ws/chat?access_token=\(token)"
+            let urlString = "ws://localhost:8000/ws/chat?access_token=\(token)"
         connect(accessToken: token, userId: userId)
     }
     
@@ -75,24 +75,20 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                let createdAtString = payload["created_at"] as? String,
                let createdAt = ISO8601DateFormatter().date(from: createdAtString) {
                 
-                // Преобразуем строки в UUID
                 guard let chatId = UUID(uuidString: chatIdString),
-                      let senderId = UUID(uuidString: senderIdString) else {
-                    print("Invalid UUID in message payload")
-                    return
-                }
+                      let senderId = UUID(uuidString: senderIdString) else { return }
                 
                 let message = Message(
-                    message_id: messageId,
-                    chat_id: chatId,
-                    sender_id: senderId,
-                    reply_to_id: nil,
+                    messageId: messageId,
+                    chatId: chatId,
+                    senderId: senderId,
+                    replyToId: nil,
                     content: content,
                     type: "text",
-                    created_at: createdAt,
-                    updated_at: createdAt,
-                    deleted_at: nil,
-                    is_edited: false
+                    createdAt: createdAt,
+                    updatedAt: createdAt,
+                    deletedAt: nil,
+                    isEdited: false
                 )
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }

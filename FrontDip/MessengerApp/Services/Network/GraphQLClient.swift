@@ -78,7 +78,7 @@ class GraphQLClient {
         }
         
         
-        let decoder = JSONDecoder()
+        let decoder = JSONDecoder.snakeCaseDecoder
         
         let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
         

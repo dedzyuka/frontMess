@@ -9,7 +9,6 @@ struct SearchView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // Поисковая строка
                 HStack {
                     TextField("Введите никнейм", text: $viewModel.searchQuery)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
@@ -71,15 +70,15 @@ struct SearchResultRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(user.nick_name.prefix(1).uppercased())
+                    Text(user.nickName.prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(user.nick_name)
+                Text(user.nickName)
                     .font(.headline)
-                Text("ID: \(user.user_id.uuidString.prefix(8))...")
+                Text("ID: \(user.userId.uuidString.prefix(8))...")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -100,7 +99,7 @@ struct SearchResultRow: View {
                 onAdd()
             }
         } message: {
-            Text("Отправить запрос на добавление в контакты пользователю \(user.nick_name)?")
+            Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
         }
     }
 }

@@ -22,10 +22,11 @@ class LocalDatabase {
     private let chatIsPublic = Expression<Bool>("is_public")
     private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatUpdatedAt = Expression<Date?>("updated_at")
-    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
-    private let chatVisibility = Expression<String>("visibility")
-    private let chatJoinPolicy = Expression<String>("join_policy")
+//    private let chatUpdatedAt = Expression<Date?>("updated_at")
+//    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
+//    private let chatVisibility = Expression<String>("visibility")
+//    private let chatJoinPolicy = Expression<String>("join_policy")
+    private let chatLastMessageJSON = Expression<String?>("last_message_json")
     private let chatMembersCount = Expression<Int>("members_count")
     
     // Для last_message_preview храним JSON
@@ -80,12 +81,9 @@ class LocalDatabase {
                 t.column(chatIsPublic)
                 t.column(chatMaxMembers)
                 t.column(chatCreatedAt)
-                t.column(chatUpdatedAt)
-                t.column(chatLastActivityAt)
-                t.column(chatVisibility)
-                t.column(chatJoinPolicy)
                 t.column(chatMembersCount)
-                t.column(chatLastMessagePreviewJSON)
+                t.column(chatLastMessageJSON)  // новая колонка
+                // остальные (updatedAt, lastActivityAt, visibility, joinPolicy) удалить
             })
             
             try db?.run(messagesTable.create(ifNotExists: true) { t in
@@ -130,43 +128,35 @@ class LocalDatabase {
     func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         do {
-            let previewJSON = chat.last_message_preview.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-            let existing = chatsTable.filter(chatId == chat.chat_id)
+            let lastMessageString = chat.lastMessage   // String?
+            let existing = chatsTable.filter(chatId == chat.chatId)
             let count = try db.scalar(existing.count)
             if count > 0 {
                 try db.run(existing.update(
-                    chatType <- chat.chat_type,
+                    chatType <- chat.chatType,
                     chatName <- chat.name,
                     chatDescription <- chat.description,
-                    chatAvatarUrl <- chat.avatar_url,
-                    chatCreatorId <- chat.creator_id,
-                    chatIsPublic <- chat.is_public,
-                    chatMaxMembers <- chat.max_members,
-                    chatCreatedAt <- chat.created_at,
-                    chatUpdatedAt <- chat.updated_at,
-                    chatLastActivityAt <- chat.last_activity_at,
-                    chatVisibility <- chat.visibility,
-                    chatJoinPolicy <- chat.join_policy,
-                    chatMembersCount <- chat.members_count,
-                    chatLastMessagePreviewJSON <- previewJSON
+                    chatAvatarUrl <- chat.avatarUrl,
+                    chatCreatorId <- chat.creatorId,
+                    chatIsPublic <- chat.isPublic,
+                    chatMaxMembers <- chat.maxMembers,
+                    chatCreatedAt <- chat.createdAt,
+                    chatMembersCount <- chat.membersCount,
+                    chatLastMessageJSON <- lastMessageString
                 ))
             } else {
                 try db.run(chatsTable.insert(
-                    chatId <- chat.chat_id,
-                    chatType <- chat.chat_type,
+                    chatId <- chat.chatId,
+                    chatType <- chat.chatType,
                     chatName <- chat.name,
                     chatDescription <- chat.description,
-                    chatAvatarUrl <- chat.avatar_url,
-                    chatCreatorId <- chat.creator_id,
-                    chatIsPublic <- chat.is_public,
-                    chatMaxMembers <- chat.max_members,
-                    chatCreatedAt <- chat.created_at,
-                    chatUpdatedAt <- chat.updated_at,
-                    chatLastActivityAt <- chat.last_activity_at,
-                    chatVisibility <- chat.visibility,
-                    chatJoinPolicy <- chat.join_policy,
-                    chatMembersCount <- chat.members_count,
-                    chatLastMessagePreviewJSON <- previewJSON
+                    chatAvatarUrl <- chat.avatarUrl,
+                    chatCreatorId <- chat.creatorId,
+                    chatIsPublic <- chat.isPublic,
+                    chatMaxMembers <- chat.maxMembers,
+                    chatCreatedAt <- chat.createdAt,
+                    chatMembersCount <- chat.membersCount,
+                    chatLastMessageJSON <- lastMessageString
                 ))
             }
             return true
@@ -181,27 +171,20 @@ class LocalDatabase {
         do {
             var chats: [Chat] = []
             for row in try db.prepare(chatsTable.order(chatCreatedAt.desc)) {
-                var preview: MessagePreview? = nil
-                if let jsonStr = row[chatLastMessagePreviewJSON],
-                   let data = jsonStr.data(using: .utf8) {
-                    preview = try? JSONDecoder().decode(MessagePreview.self, from: data)
-                }
+                let lastMessageString = row[chatLastMessageJSON]  // теперь это String?
+                
                 let chat = Chat(
-                    chat_id: row[chatId],
-                    chat_type: row[chatType],
+                    chatId: row[chatId],
+                    chatType: row[chatType],
                     name: row[chatName],
                     description: row[chatDescription],
-                    avatar_url: row[chatAvatarUrl],
-                    creator_id: row[chatCreatorId],
-                    is_public: row[chatIsPublic],
-                    max_members: row[chatMaxMembers],
-                    created_at: row[chatCreatedAt],
-                    updated_at: row[chatUpdatedAt],
-                    last_activity_at: row[chatLastActivityAt],
-                    visibility: row[chatVisibility],
-                    join_policy: row[chatJoinPolicy],
-                    members_count: row[chatMembersCount],
-                    last_message_preview: preview
+                    avatarUrl: row[chatAvatarUrl],
+                    creatorId: row[chatCreatorId],
+                    isPublic: row[chatIsPublic],
+                    maxMembers: row[chatMaxMembers],
+                    createdAt: row[chatCreatedAt],
+                    membersCount: row[chatMembersCount],
+                    lastMessage: lastMessageString   // тип String?
                 )
                 chats.append(chat)
             }
@@ -222,16 +205,16 @@ class LocalDatabase {
         guard let db = db else { return false }
         do {
             try db.run(messagesTable.insert(
-                msgId <- message.message_id,
-                msgChatId <- message.chat_id,
-                msgSenderId <- message.sender_id,
-                msgReplyToId <- message.reply_to_id,
+                msgId <- message.messageId,
+                msgChatId <- message.chatId,
+                msgSenderId <- message.senderId,
+                msgReplyToId <- message.replyToId,
                 msgContent <- message.content,
                 msgType <- message.type,
-                msgCreatedAt <- message.created_at,
-                msgUpdatedAt <- message.updated_at,
-                msgDeletedAt <- message.deleted_at,
-                msgIsEdited <- message.is_edited
+                msgCreatedAt <- message.createdAt,
+                msgUpdatedAt <- message.updatedAt,
+                msgDeletedAt <- message.deletedAt,
+                msgIsEdited <- message.isEdited
             ))
             return true
         } catch {
@@ -247,16 +230,16 @@ class LocalDatabase {
             var messages: [Message] = []
             for row in try db.prepare(query) {
                 let msg = Message(
-                    message_id: row[msgId],
-                    chat_id: row[msgChatId],
-                    sender_id: row[msgSenderId],
-                    reply_to_id: row[msgReplyToId],
+                    messageId: row[msgId],
+                    chatId: row[msgChatId],
+                    senderId: row[msgSenderId],
+                    replyToId: row[msgReplyToId],
                     content: row[msgContent],
                     type: row[msgType],
-                    created_at: row[msgCreatedAt],
-                    updated_at: row[msgUpdatedAt],
-                    deleted_at: row[msgDeletedAt],
-                    is_edited: row[msgIsEdited]
+                    createdAt: row[msgCreatedAt],
+                    updatedAt: row[msgUpdatedAt],
+                    deletedAt: row[msgDeletedAt],
+                    isEdited: row[msgIsEdited]
                 )
                 messages.append(msg)
             }
@@ -297,14 +280,13 @@ class LocalDatabase {
     func saveContact(_ contact: Contact) -> Bool {
         guard let db = db else { return false }
         do {
-            let userJSON = contact.contact_user.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+            let userJSON = contact.contactUser.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
             try db.run(contactsTable.insert(
-                contactIdCol <- contact.id,
-                contactUserId <- contact.user_id,
-                contactContactUserId <- contact.contact_user_id,
+                contactUserId <- contact.userId,
+                contactContactUserId <- contact.contactUserId,
                 contactStatus <- contact.status,
-                contactCreatedAt <- contact.created_at,
-                contactUpdatedAt <- contact.updated_at,
+                contactCreatedAt <- contact.createdAt,
+                contactUpdatedAt <- contact.updatedAt,
                 contactUserJSON <- userJSON
             ))
             return true
@@ -322,15 +304,15 @@ class LocalDatabase {
                 var contactUser: User? = nil
                 if let jsonStr = row[contactUserJSON], let data = jsonStr.data(using: .utf8) {
                     contactUser = try? JSONDecoder().decode(User.self, from: data)
+                
                 }
                 let contact = Contact(
-                    id: row[contactIdCol],
-                    user_id: row[contactUserId],
-                    contact_user_id: row[contactContactUserId],
+                    userId: row[contactUserId],
+                    contactUserId: row[contactContactUserId],
                     status: row[contactStatus],
-                    created_at: row[contactCreatedAt],
-                    updated_at: row[contactUpdatedAt],
-                    contact_user: contactUser
+                    createdAt: row[contactCreatedAt],
+                    updatedAt: row[contactUpdatedAt],
+                    contactUser: contactUser
                 )
                 contacts.append(contact)
             }
@@ -366,24 +348,22 @@ class LocalDatabase {
     func saveContactRequest(_ request: ContactRequest) -> Bool {
         guard let db = db else { return false }
         do {
-            let existing = contactRequestsTable.filter(reqId == request.id)
+            let existing = contactRequestsTable.filter(reqFromUserId == request.fromUserId && reqStatus == "pending")
             let count = try db.scalar(existing.count)
             if count > 0 {
                 try db.run(existing.update(
-                    reqFromUserId <- request.from_user_id,
-                    reqFromNickname <- request.from_nickname,
-                    reqFromAvatarUrl <- request.from_avatar_url,
+                    reqFromNickname <- request.fromNickname,
+                    reqFromAvatarUrl <- request.fromAvatarUrl,
                     reqStatus <- request.status,
-                    reqCreatedAt <- request.created_at
+                    reqCreatedAt <- request.createdAt
                 ))
             } else {
                 try db.run(contactRequestsTable.insert(
-                    reqId <- request.id,
-                    reqFromUserId <- request.from_user_id,
-                    reqFromNickname <- request.from_nickname,
-                    reqFromAvatarUrl <- request.from_avatar_url,
+                    reqFromUserId <- request.fromUserId,
+                    reqFromNickname <- request.fromNickname,
+                    reqFromAvatarUrl <- request.fromAvatarUrl,
                     reqStatus <- request.status,
-                    reqCreatedAt <- request.created_at
+                    reqCreatedAt <- request.createdAt
                 ))
             }
             return true
@@ -400,12 +380,11 @@ class LocalDatabase {
             var requests: [ContactRequest] = []
             for row in try db.prepare(query) {
                 let req = ContactRequest(
-                    id: row[reqId],
-                    from_user_id: row[reqFromUserId],
-                    from_nickname: row[reqFromNickname],
-                    from_avatar_url: row[reqFromAvatarUrl],
+                    fromUserId: row[reqFromUserId],
+                    fromNickname: row[reqFromNickname],
+                    fromAvatarUrl: row[reqFromAvatarUrl],
                     status: row[reqStatus],
-                    created_at: row[reqCreatedAt]
+                    createdAt: row[reqCreatedAt]
                 )
                 requests.append(req)
             }

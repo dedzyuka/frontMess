@@ -22,11 +22,11 @@ struct ChatSidebarView: View {
                         .padding(.top, 20)
                     
                     HStack {
-                        Label("\(chat.members_count) участников", systemImage: "person.2")
+                        Label("\(chat.membersCount) участников", systemImage: "person.2")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text(formatDate(chat.created_at))
+                        Text(formatDate(chat.createdAt))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -57,7 +57,7 @@ struct ChatSidebarView: View {
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(viewModel.members, id: \.user_id) { member in
+                                ForEach(viewModel.members, id: \.userId) { member in
                                     ChatMemberRow(member: member)
                                         .padding(.horizontal)
                                         .padding(.vertical, 8)
@@ -111,13 +111,13 @@ struct ChatMemberRow: View {
                 Text(member.nickname)
                     .font(.headline)
                 HStack {
-                    Text("ID: \(member.user_id.uuidString.prefix(8))...")
+                    Text("ID: \(member.userId.uuidString.prefix(8))...")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text("•")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text("Присоединился: \(formatDate(member.joined_at))")
+                    Text("Присоединился: \(formatDate(member.joinedAt))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

@@ -2,112 +2,110 @@ import Foundation
 
 // MARK: - User
 struct User: Identifiable, Codable {
-    let user_id: UUID
-    let nick_name: String
-    let first_name: String?
-    let last_name: String?
-    let middle_name: String?
+    let userId: UUID
+    let nickName: String
+    let firstName: String?
+    let lastName: String?
+    let middleName: String?
     let email: String?
     let phone: String?
-    let avatar_url: String?
+    let avatarUrl: String?
     let bio: String?
-    let last_seen: Date?
-    let is_online: Bool
+    let lastSeen: Date?
+    let isOnline: Bool
     let status: String
-    let email_verified: Bool
-    let phone_verified: Bool
-    let is_admin: Bool
-    let created_at: Date
-    let updated_at: Date
+    let emailVerified: Bool
+    let phoneVerified: Bool
+    let isAdmin: Bool
+    let createdAt: Date
+    let updatedAt: Date
     
-    var id: UUID { user_id }
+    var id: UUID { userId }
 }
 
-// MARK: - Chat
 struct Chat: Identifiable, Codable {
-    let chat_id: UUID
-    let chat_type: String
+    let chatId: UUID
+    let chatType: String
     let name: String?
     let description: String?
-    let avatar_url: String?
-    let creator_id: UUID?
-    let is_public: Bool
-    let max_members: Int
-    let created_at: Date
-    let updated_at: Date?
-    let last_activity_at: Date?
-    let visibility: String
-    let join_policy: String
-    let members_count: Int
-    let last_message_preview: MessagePreview?
+    let avatarUrl: String?
+    let creatorId: UUID?
+    let isPublic: Bool
+    let maxMembers: Int
+    let createdAt: Date      // снова Date
+    let membersCount: Int
+    let lastMessage: String?
     
-    var id: UUID { chat_id }
+    var id: UUID { chatId } 
 }
 
 // MARK: - MessagePreview
 struct MessagePreview: Codable {
-    let message_id: Int64
-    let sender_id: UUID
+    let messageId: Int64
+    let senderId: UUID
     let type: String
-    let text_preview: String?
-    let created_at: Date
-    let is_deleted: Bool
+    let textPreview: String?
+    let createdAt: Date
+    let isDeleted: Bool
+}
+
+struct IncomingContactsResponse: Decodable {
+    let contact: IncomingContactWrapper
+}
+struct IncomingContactWrapper: Decodable {
+    let incoming: [Contact]
 }
 
 // MARK: - Message
 struct Message: Identifiable, Codable {
-    let message_id: Int64
-    let chat_id: UUID
-    let sender_id: UUID
-    let reply_to_id: Int64?
+    let messageId: Int64
+    let chatId: UUID
+    let senderId: UUID
+    let replyToId: Int64?
     let content: String?
     let type: String
-    let created_at: Date
-    let updated_at: Date
-    let deleted_at: Date?
-    let is_edited: Bool
+    let createdAt: Date
+    let updatedAt: Date
+    let deletedAt: Date?
+    let isEdited: Bool
     
-    var id: Int64 { message_id }
+    var id: Int64 { messageId }
 }
 
 // MARK: - ChatMember
 struct ChatMemberItem: Codable {
-    let user_id: UUID
+    let userId: UUID
     let nickname: String
-    let joined_at: Date
+    let joinedAt: Date
 }
 
 // MARK: - Contact
 struct Contact: Identifiable, Codable {
-    let id: UUID  // локальный ID
-    let user_id: UUID
-    let contact_user_id: UUID
+    let id = UUID()   // добавляем для Identifiable
+    let userId: UUID
+    let contactUserId: UUID
     let status: String
-    let created_at: Date
-    let updated_at: Date
-    let contact_user: User?
-    
-    var contact_id: UUID { id }
+    let createdAt: Date
+    let updatedAt: Date
+    let contactUser: User?   // теперь User, а не UserPublicResponse
 }
 
-// MARK: - ContactRequest (входящие заявки)
+// MARK: - ContactRequest (входящие)
 struct ContactRequest: Identifiable, Codable {
-    let id: UUID
-    let from_user_id: UUID
-    let from_nickname: String
-    let from_avatar_url: String?
+    let id = UUID()
+    let fromUserId: UUID
+    let fromNickname: String
+    let fromAvatarUrl: String?
     let status: String
-    let created_at: Date
-    
-    var contact_request_id: UUID { id }
+    let createdAt: Date
 }
 
 // MARK: - Search result
 struct UserPublicResponse: Identifiable, Codable {
-    let user_id: UUID
-    let nick_name: String
-    let avatar_url: String?
-    let is_online: Bool
+    let userId: UUID
+    let nickName: String
+    let avatarUrl: String?
+    let isOnline: Bool
     
-    var id: UUID { user_id }
+    var id: UUID { userId }
 }

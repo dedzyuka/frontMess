@@ -88,20 +88,20 @@ struct ContactRequestRow: View {
                 .fill(Color.orange.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text((request.contact_user?.nick_name ?? "?").prefix(1).uppercased())
+                    Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.orange)
                 )
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(request.contact_user?.nick_name ?? "Неизвестный")
+                Text(request.contactUser?.nickName ?? "Неизвестный")
                     .font(.headline)
                 
                 Text("Запрос на контакт")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                Text(formatDate(request.created_at))
+                Text(formatDate(request.createdAt))
                     .font(.caption2)
                     .foregroundColor(.gray)
             }

@@ -32,7 +32,7 @@ class MessageService: ObservableObject {
     }
     
     func sendMessage(_ message: Message, to chatId: UUID) {
-        let messageId = message.message_id   // Int64
+        let messageId = message.messageId   // Int64
         print("📤 Sending message to chat \(chatId)")
         
         if !database.messageExists(messageId) {
@@ -44,13 +44,13 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message) {
-        let messageId = message.message_id
+        let messageId = message.messageId
         let wsMessage = WebSocketMessage(
             type: "chat_message",
-            chatId: message.chat_id,
+            chatId: message.chatId,
             content: message.content,
             messageId: messageId,
-            timestamp: message.created_at
+            timestamp: message.createdAt
         )
         webSocketService.sendMessage(wsMessage)
     }
@@ -80,7 +80,7 @@ class MessageService: ObservableObject {
     
     private func handleIncomingMessages(_ messages: [Message]) {
         for message in messages {
-            let messageId = message.message_id
+            let messageId = message.messageId
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
             sendMessageAck(for: message)
@@ -92,9 +92,9 @@ class MessageService: ObservableObject {
         guard let currentUser = AppState.shared.currentUser else { return }
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            messageId: message.message_id,
+            messageId: message.messageId,
             timestamp: Date(),
-            originalSenderId: message.sender_id,
+            originalSenderId: message.senderId,
             ackSenderId: currentUser.id
         )
         webSocketService.sendMessage(ackMessage)
