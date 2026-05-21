@@ -32,7 +32,7 @@ struct GraphQLErrorDetail: Decodable {
 // MARK: - GraphQL Client
 class GraphQLClient {
     static let shared = GraphQLClient()
-    private let baseURL = "http://localhost:8000/graphql"
+    private let baseURL = "http://localhost:8002/graphql"
     private let session = URLSession.shared
     
     private init() {}

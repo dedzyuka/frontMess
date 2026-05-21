@@ -1,10 +1,11 @@
+// WebSocketMessage.swift
 import Foundation
 
 struct WebSocketMessage: Codable {
     let type: String
     var chatId: UUID?
     var content: String?
-    var messageId: UUID?
+    var messageId: Int64?          // ← изменено с UUID? на Int64?
     var timestamp: Date?
     var senderId: UUID?
     var recipientId: UUID?
@@ -17,7 +18,7 @@ struct WebSocketMessage: Codable {
     var acceptedUserId: UUID?
     var acceptedNickname: String?
     var acceptedPublicKey: String?
-    
+
     enum CodingKeys: String, CodingKey {
         case type
         case chatId = "chat_id"
@@ -40,7 +41,7 @@ struct WebSocketMessage: Codable {
     init(type: String,
          chatId: UUID? = nil,
          content: String? = nil,
-         messageId: UUID? = nil,
+         messageId: Int64? = nil,
          timestamp: Date? = nil,
          senderId: UUID? = nil,
          recipientId: UUID? = nil,

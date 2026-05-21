@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 import SwiftUI
 
 struct AddContactToChatView: View {
@@ -34,11 +33,10 @@ struct AddContactToChatView: View {
                         ForEach(contactService.contacts) { contact in
                             ContactSelectionRow(
                                 contact: contact,
-                                isSelected: selectedContacts.contains(contact.userId),
-                                isAlreadyInChat: viewModel.isUserInChat(contact.userId)
-                            ) {
-                                toggleContactSelection(contact.userId)
-                            }
+                                isSelected: selectedContacts.contains(contact.id),
+                                isAlreadyInChat: viewModel.isUserInChat(contact.contact_user_id),
+                                onToggle: { toggleContactSelection(contact.id) }
+                            )
                         }
                     }
                     .listStyle(PlainListStyle())
@@ -48,16 +46,11 @@ struct AddContactToChatView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Отмена") {
-                        dismiss()
-                    }
+                    Button("Отмена") { dismiss() }
                 }
-                
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Добавить") {
-                        addSelectedContacts()
-                    }
-                    .disabled(selectedContacts.isEmpty || isLoading)
+                    Button("Добавить") { addSelectedContacts() }
+                        .disabled(selectedContacts.isEmpty || isLoading)
                 }
             }
             .onAppear {
@@ -83,18 +76,12 @@ struct AddContactToChatView: View {
             
             for userId in selectedContacts {
                 let success = await viewModel.addUserToChat(userId)
-                if success {
-                    addedCount += 1
-                } else {
-                    failedCount += 1
-                }
+                if success { addedCount += 1 } else { failedCount += 1 }
             }
             
             await MainActor.run {
                 isLoading = false
                 dismiss()
-                
-                // Используем NotificationService вместо прямого вызова NotificationCenter
                 let message = "Добавлено: \(addedCount), не удалось: \(failedCount)"
                 if addedCount > 0 {
                     NotificationService.shared.showSuccess(message)
@@ -118,15 +105,14 @@ struct ContactSelectionRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(contact.nickname.prefix(1).uppercased())
+                    Text((contact.contact_user?.nick_name ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(contact.nickname)
+                Text(contact.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
-                
                 if isAlreadyInChat {
                     Text("Уже в чате")
                         .font(.caption)

@@ -1,3 +1,4 @@
+// MessageService.swift
 import Foundation
 import Combine
 
@@ -9,9 +10,9 @@ class MessageService: ObservableObject {
     
     @Published var unreadMessagesCount: Int = 0
     
-    private var pendingMessages: [UUID: Message] = [:]
-    private var retryTimers: [UUID: Timer] = [:]
-    private var retryAttempts: [UUID: Int] = [:]
+    private var pendingMessages: [Int64: Message] = [:]      // ключ Int64
+    private var retryTimers: [Int64: Timer] = [:]           // ключ Int64
+    private var retryAttempts: [Int64: Int] = [:]           // ключ Int64
     private let maxRetryAttempts = 3
     
     private var cancellables = Set<AnyCancellable>()
@@ -31,7 +32,7 @@ class MessageService: ObservableObject {
     }
     
     func sendMessage(_ message: Message, to chatId: UUID) {
-        guard let messageId = message.id else { return }
+        let messageId = message.message_id   // Int64
         print("📤 Sending message to chat \(chatId)")
         
         if !database.messageExists(messageId) {
@@ -43,18 +44,18 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message) {
-        guard let messageId = message.id else { return }
+        let messageId = message.message_id
         let wsMessage = WebSocketMessage(
             type: "chat_message",
-            chatId: message.chatId,
+            chatId: message.chat_id,
             content: message.content,
             messageId: messageId,
-            timestamp: message.timestamp
+            timestamp: message.created_at
         )
         webSocketService.sendMessage(wsMessage)
     }
     
-    private func startRetryTimer(for messageId: UUID) {
+    private func startRetryTimer(for messageId: Int64) {
         retryTimers[messageId]?.invalidate()
         let attempt = (retryAttempts[messageId] ?? 0) + 1
         retryAttempts[messageId] = attempt
@@ -71,7 +72,7 @@ class MessageService: ObservableObject {
         retryTimers[messageId] = timer
     }
     
-    private func stopRetryTimer(for messageId: UUID) {
+    private func stopRetryTimer(for messageId: Int64) {
         retryTimers[messageId]?.invalidate()
         retryTimers.removeValue(forKey: messageId)
         retryAttempts.removeValue(forKey: messageId)
@@ -79,7 +80,7 @@ class MessageService: ObservableObject {
     
     private func handleIncomingMessages(_ messages: [Message]) {
         for message in messages {
-            guard let messageId = message.id else { continue }
+            let messageId = message.message_id
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
             sendMessageAck(for: message)
@@ -88,18 +89,18 @@ class MessageService: ObservableObject {
     }
     
     private func sendMessageAck(for message: Message) {
-        guard let messageId = message.id, let currentUser = AppState.shared.currentUser else { return }
+        guard let currentUser = AppState.shared.currentUser else { return }
         let ackMessage = WebSocketMessage(
             type: "message_ack",
-            messageId: messageId,
+            messageId: message.message_id,
             timestamp: Date(),
-            originalSenderId: message.senderId,
+            originalSenderId: message.sender_id,
             ackSenderId: currentUser.id
         )
         webSocketService.sendMessage(ackMessage)
     }
     
-    func handleMessageAck(messageId: UUID, from recipientId: UUID) {
+    func handleMessageAck(messageId: Int64, from recipientId: UUID) {
         guard pendingMessages[messageId] != nil else { return }
         pendingMessages.removeValue(forKey: messageId)
         stopRetryTimer(for: messageId)

@@ -4,6 +4,9 @@ import Combine
 
 class AuthViewModel: ObservableObject {
     @Published var nickname = ""
+    @Published var email = ""
+    @Published var phone = ""
+    @Published var password = ""
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
@@ -13,40 +16,45 @@ class AuthViewModel: ObservableObject {
     private let graphQL = GraphQLClient.shared
     
     var deviceId: String { cryptoService.generateDeviceId() }
-    var canRegister: Bool { !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var canRegister: Bool {
+        !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !password.isEmpty
+    }
     
     // MARK: - Registration
     func register() async {
         guard canRegister else {
-            await showError("Введите никнейм")
+            await showError("Заполните никнейм, email и пароль")
             return
         }
         await setLoading(true)
         
         do {
             let cleanedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-            let tempPassword = UUID().uuidString
+            let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
             
+            // Генерация ключей (для будущего E2EE)
             let (privateKey, publicKeyData) = cryptoService.generateKeyPair()
-            let publicKeyPEM = cryptoService.publicKeyToPEM(publicKey: publicKeyData)
             
-            // Создание пользователя
-            let createVariables: [String: Any] = [
-                "nickname": cleanedNickname,
-                "email": "\(UUID().uuidString)@temp.com",
-                "password": tempPassword,
-                "phone": ""
+            // Создание пользователя через GraphQL
+            let variables: [String: Any] = [
+                "nickName": cleanedNickname,
+                "email": cleanedEmail,
+                "password": password,
+                "phone": cleanedPhone
             ]
             let _: CreateUserResponse = try await graphQL.perform(
                 query: GraphQLQueries.createUser,
-                variables: createVariables,
+                variables: variables,
                 responseType: CreateUserResponse.self
             )
             
             // Логин для получения токенов
             let loginVariables: [String: Any] = [
                 "login": cleanedNickname,
-                "password": tempPassword
+                "password": password
             ]
             let loginResponse: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.login,
@@ -59,30 +67,42 @@ class AuthViewModel: ObservableObject {
             TokenManager.shared.refreshToken = loginResponse.auth.tokens.refresh_token
             
             let userData = loginResponse.auth.user
-              let userIdUUID = userData.userId  // UUID
-              let user = User(
-                  id: userData.userId,
-                  nickName: userData.nickName,
-                  email: userData.email,
-                  createdAt: userData.createdAt,
-                  updatedAt: userData.updatedAt
-              )
-              
-              keychainService.savePrivateKey(privateKey, userId: userIdUUID)
-              keychainService.savePublicKey(publicKeyData, userId: userIdUUID)
-              keychainService.save(key: "user_id", value: userIdUUID.uuidString)
-              
-              await MainActor.run {
-                  self.currentUser = user
-                  AppState.shared.currentUser = user
-                  AppState.shared.login()
-                  self.isLoading = false
-                  
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                      WebSocketService.shared.connect(userId: userIdUUID)
-                  }
-              }
-          } catch {
+            let user = User(
+                user_id: userData.user_id,
+                nick_name: userData.nick_name,
+                first_name: nil,
+                last_name: nil,
+                middle_name: nil,
+                email: userData.email,
+                phone: nil,
+                avatar_url: nil,
+                bio: nil,
+                last_seen: nil,
+                is_online: false,
+                status: "active",
+                email_verified: false,
+                phone_verified: false,
+                is_admin: false,
+                created_at: userData.created_at,
+                updated_at: userData.updated_at
+            )
+            
+            // Сохраняем ключи в Keychain
+            keychainService.savePrivateKey(privateKey, userId: user.id)
+            keychainService.savePublicKey(publicKeyData, userId: user.id)
+            keychainService.save(key: "user_id", value: user.id.uuidString)
+            
+            await MainActor.run {
+                self.currentUser = user
+                AppState.shared.currentUser = user
+                AppState.shared.login()
+                self.isLoading = false
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    WebSocketService.shared.connect(userId: user.id)
+                }
+            }
+        } catch {
             await showError("Ошибка регистрации: \(error.localizedDescription)")
         }
     }
@@ -93,10 +113,10 @@ class AuthViewModel: ObservableObject {
         
         do {
             let variables: [String: Any] = ["refreshToken": refreshToken]
-            let response: RefreshTokenResponse = try await graphQL.perform(
+            let response: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.refreshToken,
                 variables: variables,
-                responseType: RefreshTokenResponse.self
+                responseType: LoginResponse.self
             )
             
             TokenManager.shared.accessToken = response.auth.tokens.access_token
@@ -104,11 +124,23 @@ class AuthViewModel: ObservableObject {
             
             let userData = response.auth.user
             let user = User(
-                id: userData.userId,
-                nickName: userData.nickName,
+                user_id: userData.user_id,
+                nick_name: userData.nick_name,
+                first_name: nil,
+                last_name: nil,
+                middle_name: nil,
                 email: userData.email,
-                createdAt: userData.createdAt,
-                updatedAt: userData.updatedAt
+                phone: nil,
+                avatar_url: nil,
+                bio: nil,
+                last_seen: nil,
+                is_online: false,
+                status: "active",
+                email_verified: false,
+                phone_verified: false,
+                is_admin: false,
+                created_at: userData.created_at,
+                updated_at: userData.updated_at
             )
             
             await MainActor.run {
@@ -117,7 +149,7 @@ class AuthViewModel: ObservableObject {
                 AppState.shared.login()
                 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    WebSocketService.shared.connect(userId: userData.userId)
+                    WebSocketService.shared.connect(userId: user.id)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     ContactService.shared.syncContacts()
@@ -139,6 +171,9 @@ class AuthViewModel: ObservableObject {
         TokenManager.shared.clear()
         currentUser = nil
         nickname = ""
+        email = ""
+        phone = ""
+        password = ""
         AppState.shared.logout()
     }
     
@@ -150,6 +185,9 @@ class AuthViewModel: ObservableObject {
         ChatKeyManager.shared.clearAllKeys()
         currentUser = nil
         nickname = ""
+        email = ""
+        phone = ""
+        password = ""
         AppState.shared.logout()
         cryptoService.resetDeviceId()
     }
@@ -169,8 +207,4 @@ class AuthViewModel: ObservableObject {
         errorMessage = message
         isLoading = false
     }
-}
-
-struct RefreshTokenResponse: Decodable {
-    let auth: AuthLoginResult
 }

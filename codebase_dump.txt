@@ -152,35 +152,6 @@ struct MembersResponse: Decodable {
 
 ./FrontDip/MessengerApp/Models/Chat/Chat.swift
 
-import Foundation
-
-struct Chat: Identifiable, Codable {
-    let id: UUID
-    let chatType: String
-    let name: String?
-    let description: String?
-    let avatarUrl: String?
-    let creatorId: UUID?
-    let isPublic: Bool
-    let membersCount: Int
-    let createdAt: Date
-    let updatedAt: Date
-    let lastMessagePreview: MessagePreview?
-    
-    enum CodingKeys: String, CodingKey {
-        case id = "chat_id"
-        case chatType = "chat_type"
-        case name
-        case description
-        case avatarUrl = "avatar_url"
-        case creatorId = "creator_id"
-        case isPublic = "is_public"
-        case membersCount = "members_count"
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case lastMessagePreview = "last_message_preview"
-    }
-}
 
 ./FrontDip/MessengerApp/Models/Chat/ChatDTO.swift
 
@@ -248,47 +219,9 @@ struct ChatWithContactInfo: Identifiable {
 
 ./FrontDip/MessengerApp/Models/Contact/Contact.swift
 
-import Foundation
-
-struct Contact: Identifiable, Codable {
-    let id: UUID
-    let userId: UUID
-    let contactUserId: UUID
-    let nickname: String
-    let publicKey: String
-    let addedAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case id
-        case userId = "user_id"
-        case contactUserId = "contact_user_id"
-        case nickname
-        case publicKey = "public_key"
-        case addedAt = "added_at"
-    }
-}
 
 ./FrontDip/MessengerApp/Models/Contact/ContactRequest.swift
 
-import Foundation
-
-struct ContactRequest: Identifiable, Codable {
-    let id: UUID
-    let fromUserId: String
-    let fromNickname: String
-    let fromPublicKey: String
-    let status: String
-    let createdAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case id
-        case fromUserId = "from_user_id"
-        case fromNickname = "from_nickname"
-        case fromPublicKey = "from_public_key"
-        case status
-        case createdAt = "created_at"
-    }
-}
 
 ./FrontDip/MessengerApp/Models/Contact/ContactRequestListResponse.swift
 
@@ -330,129 +263,137 @@ struct ContactAPI: Codable {
 
 ./FrontDip/MessengerApp/Models/Message/Message.swift
 
-import Foundation
-
-enum MessageType: String, Codable {
-    case text
-    case image
-    case file
-}
-
-struct Message: Identifiable, Codable {
-    let id: UUID?
-    let chatId: UUID
-    let senderId: UUID
-    let content: String
-    let type: MessageType
-    let timestamp: Date
-    let isEncrypted: Bool
-    
-    enum CodingKeys: String, CodingKey {
-        case id = "message_id"
-        case chatId = "chat_id"
-        case senderId = "sender_id"
-        case content
-        case type = "message_type"
-        case timestamp
-        case isEncrypted = "encrypted"
-    }
-    
-    init(id: UUID? = nil, chatId: UUID, senderId: UUID, content: String,
-         type: MessageType = .text, timestamp: Date = Date(), isEncrypted: Bool = true) {
-        self.id = id
-        self.chatId = chatId
-        self.senderId = senderId
-        self.content = content
-        self.type = type
-        self.timestamp = timestamp
-        self.isEncrypted = isEncrypted
-    }
-}
 
 ./FrontDip/MessengerApp/Models/Message/MessageDTO.swift
 
 
 ./FrontDip/MessengerApp/Models/Message/MessagePreview.swift
 
+
+./FrontDip/MessengerApp/Models/Models.swift
+
 import Foundation
 
-struct MessagePreview: Codable {
-    let messageId: Int
-    let senderId: String
-    let type: String
-    let textPreview: String?
-    let createdAt: Date
+// MARK: - User
+struct User: Identifiable, Codable {
+    let user_id: UUID
+    let nick_name: String
+    let first_name: String?
+    let last_name: String?
+    let middle_name: String?
+    let email: String?
+    let phone: String?
+    let avatar_url: String?
+    let bio: String?
+    let last_seen: Date?
+    let is_online: Bool
+    let status: String
+    let email_verified: Bool
+    let phone_verified: Bool
+    let is_admin: Bool
+    let created_at: Date
+    let updated_at: Date
     
-    enum CodingKeys: String, CodingKey {
-        case messageId = "message_id"
-        case senderId = "sender_id"
-        case type
-        case textPreview = "text_preview"
-        case createdAt = "created_at"
-    }
+    var id: UUID { user_id }
+}
+
+// MARK: - Chat
+struct Chat: Identifiable, Codable {
+    let chat_id: UUID
+    let chat_type: String
+    let name: String?
+    let description: String?
+    let avatar_url: String?
+    let creator_id: UUID?
+    let is_public: Bool
+    let max_members: Int
+    let created_at: Date
+    let updated_at: Date
+    let last_activity_at: Date?
+    let visibility: String
+    let join_policy: String
+    let members_count: Int
+    let last_message_preview: MessagePreview?
+    
+    var id: UUID { chat_id }
+}
+
+// MARK: - MessagePreview
+struct MessagePreview: Codable {
+    let message_id: Int64
+    let sender_id: UUID
+    let type: String
+    let text_preview: String?
+    let created_at: Date
+    let is_deleted: Bool
+}
+
+// MARK: - Message
+struct Message: Identifiable, Codable {
+    let message_id: Int64
+    let chat_id: UUID
+    let sender_id: UUID
+    let reply_to_id: Int64?
+    let content: String?
+    let type: String
+    let created_at: Date
+    let updated_at: Date
+    let deleted_at: Date?
+    let is_edited: Bool
+    
+    var id: Int64 { message_id }
+}
+
+// MARK: - ChatMember
+struct ChatMemberItem: Codable {
+    let user_id: UUID
+    let nickname: String
+    let joined_at: Date
+}
+
+// MARK: - Contact
+struct Contact: Identifiable, Codable {
+    let id: UUID  // локальный ID
+    let user_id: UUID
+    let contact_user_id: UUID
+    let status: String
+    let created_at: Date
+    let updated_at: Date
+    let contact_user: User?
+    
+    var contact_id: UUID { id }
+}
+
+// MARK: - ContactRequest (входящие заявки)
+struct ContactRequest: Identifiable, Codable {
+    let id: UUID
+    let from_user_id: UUID
+    let from_nickname: String
+    let from_avatar_url: String?
+    let status: String
+    let created_at: Date
+    
+    var contact_request_id: UUID { id }
+}
+
+// MARK: - Search result
+struct UserPublicResponse: Identifiable, Codable {
+    let user_id: UUID
+    let nick_name: String
+    let avatar_url: String?
+    let is_online: Bool
+    
+    var id: UUID { user_id }
 }
 
 ./FrontDip/MessengerApp/Models/User/User.swift
 
-import Foundation
-
-struct User: Identifiable, Codable {
-    let id: UUID
-    let nickName: String
-    let firstName: String?
-    let lastName: String?
-    let avatarUrl: String?
-    let bio: String?
-    let isOnline: Bool
-    let lastSeen: Date?
-    let createdAt: Date
-    let updatedAt: Date
-    let email: String?
-    
-    enum CodingKeys: String, CodingKey {
-        case id = "user_id"
-        case nickName = "nick_name"
-        case firstName = "first_name"
-        case lastName = "last_name"
-        case avatarUrl = "avatar_url"
-        case bio
-        case isOnline = "is_online"
-        case lastSeen = "last_seen"
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-        case email
-    }
-    
-    init(id: UUID, nickName: String, email: String?, createdAt: Date, updatedAt: Date,
-         firstName: String? = nil, lastName: String? = nil, avatarUrl: String? = nil,
-         bio: String? = nil, isOnline: Bool = false, lastSeen: Date? = nil) {
-        self.id = id
-        self.nickName = nickName
-        self.email = email
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-        self.firstName = firstName
-        self.lastName = lastName
-        self.avatarUrl = avatarUrl
-        self.bio = bio
-        self.isOnline = isOnline
-        self.lastSeen = lastSeen
-    }
-}
 
 ./FrontDip/MessengerApp/Models/User/UserDTO.swift
 
 
 ./FrontDip/MessengerApp/Models/User/UserPublicResponse.swift
 
-import Foundation
-
-struct UserPublicResponse: Identifiable, Codable {
-    var id: UUID { user_id }
-    let user_id: UUID
-    let nickname: String
-    let public_key: String
-}
 
 ./FrontDip/MessengerApp/Models/WebSocketMessage.swift
 
@@ -633,43 +574,60 @@ class LocalDatabase {
     static let shared = LocalDatabase()
     
     private var db: Connection?
-    private let messagesTable = Table("messages")
+    
+    // Таблицы
     private let chatsTable = Table("chats")
+    private let messagesTable = Table("messages")
     private let contactsTable = Table("contacts")
     private let contactRequestsTable = Table("contact_requests")
     
-    // MARK: - Столбцы для messages таблицы
-    private let id = Expression<UUID>("id")
+    // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
-    private let senderId = Expression<UUID>("sender_id")
-    private let content = Expression<String>("content")
-    private let type = Expression<String>("type")
-    private let timestamp = Expression<Date>("timestamp")
-    private let isEncrypted = Expression<Bool>("is_encrypted")
-    private let isSent = Expression<Bool>("is_sent")
-    private let isDelivered = Expression<Bool>("is_delivered")
-    
-    // MARK: - Столбцы для chats таблицы (типы совпадают с моделями)
-    private let chatPrimaryId = Expression<UUID>("id")
-    private let chatName = Expression<String>("name")
-    private let chatCreatorId = Expression<UUID>("creator_id")
+    private let chatType = Expression<String>("chat_type")
+    private let chatName = Expression<String?>("name")
+    private let chatDescription = Expression<String?>("description")
+    private let chatAvatarUrl = Expression<String?>("avatar_url")
+    private let chatCreatorId = Expression<UUID?>("creator_id")
+    private let chatIsPublic = Expression<Bool>("is_public")
+    private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatMemberCount = Expression<Int>("member_count")
+    private let chatUpdatedAt = Expression<Date>("updated_at")
+    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
+    private let chatVisibility = Expression<String>("visibility")
+    private let chatJoinPolicy = Expression<String>("join_policy")
+    private let chatMembersCount = Expression<Int>("members_count")
     
-    // MARK: - Столбцы для contacts таблицы
-    private let contactId = Expression<UUID>("id")
+    // Для last_message_preview храним JSON
+    private let chatLastMessagePreviewJSON = Expression<String?>("last_message_preview_json")
+    
+    // === Messages columns ===
+    private let msgId = Expression<Int64>("message_id")
+    private let msgChatId = Expression<UUID>("chat_id")
+    private let msgSenderId = Expression<UUID>("sender_id")
+    private let msgReplyToId = Expression<Int64?>("reply_to_id")
+    private let msgContent = Expression<String?>("content")
+    private let msgType = Expression<String>("type")
+    private let msgCreatedAt = Expression<Date>("created_at")
+    private let msgUpdatedAt = Expression<Date>("updated_at")
+    private let msgDeletedAt = Expression<Date?>("deleted_at")
+    private let msgIsEdited = Expression<Bool>("is_edited")
+    
+    // === Contacts columns ===
+    private let contactIdCol = Expression<UUID>("id")
     private let contactUserId = Expression<UUID>("user_id")
-    private let contactNickname = Expression<String>("nickname")
-    private let contactPublicKey = Expression<String>("public_key")
-    private let contactAddedAt = Expression<Date>("added_at")
+    private let contactContactUserId = Expression<UUID>("contact_user_id")
+    private let contactStatus = Expression<String>("status")
+    private let contactCreatedAt = Expression<Date>("created_at")
+    private let contactUpdatedAt = Expression<Date>("updated_at")
+    private let contactUserJSON = Expression<String?>("contact_user_json") // запасной
     
-    // MARK: - Столбцы для contact_requests таблицы
-    private let requestId = Expression<UUID>("id")
-    private let fromUserId = Expression<UUID>("from_user_id")
-    private let fromNickname = Expression<String>("from_nickname")
-    private let fromPublicKey = Expression<String>("from_public_key")
-    private let requestStatus = Expression<String>("status")
-    private let requestCreatedAt = Expression<Date>("created_at")
+    // === Contact Requests columns ===
+    private let reqId = Expression<UUID>("id")
+    private let reqFromUserId = Expression<UUID>("from_user_id")
+    private let reqFromNickname = Expression<String>("from_nickname")
+    private let reqFromAvatarUrl = Expression<String?>("from_avatar_url")
+    private let reqStatus = Expression<String>("status")
+    private let reqCreatedAt = Expression<Date>("created_at")
     
     private init() {
         setupDatabase()
@@ -679,79 +637,110 @@ class LocalDatabase {
         do {
             let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
             db = try Connection("\(path)/messenger.sqlite3")
-            print("📊 Инициализация базы данных по пути: \(path)/messenger.sqlite3")
-            
-            try db?.run(messagesTable.create(ifNotExists: true) { t in
-                t.column(id, primaryKey: true)
-                t.column(chatId)
-                t.column(senderId)
-                t.column(content)
-                t.column(type)
-                t.column(timestamp)
-                t.column(isEncrypted)
-                t.column(isSent, defaultValue: false)
-                t.column(isDelivered, defaultValue: false)
-            })
+            print("✅ Database at \(path)/messenger.sqlite3")
             
             try db?.run(chatsTable.create(ifNotExists: true) { t in
-                t.column(chatPrimaryId, primaryKey: true)
+                t.column(chatId, primaryKey: true)
+                t.column(chatType)
                 t.column(chatName)
+                t.column(chatDescription)
+                t.column(chatAvatarUrl)
                 t.column(chatCreatorId)
+                t.column(chatIsPublic)
+                t.column(chatMaxMembers)
                 t.column(chatCreatedAt)
-                t.column(chatMemberCount)
+                t.column(chatUpdatedAt)
+                t.column(chatLastActivityAt)
+                t.column(chatVisibility)
+                t.column(chatJoinPolicy)
+                t.column(chatMembersCount)
+                t.column(chatLastMessagePreviewJSON)
             })
-            print("✅ Таблица chats создана/проверена")
+            
+            try db?.run(messagesTable.create(ifNotExists: true) { t in
+                t.column(msgId, primaryKey: true)
+                t.column(msgChatId)
+                t.column(msgSenderId)
+                t.column(msgReplyToId)
+                t.column(msgContent)
+                t.column(msgType)
+                t.column(msgCreatedAt)
+                t.column(msgUpdatedAt)
+                t.column(msgDeletedAt)
+                t.column(msgIsEdited)
+            })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
-                t.column(contactId, primaryKey: true)
+                t.column(contactIdCol, primaryKey: true)
                 t.column(contactUserId)
-                t.column(contactNickname)
-                t.column(contactPublicKey)
-                t.column(contactAddedAt)
+                t.column(contactContactUserId)
+                t.column(contactStatus)
+                t.column(contactCreatedAt)
+                t.column(contactUpdatedAt)
+                t.column(contactUserJSON)
             })
             
             try db?.run(contactRequestsTable.create(ifNotExists: true) { t in
-                t.column(requestId, primaryKey: true)
-                t.column(fromUserId)
-                t.column(fromNickname)
-                t.column(fromPublicKey)
-                t.column(requestStatus)
-                t.column(requestCreatedAt)
+                t.column(reqId, primaryKey: true)
+                t.column(reqFromUserId)
+                t.column(reqFromNickname)
+                t.column(reqFromAvatarUrl)
+                t.column(reqStatus)
+                t.column(reqCreatedAt)
             })
             
-            print("✅ Database setup complete with all tables")
+            print("✅ Tables created")
         } catch {
-            print("❌ Database setup error: \(error)")
+            print("❌ DB setup error: \(error)")
         }
     }
     
-    // MARK: - Chat Operations
+    // MARK: - Chat operations
     func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         do {
-            let existingChat = chatsTable.filter(chatPrimaryId == chat.id)
-            let count = try db.scalar(existingChat.count)
+            let previewJSON = chat.last_message_preview.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+            let existing = chatsTable.filter(chatId == chat.chat_id)
+            let count = try db.scalar(existing.count)
             if count > 0 {
-                try db.run(existingChat.update(
-                    chatName <- (chat.name ?? ""),
-                    chatCreatorId <- chat.creatorId,
-                    chatCreatedAt <- chat.createdAt,
-                    chatMemberCount <- chat.memberCount
+                try db.run(existing.update(
+                    chatType <- chat.chat_type,
+                    chatName <- chat.name,
+                    chatDescription <- chat.description,
+                    chatAvatarUrl <- chat.avatar_url,
+                    chatCreatorId <- chat.creator_id,
+                    chatIsPublic <- chat.is_public,
+                    chatMaxMembers <- chat.max_members,
+                    chatCreatedAt <- chat.created_at,
+                    chatUpdatedAt <- chat.updated_at,
+                    chatLastActivityAt <- chat.last_activity_at,
+                    chatVisibility <- chat.visibility,
+                    chatJoinPolicy <- chat.join_policy,
+                    chatMembersCount <- chat.members_count,
+                    chatLastMessagePreviewJSON <- previewJSON
                 ))
-                print("✅ Чат обновлен: \(chat.name ?? "")")
             } else {
                 try db.run(chatsTable.insert(
-                    chatPrimaryId <- chat.id,
-                    chatName <- (chat.name ?? ""),
-                    chatCreatorId <- chat.creatorId,
-                    chatCreatedAt <- chat.createdAt,
-                    chatMemberCount <- chat.memberCount
+                    chatId <- chat.chat_id,
+                    chatType <- chat.chat_type,
+                    chatName <- chat.name,
+                    chatDescription <- chat.description,
+                    chatAvatarUrl <- chat.avatar_url,
+                    chatCreatorId <- chat.creator_id,
+                    chatIsPublic <- chat.is_public,
+                    chatMaxMembers <- chat.max_members,
+                    chatCreatedAt <- chat.created_at,
+                    chatUpdatedAt <- chat.updated_at,
+                    chatLastActivityAt <- chat.last_activity_at,
+                    chatVisibility <- chat.visibility,
+                    chatJoinPolicy <- chat.join_policy,
+                    chatMembersCount <- chat.members_count,
+                    chatLastMessagePreviewJSON <- previewJSON
                 ))
-                print("✅ Чат сохранен: \(chat.name ?? "")")
             }
             return true
         } catch {
-            print("❌ Save/update chat error: \(error)")
+            print("❌ saveOrUpdateChat error: \(error)")
             return false
         }
     }
@@ -759,203 +748,90 @@ class LocalDatabase {
     func getChats() -> [Chat] {
         guard let db = db else { return [] }
         do {
-            let query = chatsTable.order(chatCreatedAt.desc)
             var chats: [Chat] = []
-            for row in try db.prepare(query) {
+            for row in try db.prepare(chatsTable.order(chatCreatedAt.desc)) {
+                var preview: MessagePreview? = nil
+                if let jsonStr = row[chatLastMessagePreviewJSON],
+                   let data = jsonStr.data(using: .utf8) {
+                    preview = try? JSONDecoder().decode(MessagePreview.self, from: data)
+                }
                 let chat = Chat(
-                    id: row[chatPrimaryId],
+                    chat_id: row[chatId],
+                    chat_type: row[chatType],
                     name: row[chatName],
-                    creatorId: row[chatCreatorId],
-                    createdAt: row[chatCreatedAt],
-                    memberCount: row[chatMemberCount]
+                    description: row[chatDescription],
+                    avatar_url: row[chatAvatarUrl],
+                    creator_id: row[chatCreatorId],
+                    is_public: row[chatIsPublic],
+                    max_members: row[chatMaxMembers],
+                    created_at: row[chatCreatedAt],
+                    updated_at: row[chatUpdatedAt],
+                    last_activity_at: row[chatLastActivityAt],
+                    visibility: row[chatVisibility],
+                    join_policy: row[chatJoinPolicy],
+                    members_count: row[chatMembersCount],
+                    last_message_preview: preview
                 )
                 chats.append(chat)
             }
             return chats
         } catch {
-            print("❌ Get chats error: \(error)")
+            print("❌ getChats error: \(error)")
             return []
         }
     }
     
     func deleteAllChats() {
         guard let db = db else { return }
-        do {
-            try db.run(chatsTable.delete())
-            print("✅ Все чаты очищены")
-        } catch {
-            print("❌ Error clearing chats: \(error)")
-        }
+        do { try db.run(chatsTable.delete()) } catch { print(error) }
     }
     
-    // MARK: - Contact Operations
-    func saveContact(_ contact: Contact) -> Bool {
-        guard let db = db else { return false }
-        do {
-            try db.run(contactsTable.insert(
-                contactId <- contact.id,
-                contactUserId <- contact.userId,
-                contactNickname <- contact.nickname,
-                contactPublicKey <- contact.publicKey,
-                contactAddedAt <- contact.addedAt
-            ))
-            return true
-        } catch {
-            print("❌ Save contact error: \(error)")
-            return false
-        }
-    }
-    
-    func getContacts() -> [Contact] {
-        guard let db = db else { return [] }
-        do {
-            let query = contactsTable.order(contactAddedAt.desc)
-            var contacts: [Contact] = []
-            for row in try db.prepare(query) {
-                contacts.append(Contact(
-                    id: row[contactId],
-                    userId: row[contactUserId],
-                    nickname: row[contactNickname],
-                    publicKey: row[contactPublicKey],
-                    addedAt: row[contactAddedAt]
-                ))
-            }
-            return contacts
-        } catch {
-            print("❌ Get contacts error: \(error)")
-            return []
-        }
-    }
-    
-    func isContact(userId: UUID) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let query = contactsTable.filter(contactUserId == userId)
-            let count = try db.scalar(query.count)
-            return count > 0
-        } catch {
-            print("❌ Check contact error: \(error)")
-            return false
-        }
-    }
-    
-    func deleteContact(userId: UUID) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let query = contactsTable.filter(contactUserId == userId)
-            try db.run(query.delete())
-            return true
-        } catch {
-            print("❌ Delete contact error: \(error)")
-            return false
-        }
-    }
-    
-    // MARK: - Contact Requests Operations
-    func saveContactRequest(_ request: ContactRequest) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let existing = contactRequestsTable.filter(requestId == request.id)
-            let count = try db.scalar(existing.count)
-            if count > 0 {
-                try db.run(existing.update(
-                    fromUserId <- request.fromUserId,
-                    fromNickname <- request.fromNickname,
-                    fromPublicKey <- request.fromPublicKey,
-                    requestStatus <- request.status,
-                    requestCreatedAt <- request.createdAt
-                ))
-            } else {
-                try db.run(contactRequestsTable.insert(
-                    requestId <- request.id,
-                    fromUserId <- request.fromUserId,
-                    fromNickname <- request.fromNickname,
-                    fromPublicKey <- request.fromPublicKey,
-                    requestStatus <- request.status,
-                    requestCreatedAt <- request.createdAt
-                ))
-            }
-            return true
-        } catch {
-            print("❌ Save contact request error: \(error)")
-            return false
-        }
-    }
-    
-    func getPendingContactRequests() -> [ContactRequest] {
-        guard let db = db else { return [] }
-        do {
-            let query = contactRequestsTable.filter(requestStatus == "pending").order(requestCreatedAt.desc)
-            var requests: [ContactRequest] = []
-            for row in try db.prepare(query) {
-                requests.append(ContactRequest(
-                    id: row[requestId],
-                    fromUserId: row[fromUserId],
-                    fromNickname: row[fromNickname],
-                    fromPublicKey: row[fromPublicKey],
-                    status: row[requestStatus],
-                    createdAt: row[requestCreatedAt]
-                ))
-            }
-            return requests
-        } catch {
-            print("❌ Get pending contact requests error: \(error)")
-            return []
-        }
-    }
-    
-    func updateContactRequestStatus(_ requestId: UUID, status: String) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let request = contactRequestsTable.filter(self.requestId == requestId)
-            try db.run(request.update(requestStatus <- status))
-            return true
-        } catch {
-            print("❌ Update contact request error: \(error)")
-            return false
-        }
-    }
-    
-    // MARK: - Message Operations
+    // MARK: - Message operations
     func saveMessage(_ message: Message) -> Bool {
-        guard let db = db, let messageId = message.id else { return false }
+        guard let db = db else { return false }
         do {
             try db.run(messagesTable.insert(
-                id <- messageId,
-                chatId <- message.chatId,
-                senderId <- message.senderId,
-                content <- message.content,
-                type <- message.type.rawValue,
-                timestamp <- message.timestamp,
-                isEncrypted <- message.isEncrypted
+                msgId <- message.message_id,
+                msgChatId <- message.chat_id,
+                msgSenderId <- message.sender_id,
+                msgReplyToId <- message.reply_to_id,
+                msgContent <- message.content,
+                msgType <- message.type,
+                msgCreatedAt <- message.created_at,
+                msgUpdatedAt <- message.updated_at,
+                msgDeletedAt <- message.deleted_at,
+                msgIsEdited <- message.is_edited
             ))
             return true
         } catch {
-            print("❌ Save message error: \(error)")
+            print("❌ saveMessage error: \(error)")
             return false
         }
     }
     
-    func getMessages(for chatUUID: UUID) -> [Message] {
+    func getMessages(for chatId: UUID) -> [Message] {
         guard let db = db else { return [] }
         do {
-            let query = messagesTable.filter(chatId == chatUUID).order(timestamp.asc)
+            let query = messagesTable.filter(msgChatId == chatId).order(msgCreatedAt.asc)
             var messages: [Message] = []
             for row in try db.prepare(query) {
-                guard let msgType = MessageType(rawValue: row[type]) else { continue }
-                messages.append(Message(
-                    id: row[id],
-                    chatId: row[chatId],
-                    senderId: row[senderId],
-                    content: row[content],
-                    type: msgType,
-                    timestamp: row[timestamp],
-                    isEncrypted: row[isEncrypted]
-                ))
+                let msg = Message(
+                    message_id: row[msgId],
+                    chat_id: row[msgChatId],
+                    sender_id: row[msgSenderId],
+                    reply_to_id: row[msgReplyToId],
+                    content: row[msgContent],
+                    type: row[msgType],
+                    created_at: row[msgCreatedAt],
+                    updated_at: row[msgUpdatedAt],
+                    deleted_at: row[msgDeletedAt],
+                    is_edited: row[msgIsEdited]
+                )
+                messages.append(msg)
             }
             return messages
         } catch {
-            print("❌ Get messages error: \(error)")
+            print("❌ getMessages error: \(error)")
             return []
         }
     }
@@ -963,63 +839,183 @@ class LocalDatabase {
     func deleteMessages(for chatId: UUID) -> Bool {
         guard let db = db else { return false }
         do {
-            let query = messagesTable.filter(self.chatId == chatId)
-            try db.run(query.delete())
+            try db.run(messagesTable.filter(msgChatId == chatId).delete())
             return true
         } catch {
-            print("❌ Delete messages error: \(error)")
+            print("❌ deleteMessages error: \(error)")
             return false
         }
     }
     
-    func messageExists(_ messageId: UUID) -> Bool {
+    func messageExists(_ messageId: Int64) -> Bool {
         guard let db = db else { return false }
         do {
-            let query = messagesTable.filter(id == messageId)
-            let count = try db.scalar(query.count)
+            let count = try db.scalar(messagesTable.filter(msgId == messageId).count)
             return count > 0
         } catch {
             return false
         }
     }
     
-    func updateMessageStatus(messageId: UUID, isSent: Bool, isDelivered: Bool) -> Bool {
+    func updateMessageStatus(messageId: Int64, isSent: Bool, isDelivered: Bool) -> Bool {
+        // не храним статусы в локальной БД – можно игнорировать
+        return true
+    }
+    
+    // MARK: - Contacts
+    func saveContact(_ contact: Contact) -> Bool {
         guard let db = db else { return false }
         do {
-            let message = messagesTable.filter(id == messageId)
-            try db.run(message.update(
-                self.isSent <- isSent,
-                self.isDelivered <- isDelivered
+            let userJSON = contact.contact_user.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+            try db.run(contactsTable.insert(
+                contactIdCol <- contact.id,
+                contactUserId <- contact.user_id,
+                contactContactUserId <- contact.contact_user_id,
+                contactStatus <- contact.status,
+                contactCreatedAt <- contact.created_at,
+                contactUpdatedAt <- contact.updated_at,
+                contactUserJSON <- userJSON
             ))
             return true
         } catch {
-            print("❌ Update message status error: \(error)")
+            print("❌ saveContact error: \(error)")
             return false
         }
     }
     
-    // MARK: - Clear Methods
+    func getContacts() -> [Contact] {
+        guard let db = db else { return [] }
+        do {
+            var contacts: [Contact] = []
+            for row in try db.prepare(contactsTable) {
+                var contactUser: User? = nil
+                if let jsonStr = row[contactUserJSON], let data = jsonStr.data(using: .utf8) {
+                    contactUser = try? JSONDecoder().decode(User.self, from: data)
+                }
+                let contact = Contact(
+                    id: row[contactIdCol],
+                    user_id: row[contactUserId],
+                    contact_user_id: row[contactContactUserId],
+                    status: row[contactStatus],
+                    created_at: row[contactCreatedAt],
+                    updated_at: row[contactUpdatedAt],
+                    contact_user: contactUser
+                )
+                contacts.append(contact)
+            }
+            return contacts
+        } catch {
+            print("❌ getContacts error: \(error)")
+            return []
+        }
+    }
+    
+    func isContact(userId: UUID) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let count = try db.scalar(contactsTable.filter(contactContactUserId == userId).count)
+            return count > 0
+        } catch {
+            return false
+        }
+    }
+    
+    func deleteContact(userId: UUID) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(contactsTable.filter(contactContactUserId == userId).delete())
+            return true
+        } catch {
+            print("❌ deleteContact error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Contact Requests
+    func saveContactRequest(_ request: ContactRequest) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let existing = contactRequestsTable.filter(reqId == request.id)
+            let count = try db.scalar(existing.count)
+            if count > 0 {
+                try db.run(existing.update(
+                    reqFromUserId <- request.from_user_id,
+                    reqFromNickname <- request.from_nickname,
+                    reqFromAvatarUrl <- request.from_avatar_url,
+                    reqStatus <- request.status,
+                    reqCreatedAt <- request.created_at
+                ))
+            } else {
+                try db.run(contactRequestsTable.insert(
+                    reqId <- request.id,
+                    reqFromUserId <- request.from_user_id,
+                    reqFromNickname <- request.from_nickname,
+                    reqFromAvatarUrl <- request.from_avatar_url,
+                    reqStatus <- request.status,
+                    reqCreatedAt <- request.created_at
+                ))
+            }
+            return true
+        } catch {
+            print("❌ saveContactRequest error: \(error)")
+            return false
+        }
+    }
+    
+    func getPendingContactRequests() -> [ContactRequest] {
+        guard let db = db else { return [] }
+        do {
+            let query = contactRequestsTable.filter(reqStatus == "pending").order(reqCreatedAt.desc)
+            var requests: [ContactRequest] = []
+            for row in try db.prepare(query) {
+                let req = ContactRequest(
+                    id: row[reqId],
+                    from_user_id: row[reqFromUserId],
+                    from_nickname: row[reqFromNickname],
+                    from_avatar_url: row[reqFromAvatarUrl],
+                    status: row[reqStatus],
+                    created_at: row[reqCreatedAt]
+                )
+                requests.append(req)
+            }
+            return requests
+        } catch {
+            print("❌ getPendingContactRequests error: \(error)")
+            return []
+        }
+    }
+    
+    func updateContactRequestStatus(_ requestId: UUID, status: String) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let request = contactRequestsTable.filter(reqId == requestId)
+            try db.run(request.update(reqStatus <- status))
+            return true
+        } catch {
+            print("❌ updateContactRequestStatus error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Clear
     func clearAllData() {
         guard let db = db else { return }
         do {
-            try db.run(messagesTable.delete())
             try db.run(chatsTable.delete())
+            try db.run(messagesTable.delete())
             try db.run(contactsTable.delete())
             try db.run(contactRequestsTable.delete())
-            print("✅ Все данные очищены")
         } catch {
-            print("❌ Error clearing database: \(error)")
+            print("❌ clearAllData error: \(error)")
         }
     }
     
     func clearMessages(for chatId: UUID) {
         guard let db = db else { return }
         do {
-            let query = messagesTable.filter(self.chatId == chatId)
-            try db.run(query.delete())
-            print("✅ Сообщения очищены для чата: \(chatId)")
+            try db.run(messagesTable.filter(msgChatId == chatId).delete())
         } catch {
-            print("❌ Error clearing messages: \(error)")
+            print("❌ clearMessages error: \(error)")
         }
     }
     
@@ -1027,27 +1023,8 @@ class LocalDatabase {
         db = nil
         let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
         let dbPath = "\(path)/messenger.sqlite3"
-        do {
-            if FileManager.default.fileExists(atPath: dbPath) {
-                try FileManager.default.removeItem(atPath: dbPath)
-            }
-        } catch {
-            print("❌ Ошибка удаления БД: \(error)")
-        }
+        try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
-    }
-    
-    func printDatabaseInfo() {
-        guard let db = db else { return }
-        do {
-            let chatsCount = try db.scalar(chatsTable.count)
-            let messagesCount = try db.scalar(messagesTable.count)
-            let contactsCount = try db.scalar(contactsTable.count)
-            let requestsCount = try db.scalar(contactRequestsTable.count)
-            print("📊 Чатов: \(chatsCount), Сообщений: \(messagesCount), Контактов: \(contactsCount), Запросов: \(requestsCount)")
-        } catch {
-            print("❌ Ошибка получения информации: \(error)")
-        }
     }
 }
 
@@ -1218,208 +1195,165 @@ class ContactService: ObservableObject {
     static let shared = ContactService()
     
     @Published var contacts: [Contact] = []
-    @Published var pendingRequests: [ContactRequest] = []
+    @Published var pendingRequests: [Contact] = []
     @Published var isLoading = false
     
     private let graphQL = GraphQLClient.shared
-    private let webSocketService = WebSocketService.shared
     private let database = LocalDatabase.shared
     private var cancellables = Set<AnyCancellable>()
     
     private init() {
         loadContacts()
         loadPendingRequests()
-        setupWebSocketHandlers()
     }
     
-    // MARK: - GraphQL Mutations & Queries
+    // MARK: - GraphQL
     
     func sendContactRequest(to userId: String) async throws -> Bool {
-        let variables: [String: Any] = ["contactUserId": userId]
+        let variables: [String: Any] = ["contact_user_id": userId]
         let _: AddContactResponse = try await graphQL.perform(
             query: GraphQLQueries.addContact,
             variables: variables,
-            responseType: AddContactResponse.self
+            responseType: AddContactResponse.self,
+            authToken: TokenManager.shared.accessToken
         )
-        webSocketService.sendContactRequest(to: userId)
         return true
     }
     
-    func getPendingRequests() async throws -> [ContactRequest] {
-        let variables: [String: Any] = ["status": "pending"]
-        let response: ListContactsResponse = try await graphQL.perform(
-            query: GraphQLQueries.listContacts,
+    func acceptContact(contactUserId: String) async throws -> Bool {
+        let variables: [String: Any] = ["contact_user_id": contactUserId]
+        let _: AcceptContactResponse = try await graphQL.perform(
+            query: GraphQLQueries.acceptContact,
             variables: variables,
-            responseType: ListContactsResponse.self
+            responseType: AcceptContactResponse.self,
+            authToken: TokenManager.shared.accessToken
         )
-        return response.contacts.map { apiContact in
-            ContactRequest(
-                id: UUID(),
-                fromUserId: apiContact.contactUserId,
-                fromNickname: apiContact.contactUser?.nickName ?? "",
-                fromPublicKey: apiContact.contactUser?.publicKey ?? "",
-                status: apiContact.status,
-                createdAt: apiContact.createdAt
-            )
-        }
-    }
-    
-    func respondToContactRequest(requestId: String, status: String) async throws -> Bool {
-        let variables: [String: Any] = ["contactUserId": requestId]
-        if status == "accepted" {
-            let _: AcceptContactResponse = try await graphQL.perform(
-                query: GraphQLQueries.acceptContact,
-                variables: variables,
-                responseType: AcceptContactResponse.self
-            )
-        } else {
-            let _: RemoveContactResponse = try await graphQL.perform(
-                query: GraphQLQueries.removeContact,
-                variables: variables,
-                responseType: RemoveContactResponse.self
-            )
-        }
         return true
     }
     
-    func getContactsFromServer() async throws -> [Contact] {
-        let variables: [String: Any] = ["status": "accepted"]
-        let response: ListContactsResponse = try await graphQL.perform(
-            query: GraphQLQueries.listContacts,
-            variables: variables,
-            responseType: ListContactsResponse.self
-        )
-        return response.contacts.map { apiContact in
-            Contact(
-                id: UUID(),
-                userId: apiContact.contactUserId,
-                nickname: apiContact.contactUser?.nickName ?? "",
-                publicKey: apiContact.contactUser?.publicKey ?? "",
-                addedAt: apiContact.createdAt
-            )
-        }
-    }
-    
-    func removeContactFromServer(userId: String) async throws -> Bool {
-        let variables: [String: Any] = ["contactUserId": userId]
+    func removeContact(userId: String) async throws -> Bool {
+        let variables: [String: Any] = ["contact_user_id": userId]
         let _: RemoveContactResponse = try await graphQL.perform(
             query: GraphQLQueries.removeContact,
             variables: variables,
-            responseType: RemoveContactResponse.self
+            responseType: RemoveContactResponse.self,
+            authToken: TokenManager.shared.accessToken
         )
         return true
     }
     
-    // MARK: - Local Database Methods
+    func fetchContacts(status: String? = "accepted") async throws -> [Contact] {
+        var variables: [String: Any] = [:]
+        if let status = status { variables["status"] = status }
+        let response: ListContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.listContacts,
+            variables: variables,
+            responseType: ListContactsResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.contact.list.map { apiContact in
+            Contact(
+                id: UUID(),
+                user_id: apiContact.user_id,
+                contact_user_id: apiContact.contact_user_id,
+                status: apiContact.status,
+                created_at: apiContact.created_at,
+                updated_at: apiContact.updated_at,
+                contact_user: apiContact.contact_user
+            )
+        }
+    }
+    
+    func fetchIncomingRequests() async throws -> [Contact] {
+        let response: ListContactsResponse = try await graphQL.perform(
+            query: GraphQLQueries.incomingRequests,
+            variables: [:],
+            responseType: ListContactsResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.contact.list
+    }
+    
+    // MARK: - Local
     
     func loadContacts() {
-        contacts = database.getContacts()
+        Task {
+            do {
+                let fetched = try await fetchContacts()
+                await MainActor.run { self.contacts = fetched }
+            } catch {
+                print("Failed to load contacts: \(error)")
+            }
+        }
     }
     
     func loadPendingRequests() {
-        pendingRequests = database.getPendingContactRequests()
+        Task {
+            do {
+                let fetched = try await fetchIncomingRequests()
+                await MainActor.run { self.pendingRequests = fetched.filter { $0.status == "pending" } }
+            } catch {
+                print("Failed to load pending: \(error)")
+            }
+        }
     }
     
-    func saveContactLocally(_ contact: Contact) -> Bool {
-        return database.saveContact(contact)
+    func syncContacts() { loadContacts() }
+    func syncPendingRequests() { loadPendingRequests() }
+    
+    func isContact(userId: UUID) -> Bool {
+        contacts.contains(where: { $0.contactUserId == userId })
     }
     
-    func saveContactRequestLocally(_ request: ContactRequest) -> Bool {
-        return database.saveContactRequest(request)
-    }
-    
-    func updateContactRequestStatusLocally(_ requestId: UUID, status: String) -> Bool {
-        return database.updateContactRequestStatus(requestId, status: status)
-    }
-    
-    func removeContactLocally(userId: UUID) -> Bool {
-        return database.deleteContact(userId: userId)
-    }
-    
-    // MARK: - Business Logic
+    // MARK: - Business
     
     func sendContactRequest(to user: UserPublicResponse) {
-        guard let currentUser = AppState.shared.currentUser else {
-            NotificationService.shared.showError("Текущий пользователь не найден")
-            return
-        }
-        guard currentUser.id != user.user_id.uuidString else {
-            NotificationService.shared.showError("Нельзя отправить запрос самому себе")
-            return
-        }
-        guard !isContact(userId: user.user_id) else {
-            NotificationService.shared.showInfo("Пользователь уже в контактах")
-            return
-        }
+        guard let currentUser = AppState.shared.currentUser else { return }
+        guard currentUser.id != user.user_id else { return }
+        guard !isContact(userId: user.user_id) else { return }
         
         Task {
             do {
-                let success = try await sendContactRequest(to: user.user_id.uuidString)
-                if success {
-                    let request = ContactRequest(
-                        id: UUID(),
-                        fromUserId: UUID(uuidString: currentUser.id)!,
-                        fromNickname: currentUser.nickName,
-                        fromPublicKey: "",
-                        status: "pending",
-                        createdAt: Date()
-                    )
-                    if saveContactRequestLocally(request) {
-                        await MainActor.run {
-                            loadPendingRequests()
-                            NotificationService.shared.showSuccess("Запрос отправлен пользователю \(user.nickname)")
-                        }
-                    }
+                _ = try await sendContactRequest(to: user.user_id.uuidString)
+                await MainActor.run {
+                    NotificationService.shared.showSuccess("Запрос отправлен \(user.nickname)")
                 }
             } catch {
                 await MainActor.run {
-                    NotificationService.shared.showError("Ошибка отправки запроса: \(error.localizedDescription)")
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
                 }
             }
         }
     }
     
-    func acceptContactRequest(_ request: ContactRequest) {
+    func acceptContactRequest(_ request: Contact) {
         Task {
             do {
-                let success = try await respondToContactRequest(requestId: request.fromUserId.uuidString, status: "accepted")
-                if success && database.updateContactRequestStatus(request.id, status: "accepted") {
-                    let contact = Contact(
-                        id: UUID(),
-                        userId: request.fromUserId,
-                        nickname: request.fromNickname,
-                        publicKey: request.fromPublicKey,
-                        addedAt: Date()
-                    )
-                    if saveContactLocally(contact) {
-                        await MainActor.run {
-                            loadContacts()
-                            loadPendingRequests()
-                            NotificationService.shared.showSuccess("Контакт \(request.fromNickname) добавлен")
-                        }
-                    }
+                _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
+                await MainActor.run {
+                    loadContacts()
+                    loadPendingRequests()
+                    NotificationService.shared.showSuccess("Контакт добавлен")
                 }
             } catch {
                 await MainActor.run {
-                    NotificationService.shared.showError("Ошибка принятия запроса: \(error.localizedDescription)")
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
                 }
             }
         }
     }
     
-    func declineContactRequest(_ request: ContactRequest) {
+    func declineContactRequest(_ request: Contact) {
         Task {
             do {
-                let success = try await respondToContactRequest(requestId: request.fromUserId.uuidString, status: "declined")
-                if success && database.updateContactRequestStatus(request.id, status: "declined") {
-                    await MainActor.run {
-                        loadPendingRequests()
-                        NotificationService.shared.showInfo("Запрос отклонен")
-                    }
+                _ = try await removeContact(userId: request.contactUserId.uuidString)
+                await MainActor.run {
+                    loadPendingRequests()
+                    NotificationService.shared.showInfo("Запрос отклонён")
                 }
             } catch {
                 await MainActor.run {
-                    NotificationService.shared.showError("Ошибка отклонения запроса: \(error.localizedDescription)")
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
                 }
             }
         }
@@ -1428,142 +1362,35 @@ class ContactService: ObservableObject {
     func removeContact(userId: UUID) {
         Task {
             do {
-                let success = try await removeContactFromServer(userId: userId.uuidString)
-                if success && removeContactLocally(userId: userId) {
-                    await MainActor.run {
-                        loadContacts()
-                        NotificationService.shared.showInfo("Контакт удален")
-                    }
+                _ = try await removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    loadContacts()
+                    NotificationService.shared.showInfo("Контакт удалён")
                 }
             } catch {
                 await MainActor.run {
-                    NotificationService.shared.showError("Ошибка удаления контакта: \(error.localizedDescription)")
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
                 }
             }
         }
     }
     
-    func syncContacts() {
-        Task {
-            do {
-                let serverContacts = try await getContactsFromServer()
-                for contact in serverContacts {
-                    if !isContact(userId: contact.userId) {
-                        _ = saveContactLocally(contact)
-                    }
-                }
-                await MainActor.run { loadContacts() }
-            } catch {
-                print("❌ Ошибка синхронизации контактов: \(error)")
-            }
-        }
-    }
-    
-    func syncPendingRequests() {
-        Task {
-            do {
-                let serverRequests = try await getPendingRequests()
-                for request in serverRequests {
-                    if !pendingRequests.contains(where: { $0.id == request.id }) {
-                        _ = saveContactRequestLocally(request)
-                    }
-                }
-                await MainActor.run { loadPendingRequests() }
-            } catch {
-                print("❌ Ошибка синхронизации запросов: \(error)")
-            }
-        }
-    }
-    
-    func isContact(userId: UUID) -> Bool {
-        return contacts.contains(where: { $0.userId == userId })
-    }
-    
-    // MARK: - Search Users (через GraphQL)
     func searchUsers(query: String) async throws -> [UserPublicResponse] {
-        let searchQuery = """
-        query Search($query: String!) {
-            user {
-                search(query: $query, page: 1, page_size: 20) {
-                    user_id
-                    nick_name
-                    avatar_url
-                    is_online
-                }
-            }
-        }
-        """
-        let variables = ["query": query]
-        let response: SearchResponse = try await graphQL.perform(
-            query: searchQuery,
+        let variables: [String: Any] = ["query": query]
+        let response: SearchUsersResponse = try await graphQL.perform(
+            query: GraphQLQueries.searchUsers,
             variables: variables,
-            responseType: SearchResponse.self
+            responseType: SearchUsersResponse.self,
+            authToken: TokenManager.shared.accessToken
         )
         return response.user.search.map { apiUser in
             UserPublicResponse(
-                user_id: UUID(uuidString: apiUser.user_id)!,
+                user_id: apiUser.user_id,
                 nickname: apiUser.nick_name,
                 public_key: ""
             )
         }
     }
-    
-    // MARK: - WebSocket Handlers
-    private func setupWebSocketHandlers() {
-        NotificationCenter.default.publisher(for: .newContactRequest)
-            .sink { [weak self] notification in
-                if let request = notification.object as? ContactRequest {
-                    self?.handleIncomingContactRequest(request)
-                }
-            }
-            .store(in: &cancellables)
-        
-        NotificationCenter.default.publisher(for: .contactRequestAccepted)
-            .sink { [weak self] notification in
-                if let contact = notification.object as? Contact {
-                    self?.handleContactRequestAccepted(contact)
-                }
-            }
-            .store(in: &cancellables)
-    }
-    
-    func handleIncomingContactRequest(_ request: ContactRequest) {
-        guard let currentUserId = AppState.shared.currentUser?.id,
-              let currentUserUUID = UUID(uuidString: currentUserId) else { return }
-        guard request.fromUserId != currentUserUUID else { return }
-        guard !isContact(userId: request.fromUserId) else { return }
-        guard !pendingRequests.contains(where: { $0.fromUserId == request.fromUserId && $0.status == "pending" }) else { return }
-        
-        if saveContactRequestLocally(request) {
-            loadPendingRequests()
-            NotificationService.shared.showInfo("Новый запрос на контакт от \(request.fromNickname)")
-        }
-    }
-    
-    func handleContactRequestAccepted(_ contact: Contact) {
-        if saveContactLocally(contact) {
-            loadContacts()
-            if let request = pendingRequests.first(where: { $0.fromUserId == contact.userId }) {
-                _ = database.updateContactRequestStatus(request.id, status: "accepted")
-                loadPendingRequests()
-            }
-            NotificationService.shared.showSuccess("\(contact.nickname) принял(а) ваш запрос")
-        }
-    }
-}
-
-// MARK: - Search Response Model
-struct SearchResponse: Decodable {
-    let user: UserSearchResult
-}
-struct UserSearchResult: Decodable {
-    let search: [SearchedUser]
-}
-struct SearchedUser: Decodable {
-    let user_id: String
-    let nick_name: String
-    let avatar_url: String?
-    let is_online: Bool
 }
 
 ./FrontDip/MessengerApp/Services/Network/GraphQLClient.swift
@@ -2244,20 +2071,24 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         switch event {
         case "message.new":
             if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int,
+               let messageId = payload["message_id"] as? Int64,
                let chatId = payload["chat_id"] as? String,
                let senderId = payload["sender_id"] as? String,
                let content = payload["content"] as? String,
                let createdAtString = payload["created_at"] as? String,
                let createdAt = ISO8601DateFormatter().date(from: createdAtString) {
+                
                 let message = Message(
-                    id: UUID(),
-                    chatId: UUID(uuidString: chatId)!,
-                    senderId: UUID(uuidString: senderId)!,
+                    message_id: messageId,
+                    chat_id: chatId,
+                    sender_id: senderId,
+                    reply_to_id: nil,
                     content: content,
-                    type: .text,
-                    timestamp: createdAt,
-                    isEncrypted: false
+                    type: "text",
+                    created_at: createdAt,
+                    updated_at: createdAt,
+                    deleted_at: nil,
+                    is_edited: false
                 )
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }
@@ -2327,6 +2158,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             NotificationCenter.default.post(name: .websocketDisconnected, object: nil)
             print("WebSocket disconnected")
         }
+    }
+    func sendContactRequest(to userId: String) {
+        let envelope: [String: Any] = [
+            "event": "contact.request",
+            "payload": ["contact_user_id": userId]
+        ]
+        send(envelope)
     }
 }
 
@@ -2466,6 +2304,9 @@ import Combine
 
 class AuthViewModel: ObservableObject {
     @Published var nickname = ""
+    @Published var email = ""
+    @Published var phone = ""
+    @Published var password = ""
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
@@ -2475,40 +2316,45 @@ class AuthViewModel: ObservableObject {
     private let graphQL = GraphQLClient.shared
     
     var deviceId: String { cryptoService.generateDeviceId() }
-    var canRegister: Bool { !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var canRegister: Bool {
+        !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !password.isEmpty
+    }
     
     // MARK: - Registration
     func register() async {
         guard canRegister else {
-            await showError("Введите никнейм")
+            await showError("Заполните никнейм, email и пароль")
             return
         }
         await setLoading(true)
         
         do {
             let cleanedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-            let tempPassword = UUID().uuidString
+            let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
             
+            // Генерация ключей (для будущего E2EE)
             let (privateKey, publicKeyData) = cryptoService.generateKeyPair()
-            let publicKeyPEM = cryptoService.publicKeyToPEM(publicKey: publicKeyData)
             
-            // Создание пользователя
-            let createVariables: [String: Any] = [
-                "nickname": cleanedNickname,
-                "email": "\(UUID().uuidString)@temp.com",
-                "password": tempPassword,
-                "phone": ""
+            // Создание пользователя через GraphQL
+            let variables: [String: Any] = [
+                "nick_name": cleanedNickname,
+                "email": cleanedEmail,
+                "password": password,
+                "phone": cleanedPhone
             ]
             let _: CreateUserResponse = try await graphQL.perform(
                 query: GraphQLQueries.createUser,
-                variables: createVariables,
+                variables: variables,
                 responseType: CreateUserResponse.self
             )
             
             // Логин для получения токенов
             let loginVariables: [String: Any] = [
                 "login": cleanedNickname,
-                "password": tempPassword
+                "password": password
             ]
             let loginResponse: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.login,
@@ -2521,30 +2367,42 @@ class AuthViewModel: ObservableObject {
             TokenManager.shared.refreshToken = loginResponse.auth.tokens.refresh_token
             
             let userData = loginResponse.auth.user
-              let userIdUUID = userData.userId  // UUID
-              let user = User(
-                  id: userData.userId,
-                  nickName: userData.nickName,
-                  email: userData.email,
-                  createdAt: userData.createdAt,
-                  updatedAt: userData.updatedAt
-              )
-              
-              keychainService.savePrivateKey(privateKey, userId: userIdUUID)
-              keychainService.savePublicKey(publicKeyData, userId: userIdUUID)
-              keychainService.save(key: "user_id", value: userIdUUID.uuidString)
-              
-              await MainActor.run {
-                  self.currentUser = user
-                  AppState.shared.currentUser = user
-                  AppState.shared.login()
-                  self.isLoading = false
-                  
-                  DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                      WebSocketService.shared.connect(userId: userIdUUID)
-                  }
-              }
-          } catch {
+            let user = User(
+                user_id: userData.user_id,
+                nick_name: userData.nick_name,
+                first_name: nil,
+                last_name: nil,
+                middle_name: nil,
+                email: userData.email,
+                phone: nil,
+                avatar_url: nil,
+                bio: nil,
+                last_seen: nil,
+                is_online: false,
+                status: "active",
+                email_verified: false,
+                phone_verified: false,
+                is_admin: false,
+                created_at: userData.created_at,
+                updated_at: userData.updated_at
+            )
+            
+            // Сохраняем ключи в Keychain
+            keychainService.savePrivateKey(privateKey, userId: user.id)
+            keychainService.savePublicKey(publicKeyData, userId: user.id)
+            keychainService.save(key: "user_id", value: user.id.uuidString)
+            
+            await MainActor.run {
+                self.currentUser = user
+                AppState.shared.currentUser = user
+                AppState.shared.login()
+                self.isLoading = false
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    WebSocketService.shared.connect(userId: user.id)
+                }
+            }
+        } catch {
             await showError("Ошибка регистрации: \(error.localizedDescription)")
         }
     }
@@ -2555,10 +2413,10 @@ class AuthViewModel: ObservableObject {
         
         do {
             let variables: [String: Any] = ["refreshToken": refreshToken]
-            let response: RefreshTokenResponse = try await graphQL.perform(
+            let response: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.refreshToken,
                 variables: variables,
-                responseType: RefreshTokenResponse.self
+                responseType: LoginResponse.self
             )
             
             TokenManager.shared.accessToken = response.auth.tokens.access_token
@@ -2566,11 +2424,23 @@ class AuthViewModel: ObservableObject {
             
             let userData = response.auth.user
             let user = User(
-                id: userData.userId,
-                nickName: userData.nickName,
+                user_id: userData.user_id,
+                nick_name: userData.nick_name,
+                first_name: nil,
+                last_name: nil,
+                middle_name: nil,
                 email: userData.email,
-                createdAt: userData.createdAt,
-                updatedAt: userData.updatedAt
+                phone: nil,
+                avatar_url: nil,
+                bio: nil,
+                last_seen: nil,
+                is_online: false,
+                status: "active",
+                email_verified: false,
+                phone_verified: false,
+                is_admin: false,
+                created_at: userData.created_at,
+                updated_at: userData.updated_at
             )
             
             await MainActor.run {
@@ -2579,7 +2449,7 @@ class AuthViewModel: ObservableObject {
                 AppState.shared.login()
                 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    WebSocketService.shared.connect(userId: userData.userId)
+                    WebSocketService.shared.connect(userId: user.id)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     ContactService.shared.syncContacts()
@@ -2601,6 +2471,9 @@ class AuthViewModel: ObservableObject {
         TokenManager.shared.clear()
         currentUser = nil
         nickname = ""
+        email = ""
+        phone = ""
+        password = ""
         AppState.shared.logout()
     }
     
@@ -2612,6 +2485,9 @@ class AuthViewModel: ObservableObject {
         ChatKeyManager.shared.clearAllKeys()
         currentUser = nil
         nickname = ""
+        email = ""
+        phone = ""
+        password = ""
         AppState.shared.logout()
         cryptoService.resetDeviceId()
     }
@@ -2633,10 +2509,6 @@ class AuthViewModel: ObservableObject {
     }
 }
 
-struct RefreshTokenResponse: Decodable {
-    let auth: AuthLoginResult
-}
-
 ./FrontDip/MessengerApp/ViewModels/Auth/RegistrationViewModel.swift
 
 
@@ -2649,49 +2521,46 @@ class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var showingCreateChat = false
     
     private let graphQL = GraphQLClient.shared
-    private let database = LocalDatabase.shared
-    
-    var currentUser: User? { AppState.shared.currentUser }
     
     func loadChats() async {
-        guard let userId = currentUser?.id else {
-            await MainActor.run { isLoading = false }
-            return
-        }
-        
         await MainActor.run { isLoading = true }
         
         do {
-            let variables: [String: Any] = ["userId": userId.uuidString]
             let response: ListChatsResponse = try await graphQL.perform(
                 query: GraphQLQueries.listChats,
-                variables: variables,
+                variables: [:],
                 responseType: ListChatsResponse.self
             )
-            
-            let loadedChats = response.listChats.chats.map { chatResponse in
+            let loadedChats = response.chat.list.map { chatResponse in
                 Chat(
-                    id: chatResponse.chatId,
-                    chatType: "group",
-                    name: chatResponse.name ?? "Chat",
-                    description: nil,
-                    avatarUrl: nil,
-                    creatorId: nil,
-                    isPublic: false,
-                    membersCount: chatResponse.membersCount,
-                    createdAt: chatResponse.createdAt,
-                    updatedAt: chatResponse.createdAt,
-                    lastMessagePreview: nil
+                    chat_id: chatResponse.chat_id,
+                    chat_type: chatResponse.chat_type,
+                    name: chatResponse.name,
+                    description: chatResponse.description,
+                    avatar_url: chatResponse.avatar_url,
+                    creator_id: chatResponse.creator_id,
+                    is_public: chatResponse.is_public,
+                    max_members: 200,
+                    created_at: chatResponse.created_at,
+                    updated_at: chatResponse.updated_at,
+                    last_activity_at: chatResponse.created_at,
+                    visibility: "PRIVATE",
+                    join_policy: "INVITE_ONLY",
+                    members_count: chatResponse.members_count,
+                    last_message_preview: chatResponse.last_message_preview.map { preview in
+                        MessagePreview(
+                            message_id: Int64(preview.message_id), // если preview.message_id Int, конвертируем
+                            sender_id: UUID(uuidString: preview.sender_id) ?? UUID(),
+                            type: preview.type,
+                            text_preview: preview.text_preview,
+                            created_at: preview.created_at,
+                            is_deleted: preview.is_deleted
+                        )
+                    }
                 )
             }
-            
-            for chat in loadedChats {
-                _ = database.saveOrUpdateChat(chat)
-            }
-            
             await MainActor.run {
                 self.chats = loadedChats
                 self.isLoading = false
@@ -2711,12 +2580,12 @@ import Foundation
 import Combine
 
 class ChatSelectionViewModel: ObservableObject {
-    @Published var chats: [ChatWithContactInfo] = []
+    @Published var chats: [Chat] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     
     private let graphQL = GraphQLClient.shared
-    let contact: Contact
+    let contact: Contact  // теперь Contact содержит contact_user_id и т.д.
     
     init(contact: Contact) {
         self.contact = contact
@@ -2724,71 +2593,65 @@ class ChatSelectionViewModel: ObservableObject {
     
     func loadChats() {
         Task {
-            await MainActor.run {
-                isLoading = true
-                errorMessage = nil
-            }
-            
-            guard let currentUser = AppState.shared.currentUser else {
-                await MainActor.run {
-                    isLoading = false
-                    errorMessage = "Не удалось получить информацию о пользователе"
-                }
-                return
-            }
-            
+            await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["userId": currentUser.id.uuidString]
                 let response: ListChatsResponse = try await graphQL.perform(
                     query: GraphQLQueries.listChats,
-                    variables: variables,
-                    responseType: ListChatsResponse.self
+                    variables: [:],
+                    responseType: ListChatsResponse.self,
+                    authToken: TokenManager.shared.accessToken
                 )
-                
-                let userChats = response.listChats.chats.map { chatResponse in
+                let loadedChats = response.chat.list.map { chatResponse in
                     Chat(
-                        id: chatResponse.chatId,
-                        chatType: "group",
-                        name: chatResponse.name ?? "Chat",
-                        description: nil,
-                        avatarUrl: nil,
-                        creatorId: nil,
-                        isPublic: false,
-                        membersCount: chatResponse.membersCount,
-                        createdAt: chatResponse.createdAt,
-                        updatedAt: chatResponse.createdAt,
-                        lastMessagePreview: nil
+                        chat_id: chatResponse.chat_id,
+                        chat_type: chatResponse.chat_type,
+                        name: chatResponse.name,
+                        description: chatResponse.description,
+                        avatar_url: chatResponse.avatar_url,
+                        creator_id: chatResponse.creator_id,
+                        is_public: chatResponse.is_public,
+                        max_members: 30,
+                        created_at: chatResponse.created_at,
+                        updated_at: chatResponse.updated_at,
+                        last_activity_at: chatResponse.created_at,       // или другое поле
+                        visibility: "PRIVATE",                          // дефолт или из chatResponse
+                        join_policy: "INVITE_ONLY",                     // дефолт или из chatResponse
+                        members_count: chatResponse.members_count ?? 0, // если есть
+                        last_message_preview: chatResponse.last_message_preview == nil ? nil :
+                            MessagePreview(
+                                message_id: Int64(chatResponse.last_message_preview!.message_id),
+                                sender_id: UUID(uuidString: chatResponse.last_message_preview!.sender_id) ?? UUID(),
+                                type: chatResponse.last_message_preview!.type,
+                                text_preview: chatResponse.last_message_preview!.text_preview,
+                                created_at: chatResponse.last_message_preview!.created_at,
+                                is_deleted: chatResponse.last_message_preview!.is_deleted
+                            )
                     )
                 }
-                
-                var chatsWithInfo: [ChatWithContactInfo] = []
-                for chat in userChats {
-                    let isContactInChat = await checkIfContactInChat(chatId: chat.id)
-                    chatsWithInfo.append(ChatWithContactInfo(chat: chat, isContactInChat: isContactInChat))
-                }
-                
                 await MainActor.run {
-                    self.chats = chatsWithInfo
+                    self.chats = loadedChats
                     self.isLoading = false
                 }
+
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
+                    self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
     }
     
-    private func checkIfContactInChat(chatId: UUID) async -> Bool {
+    func isContactInChat(_ chat: Chat) async -> Bool {
         do {
-            let variables: [String: Any] = ["chatId": chatId.uuidString]
-            let response: ChatMembersListResponse = try await graphQL.perform(
+            let variables = ["chat_id": chat.chat_id.uuidString]
+            let response: ChatMembersResponse = try await graphQL.perform(
                 query: GraphQLQueries.getChatMembers,
                 variables: variables,
-                responseType: ChatMembersListResponse.self
+                responseType: ChatMembersResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
-            return response.listChatMembers.members.contains { $0.userId == contact.userId }
+            return response.chat.members.contains { $0.user_id == contact.contact_user_id }
         } catch {
             return false
         }
@@ -2796,16 +2659,16 @@ class ChatSelectionViewModel: ObservableObject {
     
     func addContactToChat(_ chat: Chat) async -> Bool {
         let variables: [String: Any] = [
-            "chatId": chat.id.uuidString,
-            "userId": contact.userId.uuidString
+            "chat_id": chat.chat_id.uuidString,
+            "user_id": contact.contact_user_id.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
                 query: GraphQLQueries.addChatMember,
                 variables: variables,
-                responseType: AddChatMemberResponse.self
+                responseType: AddChatMemberResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
-            await MainActor.run { loadChats() }
             return true
         } catch {
             return false
@@ -2819,7 +2682,7 @@ import Foundation
 import Combine
 
 class ChatSidebarViewModel: ObservableObject {
-    @Published var members: [ChatMemberDetailed] = []
+    @Published var members: [ChatMemberItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -2832,46 +2695,31 @@ class ChatSidebarViewModel: ObservableObject {
     
     func loadMembers() {
         Task {
-            await MainActor.run {
-                isLoading = true
-                errorMessage = nil
-            }
-            
+            await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ChatMembersListResponse = try await graphQL.perform(
-                    query: GraphQLQueries.listChatMembers,
+                let variables: [String: Any] = ["chat_id": chat.chat_id.uuidString]
+                let response: ChatMembersResponse = try await graphQL.perform(
+                    query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersListResponse.self
+                    responseType: ChatMembersResponse.self
                 )
-                
-                let loadedMembers = response.listChatMembers.members.map { member in
-                    ChatMemberDetailed(
-                        user_id: member.userId,
-                        nickname: member.nickname,
-                        public_key: member.publicKey,
-                        joined_at: member.joinedAt,
-                        device_id: member.deviceId
-                    )
-                }
-                
                 await MainActor.run {
-                    self.members = loadedMembers
+                    self.members = response.chat.members
                     self.isLoading = false
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Ошибка загрузки участников: \(error.localizedDescription)"
+                    self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
     }
-    
+
     func addUserToChat(_ userId: UUID) async -> Bool {
         let variables: [String: Any] = [
-            "chatId": chat.id.uuidString,
-            "userId": userId.uuidString
+            "chat_id": chat.chat_id.uuidString,
+            "user_id": userId.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
@@ -2882,13 +2730,12 @@ class ChatSidebarViewModel: ObservableObject {
             await loadMembers()
             return true
         } catch {
-            print("❌ Ошибка добавления пользователя: \(error)")
             return false
         }
     }
     
     func isUserInChat(_ userId: UUID) -> Bool {
-        return members.contains { $0.user_id == userId }
+        return members.contains(where: { $0.user_id == userId })
     }
 }
 
@@ -2902,77 +2749,110 @@ class ChatViewModel: ObservableObject {
     @Published var newMessage = ""
     @Published var isLoading = false
     
-    private let messageService = MessageService.shared
-    private let database = LocalDatabase.shared
-    private var cancellables = Set<AnyCancellable>()
-    
     let chat: Chat
+    private let messageService = MessageService.shared
+    private var cancellables = Set<AnyCancellable>()
     
     init(chat: Chat) {
         self.chat = chat
         setupNotifications()
-        loadLocalMessages()
+        loadMessages()
     }
     
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .sink { [weak self] notification in
-                if let message = notification.object as? Message,
-                   message.chatId == self?.chat.id {
+                if let message = notification.object as? Message, message.chat_id == self?.chat.id {
                     self?.addNewMessage(message)
                 }
             }
             .store(in: &cancellables)
     }
     
-    private func loadLocalMessages() {
-        messages = database.getMessages(for: chat.id)
-            .sorted(by: { $0.timestamp < $1.timestamp })
+    private func loadMessages() {
+        Task {
+            await MainActor.run { isLoading = true }
+            do {
+                let response: ListMessagesResponse = try await GraphQLClient.shared.perform(
+                    query: GraphQLQueries.listMessages,
+                    variables: ["chat_id": chat.id.uuidString],
+                    responseType: ListMessagesResponse.self
+                )
+                let loadedMessages = response.message.list_messages.map { msgResponse in
+                    Message(
+                        message_id: Int64(msgResponse.message_id),
+                        chat_id: msgResponse.chat_id,
+                        sender_id: msgResponse.sender_id,
+                        reply_to_id: nil,
+                        content: msgResponse.content,
+                        type: msgResponse.type,
+                        created_at: msgResponse.created_at,
+                        updated_at: msgResponse.updated_at,
+                        deleted_at: nil,
+                        is_edited: msgResponse.is_edited
+                    )
+                }
+                await MainActor.run {
+                    self.messages = loadedMessages.sorted(by: { $0.created_at < $1.created_at })
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                }
+            }
+        }
     }
     
     private func addNewMessage(_ message: Message) {
         DispatchQueue.main.async {
-            if let msgId = message.id, !self.messages.contains(where: { $0.id == msgId }) {
+            // обновление self.messages
+            if !self.messages.contains(where: { $0.id == message.id }) {
                 self.messages.append(message)
-                self.messages.sort(by: { $0.timestamp < $1.timestamp })
-            } else if message.id == nil {
-                self.messages.append(message)
-                self.messages.sort(by: { $0.timestamp < $1.timestamp })
+                self.messages.sort(by: { $0.created_at < $1.created_at })
             }
         }
     }
     
     func sendMessage() {
         guard !newMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let currentUser = AppState.shared.currentUser else {
-            return
-        }
+              let currentUser = AppState.shared.currentUser else { return }
         
         let content = newMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         newMessage = ""
         
-        let message = Message(
-            id: UUID(),
-            chatId: chat.id,
-            senderId: currentUser.id,
-            content: content,
-            type: .text,
-            timestamp: Date(),
-            isEncrypted: true
-        )
-        
-        messageService.sendMessage(message, to: chat.id)
-        addNewMessage(message)
+        Task {
+            do {
+                let response: SendMessageResponse = try await GraphQLClient.shared.perform(
+                    query: GraphQLQueries.sendMessage,
+                    variables: [
+                        "chat_id": chat.id.uuidString,
+                        "content": content
+                    ],
+                    responseType: SendMessageResponse.self
+                )
+                let sentMessage = response.message.send_message
+                let message = Message(
+                    message_id: Int64(sentMessage.message_id),
+                    chat_id: sentMessage.chat_id,
+                    sender_id: sentMessage.sender_id,
+                    reply_to_id: nil,
+                    content: sentMessage.content,
+                    type: sentMessage.type,
+                    created_at: sentMessage.created_at,
+                    updated_at: sentMessage.updated_at,
+                    deleted_at: nil,
+                    is_edited: sentMessage.is_edited
+                )
+                addNewMessage(message)
+            } catch {
+                print("Send message error: \(error)")
+            }
+        }
     }
     
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.id
-    }
-    
-    func loadHistory() async {
-        await MainActor.run { isLoading = true }
-        // TODO: GraphQL запрос истории сообщений
-        await MainActor.run { isLoading = false }
     }
 }
 
@@ -2980,7 +2860,6 @@ class ChatViewModel: ObservableObject {
 
 import Foundation
 import CryptoKit
-import Combine
 
 class CreateChatViewModel: ObservableObject {
     @Published var chatName = ""
@@ -2989,7 +2868,7 @@ class CreateChatViewModel: ObservableObject {
     @Published var inviteKey: String?
     @Published var showInviteSheet = false
     
-    private let client = GraphQLClient.shared
+    private let graphQL = GraphQLClient.shared
     private let cryptoService = CryptoService.shared
     private let keychainService = KeychainService.shared
     
@@ -3006,33 +2885,37 @@ class CreateChatViewModel: ObservableObject {
         
         await MainActor.run { isLoading = true; errorMessage = nil }
         
+        let trimmedName = chatName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let variables: [String: Any] = [
+            "chat_type": "group",
+            "name": trimmedName,
+            "member_ids": [currentUser.id.uuidString],
+            "is_public": false
+        ]
+        
         do {
-            let input: [String: Any] = [
-                "name": chatName.trimmingCharacters(in: .whitespacesAndNewlines),
-                "member_ids": [currentUser.id.uuidString]
-            ]
-            let variables: [String: Any] = ["input": input]
-            let response: CreateChatResponse = try await client.perform(
+            let response: CreateChatResponse = try await graphQL.perform(
                 query: GraphQLQueries.createChat,
                 variables: variables,
-                responseType: CreateChatResponse.self
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
             
-            let newChat = response.createChat
+            // ✅ Исправлено: response.chat.create
+            let newChat = response.chat.create
             
-            // Генерация и сохранение ключа чата
+            // Генерация и сохранение ключа чата (опционально)
             let chatKey = cryptoService.generateSymmetricKey()
-            guard let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) else {
-                throw NSError(domain: "ChatError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Публичный ключ не найден"])
+            if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
+                let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chat_id)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chat_id)
             }
-            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-            _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chatId)
-            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-            ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chatId)
             
             await MainActor.run {
-                inviteKey = newChat.chatId.uuidString
+                inviteKey = newChat.chat_id.uuidString
                 showInviteSheet = true
                 isLoading = false
                 chatName = ""
@@ -3045,24 +2928,6 @@ class CreateChatViewModel: ObservableObject {
             }
             return false
         }
-    }
-}
-
-// Response model
-struct CreateChatResponse: Decodable {
-    let createChat: CreatedChat
-}
-struct CreatedChat: Decodable {
-    let chatId: UUID
-    let name: String?
-    let membersCount: Int
-    let createdAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case chatId = "chat_id"
-        case name
-        case membersCount = "members_count"
-        case createdAt = "created_at"
     }
 }
 
@@ -3084,7 +2949,6 @@ class SearchViewModel: ObservableObject {
     @Published var errorMessage: String?
     
     private let contactService = ContactService.shared
-    private let client = GraphQLClient.shared
     
     func search() {
         guard !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -3101,40 +2965,13 @@ class SearchViewModel: ObservableObject {
         
         Task {
             do {
-                let query = """
-                query Search($query: String!) {
-                    user {
-                        search(query: $query, page: 1, page_size: 20) {
-                            user_id
-                            nick_name
-                            avatar_url
-                            is_online
-                        }
-                    }
-                }
-                """
-                let variables = ["query": searchQuery]
-                let response: SearchResponse = try await client.perform(
-                    query: query,
-                    variables: variables,
-                    responseType: SearchResponse.self
-                )
-                
-                let results = response.user.search.map { apiUser in
-                    UserPublicResponse(
-                        user_id: UUID(uuidString: apiUser.user_id)!,
-                        nickname: apiUser.nick_name,
-                        public_key: ""
-                    )
-                }
-                
+                let results = try await contactService.searchUsers(query: searchQuery)
                 let currentUserId = AppState.shared.currentUser?.id
                 let filtered = results.filter { user in
                     let isSelf = currentUserId == user.user_id
                     let isContact = self.contactService.isContact(userId: user.user_id)
                     return !isSelf && !isContact
                 }
-                
                 await MainActor.run {
                     self.searchResults = filtered
                     self.isLoading = false
@@ -3149,28 +2986,12 @@ class SearchViewModel: ObservableObject {
     }
     
     func sendContactRequest(to user: UserPublicResponse) {
-        let userId = user.user_id
-        guard !contactService.isContact(userId: user.user_id) else {
-            NotificationService.shared.showInfo("\(user.nickname) уже в ваших контактах")
-            return
-        }
-        
-        guard let currentUserId = AppState.shared.currentUser?.id,
-              user.user_id != currentUserId else {
-            NotificationService.shared.showError("Нельзя отправить запрос самому себе")
-            return
-        }
-        
         contactService.sendContactRequest(to: user)
-        
         DispatchQueue.main.async {
             self.searchResults.removeAll { $0.user_id == user.user_id }
         }
-        
-        NotificationService.shared.showSuccess("Запрос отправлен пользователю \(user.nickname)")
     }
 }
-
 
 ./FrontDip/MessengerApp/Views/Auth/LoginView.swift
 
@@ -3201,16 +3022,21 @@ struct LoginView: View {
                 .padding(.bottom, 40)
                 
                 VStack(spacing: 16) {
-                    TextField("Enter your nickname", text: $viewModel.nickname)
+                    TextField("Nickname", text: $viewModel.nickname)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .textInputAutocapitalization(.never)
+                        .autocapitalization(.none)
                         .disableAutocorrection(true)
-                        .padding(.horizontal)
+                    
+                    TextField("Email", text: $viewModel.email)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                    
+                    SecureField("Password", text: $viewModel.password)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
                     
                     Button(action: {
-                        Task {
-                            await viewModel.register()
-                        }
+                        Task { await viewModel.register() }
                     }) {
                         if viewModel.isLoading {
                             ProgressView()
@@ -3225,39 +3051,20 @@ struct LoginView: View {
                     .background(viewModel.canRegister ? Color.blue : Color.gray)
                     .foregroundColor(.white)
                     .cornerRadius(10)
-                    .padding(.horizontal)
                     .disabled(!viewModel.canRegister || viewModel.isLoading)
                 }
+                .padding(.horizontal)
                 
                 if let error = viewModel.errorMessage {
                     Text(error)
                         .foregroundColor(.red)
                         .font(.caption)
-                        .padding(.horizontal)
                 }
-                
-                Text("Your messages are encrypted and never stored on our servers")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                    .padding(.top, 20)
                 
                 Spacer()
-                
-                // Добавляем кнопку для отладки
-                Button("Debug: Auto Login") {
-                    viewModel.autoLogin()
-                }
-                .font(.caption)
-                .foregroundColor(.gray)
-                .padding(.bottom)
             }
             .padding()
             .navigationBarHidden(true)
-            .onAppear {
-                // Убираем отсюда вызов метода - переносим в ContentView
-            }
         }
     }
 }
@@ -3427,7 +3234,6 @@ struct ContactSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 
-// ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 import SwiftUI
 import CryptoKit
 
@@ -3442,18 +3248,14 @@ struct ChatListView: View {
     @State private var showInviteSheet = false
     @State private var inviteKey: String?
     
-    // Для бокового меню
     @State private var showSideMenu = false
     @State private var showCreateChatAlert = false
     @State private var showJoinChatAlert = false
     @State private var joinChatKey = ""
     
-    // Новые состояния для управления показами View
     @State private var showingSearchView = false
     @State private var showingContactsView = false
     @State private var showingNotificationsView = false
-    
-    // Для уведомлений
     @State private var notificationData: NotificationData?
     
     var body: some View {
@@ -3464,7 +3266,6 @@ struct ChatListView: View {
             .blur(radius: showSideMenu ? 3 : 0)
             .disabled(showSideMenu)
             
-            // Боковое меню
             SideMenuView(
                 authViewModel: authViewModel,
                 isShowing: $showSideMenu,
@@ -3478,10 +3279,11 @@ struct ChatListView: View {
         .onAppear {
             setupNotificationObserver()
             Task {
-                await initializeView()
+                await viewModel.loadChats()
+                contactService.loadContacts()
+                contactService.loadPendingRequests()
             }
         }
-        // ✅ ВОТ СЮДА ДОБАВИМ SHEET МОДИФИКАТОРЫ:
         .sheet(isPresented: $showingSearchView) {
             SearchView()
                 .environmentObject(contactService)
@@ -3494,7 +3296,6 @@ struct ChatListView: View {
             NotificationsView()
                 .environmentObject(contactService)
         }
-        // Существующие модификаторы
         .notificationAlert(notificationData: $notificationData)
         .createChatAlert(
             showCreateChatAlert: $showCreateChatAlert,
@@ -3508,8 +3309,6 @@ struct ChatListView: View {
         )
         .inviteSheet(showInviteSheet: $showInviteSheet, inviteKey: inviteKey)
     }
-    
-    // MARK: - Subviews
     
     private var chatListContent: some View {
         Group {
@@ -3530,11 +3329,35 @@ struct ChatListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                createChatButton
+                Button(action: { showCreateChatAlert = true }) {
+                    Image(systemName: "square.and.pencil")
+                }
             }
-            
             ToolbarItem(placement: .navigationBarTrailing) {
-                menuButton
+                Button(action: { withAnimation(.spring()) { showSideMenu = true } }) {
+                    ZStack(alignment: .topTrailing) {
+                        Circle()
+                            .fill(Color.blue.opacity(0.8))
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                            )
+                        if !contactService.pendingRequests.isEmpty {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                                .overlay(
+                                    Text("\(contactService.pendingRequests.count)")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(.white)
+                                )
+                                .offset(x: 4, y: -4)
+                        }
+                    }
+                }
             }
         }
         .refreshable {
@@ -3547,13 +3370,11 @@ struct ChatListView: View {
         
         var body: some View {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chat.name ?? <#default value#>)
+                Text(chat.name ?? "Без названия")
                     .font(.headline)
-                
-                Text("\(chat.memberCount) участников")
+                Text("\(chat.membersCount) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
                 Text(formatDate(chat.createdAt))
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -3570,73 +3391,24 @@ struct ChatListView: View {
         }
     }
     
-    private var createChatButton: some View {
-        Button(action: {
-            withAnimation(.spring()) {
-                showCreateChatAlert = true
-            }
-        }) {
-            Image(systemName: "square.and.pencil")
-        }
-    }
-    
-    private var menuButton: some View {
-        Button(action: {
-            withAnimation(.spring()) {
-                showSideMenu = true
-            }
-        }) {
-            ZStack(alignment: .topTrailing) {
-                Circle()
-                    .fill(Color.blue.opacity(0.8))
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
-                    )
-                
-                // Бейдж с количеством уведомлений
-                if !contactService.pendingRequests.isEmpty {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 12, height: 12)
-                        .overlay(
-                            Text("\(contactService.pendingRequests.count)")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white)
-                        )
-                        .offset(x: 4, y: -4)
-                }
-            }
-        }
-    }
-    
     private var emptyStateView: some View {
         VStack(spacing: 24) {
             Spacer()
-            
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 70))
                 .foregroundColor(.gray.opacity(0.5))
-            
             VStack(spacing: 8) {
                 Text("Нет чатов")
                     .font(.title2)
                     .fontWeight(.semibold)
-                
                 Text("Создайте первый чат или присоединитесь к существующему")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
             }
-            
             VStack(spacing: 12) {
-                Button(action: {
-                    showCreateChatAlert = true
-                }) {
+                Button(action: { showCreateChatAlert = true }) {
                     HStack {
                         Image(systemName: "plus.circle.fill")
                         Text("Создать чат")
@@ -3648,10 +3420,7 @@ struct ChatListView: View {
                     .cornerRadius(12)
                 }
                 .padding(.horizontal, 40)
-                
-                Button(action: {
-                    showJoinChatAlert = true
-                }) {
+                Button(action: { showJoinChatAlert = true }) {
                     HStack {
                         Image(systemName: "person.badge.plus")
                         Text("Присоединиться к чату")
@@ -3665,20 +3434,67 @@ struct ChatListView: View {
                 .padding(.horizontal, 40)
             }
             .padding(.top, 20)
-            
             Spacer()
         }
     }
     
-    // MARK: - Methods
-    
-    private func initializeView() async {
-
-        await viewModel.loadChats()
+    private func createChat() async {
+        guard let currentUser = appState.currentUser ?? authViewModel.currentUser else {
+            viewModel.errorMessage = "Пользователь не авторизован"
+            return
+        }
+        let chatNameTrimmed = newChatName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !chatNameTrimmed.isEmpty else { return }
         
-        // Обновляем контакты
-        contactService.loadContacts()
-        contactService.loadPendingRequests()
+        isLoadingChat = true
+        
+        let variables: [String: Any] = [
+            "chat_type": "group",
+            "name": chatNameTrimmed,
+            "member_ids": [currentUser.id.uuidString],
+            "is_public": false
+        ]
+        
+        do {
+            let response: CreateChatResponse = try await GraphQLClient.shared.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newChat = response.chat.create
+            
+            // Генерация ключа чата (опционально)
+            let cryptoService = CryptoService.shared
+            let keychainService = KeychainService.shared
+            let chatKey = cryptoService.generateSymmetricKey()
+            if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
+                let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chat_id)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chat_id)
+            }
+            
+            await MainActor.run {
+                isLoadingChat = false
+                inviteKey = newChat.chat_id.uuidString
+                showInviteSheet = true
+                newChatName = ""
+                Task { await viewModel.loadChats() }
+            }
+        } catch {
+            await MainActor.run {
+                isLoadingChat = false
+                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    private func joinChat() {
+        // TODO: реализовать присоединение по inviteKey
+        print("Присоединяемся к чату с ключом: \(joinChatKey)")
+        joinChatKey = ""
     }
     
     private func setupNotificationObserver() {
@@ -3692,95 +3508,16 @@ struct ChatListView: View {
             }
         }
     }
-    
-    private func createChat() async {
-        guard let userId = authViewModel.currentUser?.id ?? appState.currentUser?.id,
-              let deviceId = KeychainService.shared.loadDeviceId() else {
-            return
-        }
-        
-        isLoadingChat = true
-        
-        do {
-            let chat = try await APIService.shared.createChat(
-                name: newChatName,
-                creatorId: userId,
-                deviceId: deviceId
-            )
-            
-            // Генерируем и сохраняем ключ чата
-            await saveChatKey(for: chat.id, userId: userId)
-            
-            await MainActor.run {
-                inviteKey = chat.id.uuidString
-                showInviteSheet = true
-                newChatName = ""
-                isLoadingChat = false
-                
-                // Обновляем список чатов
-                viewModel.chats.insert(chat, at: 0)
-            }
-            
-            // АВТОМАТИЧЕСКИ ПОДКЛЮЧАЕМ WebSocket К НОВОМУ ЧАТУ
-            // НЕ НУЖНО! WebSocket уже подключен к пользователю
-            // НЕ ДЕЛАЙТЕ: WebSocketService.shared.connect(userId: userId) еще раз
-            
-        } catch {
-            await MainActor.run {
-                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
-                isLoadingChat = false
-            }
-        }
-    }
-    
-    private func saveChatKey(for chatId: UUID, userId: UUID) async {
-        do {
-            let cryptoService = CryptoService.shared
-            let keychainService = KeychainService.shared
-            
-            // Генерируем симметричный ключ для чата
-            let chatKey = cryptoService.generateSymmetricKey()
-            
-            guard let publicKeyData = keychainService.loadPublicKey(userId: userId) else {
-                print("❌ Публичный ключ не найден")
-                return
-            }
-            
-            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-            
-            // Сохраняем зашифрованный ключ в Keychain
-            _ = keychainService.saveChatKey(encryptedChatKey, chatId: chatId)
-            
-            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-            ChatKeyManager.shared.saveChatKey(chatKeyData, for: chatId)
-            
-            print("🔑 Ключ чата сохранен для: \(chatId.uuidString.prefix(8))...")
-            
-        } catch {
-            print("❌ Ошибка сохранения ключа чата: \(error)")
-        }
-    }
-    
-    private func joinChat() {
-        // TODO: Реализовать присоединение к чату
-        print("Присоединяемся к чату с ключом: \(joinChatKey)")
-        joinChatKey = ""
-    }
 }
 
-// MARK: - View Modifiers
-// Выносим модификаторы в extension для упрощения чтения
-
+// MARK: - View Modifiers (оставляем как есть)
 extension View {
     func notificationAlert(notificationData: Binding<NotificationData?>) -> some View {
         self.alert(
             notificationData.wrappedValue?.type.title ?? "Уведомление",
             isPresented: .constant(notificationData.wrappedValue != nil)
         ) {
-            Button("OK") {
-                notificationData.wrappedValue = nil
-            }
+            Button("OK") { notificationData.wrappedValue = nil }
         } message: {
             if let message = notificationData.wrappedValue?.message {
                 Text(message)
@@ -3795,15 +3532,9 @@ extension View {
     ) -> some View {
         self.alert("Создать чат", isPresented: showCreateChatAlert) {
             TextField("Название чата", text: newChatName)
-            
-            Button("Отмена", role: .cancel) {
-                newChatName.wrappedValue = ""
-            }
-            
+            Button("Отмена", role: .cancel) { newChatName.wrappedValue = "" }
             Button("Создать") {
-                Task {
-                    await createChat()
-                }
+                Task { await createChat() }
             }
             .disabled(newChatName.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
@@ -3818,15 +3549,9 @@ extension View {
     ) -> some View {
         self.alert("Присоединиться к чату", isPresented: showJoinChatAlert) {
             TextField("Ключ приглашения", text: joinChatKey)
-            
-            Button("Отмена", role: .cancel) {
-                joinChatKey.wrappedValue = ""
-            }
-            
-            Button("Присоединиться") {
-                joinChat()
-            }
-            .disabled(joinChatKey.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Отмена", role: .cancel) { joinChatKey.wrappedValue = "" }
+            Button("Присоединиться") { joinChat() }
+                .disabled(joinChatKey.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("Введите ключ приглашения для присоединения к чату")
         }
@@ -3864,13 +3589,13 @@ struct ChatSidebarView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Заголовок чата
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(chat.name)
+                    Text(chat.name ?? "Чат")
                         .font(.largeTitle)
                         .fontWeight(.bold)
                         .padding(.top, 20)
                     
                     HStack {
-                        Label("\(chat.memberCount) участников", systemImage: "person.2")
+                        Label("\(chat.membersCount) участников", systemImage: "person.2")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         
@@ -4019,11 +3744,11 @@ struct ChatView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(chat.name)
+                    Text(chat.name ?? "Чат")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Text("\(chat.memberCount) участников")
+                    Text("\(chat.membersCount) участников")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }
@@ -4370,14 +4095,14 @@ struct SideMenuView: View {
                             .fill(Color.blue.opacity(0.8))
                             .frame(width: 60, height: 60)
                             .overlay(
-                                Text(authViewModel.currentUser?.nickname.prefix(1).uppercased() ?? "?")
+                                Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
                                     .font(.title)
                                     .fontWeight(.bold)
                                     .foregroundColor(.white)
                             )
                         
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(authViewModel.currentUser?.nickname ?? "Пользователь")
+                            Text(authViewModel.currentUser?.nickName ?? "Пользователь")
                                 .font(.title2)
                                 .fontWeight(.semibold)
                             
@@ -4652,13 +4377,16 @@ struct ChatSelectionView: View {
         
         Task {
             let success = await viewModel.addContactToChat(chat)
+            if success {
+                NotificationService.shared.showSuccess("\(contact.contact_user_id) добавлен в чат")
+            }
             
             await MainActor.run {
                 isLoadingAction = false
                 
                 if success {
                     // Используем NotificationService
-                    NotificationService.shared.showSuccess("\(contact.nickname) добавлен в чат \(chat.name)")
+                    NotificationService.shared.showSuccess("\(contact.contact_user?.nick_name ?? "Неизвестный") добавлен в чат \(chat.name ?? "Неизвестное")")
                     
                     // Закрываем через 1 секунду
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -4666,7 +4394,7 @@ struct ChatSelectionView: View {
                     }
                 } else {
                     // Используем NotificationService
-                    NotificationService.shared.showError("Не удалось добавить \(contact.nickname) в чат")
+                    NotificationService.shared.showError("Не удалось добавить \(contact.contact_user?.nick_name ?? "Неизвестный") в чат")
                 }
             }
         }
@@ -4681,10 +4409,10 @@ struct ChatSelectionRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chatInfo.chat.name)
+                Text(chatInfo.chat.name ?? "Неизвестное")
                     .font(.headline)
                 
-                Text("\(chatInfo.chat.memberCount) участников")
+                Text("\(chatInfo.chat.members_count) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -4767,19 +4495,18 @@ struct ContactRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(contact.nickname.prefix(1).uppercased())
+                    Text(contact.contact_user?.nick_name.prefix(1).uppercased() ?? "?")
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
-            
+
             VStack(alignment: .leading) {
-                Text(contact.nickname)
+                Text(contact.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
-                    .foregroundColor(.primary)
-                Text("Добавлен: \(formatDate(contact.addedAt))")
+                Text("Добавлен: \(formatDate(contact.created_at))")
                     .font(.caption)
-                    .foregroundColor(.secondary)
             }
+            
             
             Spacer()
             
@@ -4794,13 +4521,13 @@ struct ContactRow: View {
         .padding(.vertical, 8)
         .actionSheet(isPresented: $showingActionSheet) {
             ActionSheet(
-                title: Text(contact.nickname),
+                title: Text(contact.contact_user?.avatar_url ?? "Неизвестный"),
                 buttons: [
                     .default(Text("Добавить в чат")) {
                         showingChatSelection = true
                     },
                     .destructive(Text("Удалить контакт")) {
-                        ContactService.shared.removeContact(userId: contact.userId)
+                        ContactService.shared.removeContact(userId: contact.user_id)
                     },
                     .cancel()
                 ]

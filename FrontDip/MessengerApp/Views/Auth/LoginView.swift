@@ -25,16 +25,21 @@ struct LoginView: View {
                 .padding(.bottom, 40)
                 
                 VStack(spacing: 16) {
-                    TextField("Enter your nickname", text: $viewModel.nickname)
+                    TextField("Nickname", text: $viewModel.nickname)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .textInputAutocapitalization(.never)
+                        .autocapitalization(.none)
                         .disableAutocorrection(true)
-                        .padding(.horizontal)
+                    
+                    TextField("Email", text: $viewModel.email)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                    
+                    SecureField("Password", text: $viewModel.password)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
                     
                     Button(action: {
-                        Task {
-                            await viewModel.register()
-                        }
+                        Task { await viewModel.register() }
                     }) {
                         if viewModel.isLoading {
                             ProgressView()
@@ -49,39 +54,20 @@ struct LoginView: View {
                     .background(viewModel.canRegister ? Color.blue : Color.gray)
                     .foregroundColor(.white)
                     .cornerRadius(10)
-                    .padding(.horizontal)
                     .disabled(!viewModel.canRegister || viewModel.isLoading)
                 }
+                .padding(.horizontal)
                 
                 if let error = viewModel.errorMessage {
                     Text(error)
                         .foregroundColor(.red)
                         .font(.caption)
-                        .padding(.horizontal)
                 }
-                
-                Text("Your messages are encrypted and never stored on our servers")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                    .padding(.top, 20)
                 
                 Spacer()
-                
-                // Добавляем кнопку для отладки
-                Button("Debug: Auto Login") {
-                    viewModel.autoLogin()
-                }
-                .font(.caption)
-                .foregroundColor(.gray)
-                .padding(.bottom)
             }
             .padding()
             .navigationBarHidden(true)
-            .onAppear {
-                // Убираем отсюда вызов метода - переносим в ContentView
-            }
         }
     }
 }

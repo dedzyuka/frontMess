@@ -22,13 +22,11 @@ struct ChatSidebarView: View {
                         .padding(.top, 20)
                     
                     HStack {
-                        Label("\(chat.membersCount) участников", systemImage: "person.2")
+                        Label("\(chat.members_count) участников", systemImage: "person.2")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
-                        
                         Spacer()
-                        
-                        Text(formatDate(chat.createdAt))
+                        Text(formatDate(chat.created_at))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -41,12 +39,8 @@ struct ChatSidebarView: View {
                     HStack {
                         Text("Участники")
                             .font(.headline)
-                        
                         Spacer()
-                        
-                        Button(action: {
-                            showingAddContact = true
-                        }) {
+                        Button(action: { showingAddContact = true }) {
                             Image(systemName: "person.badge.plus")
                                 .foregroundColor(.blue)
                         }
@@ -63,7 +57,7 @@ struct ChatSidebarView: View {
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(viewModel.members) { member in
+                                ForEach(viewModel.members, id: \.user_id) { member in
                                     ChatMemberRow(member: member)
                                         .padding(.horizontal)
                                         .padding(.vertical, 8)
@@ -72,19 +66,21 @@ struct ChatSidebarView: View {
                         }
                     }
                 }
-                
                 Spacer()
             }
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(trailing: Button("Готово") {
-                dismiss()
-            })
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
+            }
         }
         .onAppear {
             viewModel.loadMembers()
         }
         .sheet(isPresented: $showingAddContact) {
             AddContactToChatView(chat: chat, viewModel: viewModel)
+                .environmentObject(ContactService.shared)
         }
     }
     
@@ -98,7 +94,7 @@ struct ChatSidebarView: View {
 }
 
 struct ChatMemberRow: View {
-    let member: ChatMemberDetailed
+    let member: ChatMemberItem   // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
         HStack {
@@ -114,22 +110,18 @@ struct ChatMemberRow: View {
             VStack(alignment: .leading) {
                 Text(member.nickname)
                     .font(.headline)
-                
                 HStack {
                     Text("ID: \(member.user_id.uuidString.prefix(8))...")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
                     Text("•")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
                     Text("Присоединился: \(formatDate(member.joined_at))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
-            
             Spacer()
         }
     }

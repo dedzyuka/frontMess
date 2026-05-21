@@ -43,19 +43,18 @@ struct ContactRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(contact.nickname.prefix(1).uppercased())
+                    Text(contact.contact_user?.nick_name.prefix(1).uppercased() ?? "?")
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
-            
+
             VStack(alignment: .leading) {
-                Text(contact.nickname)
+                Text(contact.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
-                    .foregroundColor(.primary)
-                Text("Добавлен: \(formatDate(contact.addedAt))")
+                Text("Добавлен: \(formatDate(contact.created_at))")
                     .font(.caption)
-                    .foregroundColor(.secondary)
             }
+            
             
             Spacer()
             
@@ -70,13 +69,13 @@ struct ContactRow: View {
         .padding(.vertical, 8)
         .actionSheet(isPresented: $showingActionSheet) {
             ActionSheet(
-                title: Text(contact.nickname),
+                title: Text(contact.contact_user?.avatar_url ?? "Неизвестный"),
                 buttons: [
                     .default(Text("Добавить в чат")) {
                         showingChatSelection = true
                     },
                     .destructive(Text("Удалить контакт")) {
-                        ContactService.shared.removeContact(userId: contact.userId)
+                        ContactService.shared.removeContact(userId: contact.user_id)
                     },
                     .cancel()
                 ]

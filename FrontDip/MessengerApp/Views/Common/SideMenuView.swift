@@ -45,14 +45,14 @@ struct SideMenuView: View {
                             .fill(Color.blue.opacity(0.8))
                             .frame(width: 60, height: 60)
                             .overlay(
-                                Text(authViewModel.currentUser?.nickName.prefix(1).uppercased() ?? "?")
+                                Text(authViewModel.currentUser?.nick_name.prefix(1).uppercased() ?? "?")
                                     .font(.title)
                                     .fontWeight(.bold)
                                     .foregroundColor(.white)
                             )
                         
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(authViewModel.currentUser?.nickName ?? "Пользователь")
+                            Text(authViewModel.currentUser?.nick_name ?? "Пользователь")
                                 .font(.title2)
                                 .fontWeight(.semibold)
                             

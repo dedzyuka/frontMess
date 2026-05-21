@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 class ChatSidebarViewModel: ObservableObject {
-    @Published var members: [ChatMemberDetailed] = []
+    @Published var members: [ChatMemberItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -15,45 +15,30 @@ class ChatSidebarViewModel: ObservableObject {
     
     func loadMembers() {
         Task {
-            await MainActor.run {
-                isLoading = true
-                errorMessage = nil
-            }
-            
+            await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ChatMembersListResponse = try await graphQL.perform(
-                    query: GraphQLQueries.listChatMembers,
+                let variables: [String: Any] = ["chatId": chat.chat_id.uuidString]
+                let response: ChatMembersResponse = try await graphQL.perform(
+                    query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersListResponse.self
+                    responseType: ChatMembersResponse.self
                 )
-                
-                let loadedMembers = response.listChatMembers.members.map { member in
-                    ChatMemberDetailed(
-                        user_id: member.userId,
-                        nickname: member.nickname,
-                        public_key: member.publicKey,
-                        joined_at: member.joinedAt,
-                        device_id: member.deviceId
-                    )
-                }
-                
                 await MainActor.run {
-                    self.members = loadedMembers
+                    self.members = response.chat.members
                     self.isLoading = false
                 }
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Ошибка загрузки участников: \(error.localizedDescription)"
+                    self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
     }
-    
+
     func addUserToChat(_ userId: UUID) async -> Bool {
         let variables: [String: Any] = [
-            "chatId": chat.id.uuidString,
+            "chatId": chat.chat_id.uuidString,
             "userId": userId.uuidString
         ]
         do {
@@ -65,12 +50,11 @@ class ChatSidebarViewModel: ObservableObject {
             await loadMembers()
             return true
         } catch {
-            print("❌ Ошибка добавления пользователя: \(error)")
             return false
         }
     }
     
     func isUserInChat(_ userId: UUID) -> Bool {
-        return members.contains { $0.user_id == userId }
+        return members.contains(where: { $0.user_id == userId })
     }
 }

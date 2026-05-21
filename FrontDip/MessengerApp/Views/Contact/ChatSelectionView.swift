@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Views/Contact/ChatSelectionView.swift
 import SwiftUI
 
 struct ChatSelectionView: View {
@@ -6,6 +5,7 @@ struct ChatSelectionView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSelectionViewModel
     @State private var isLoadingAction = false
+    @State private var contactsInChat: [UUID: Bool] = [:]  // кэш: чат -> есть ли контакт
     
     init(contact: Contact) {
         self.contact = contact
@@ -36,14 +36,18 @@ struct ChatSelectionView: View {
                     }
                     Spacer()
                 } else {
-                    List(viewModel.chats) { chatInfo in
-                        ChatSelectionRow(
-                            chatInfo: chatInfo,
-                            isLoading: isLoadingAction,
-                            onAdd: {
-                                addContactToChat(chatInfo.chat)
+                    List {
+                        ForEach(viewModel.chats) { chat in
+                            ChatSelectionRow(
+                                chat: chat,
+                                isContactInChat: contactsInChat[chat.id] ?? false,
+                                isLoading: isLoadingAction,
+                                onAdd: { addContactToChat(chat) }
+                            )
+                            .onAppear {
+                                checkIfContactInChat(chat)
                             }
-                        )
+                        }
                     }
                     .listStyle(PlainListStyle())
                 }
@@ -63,6 +67,18 @@ struct ChatSelectionView: View {
         }
     }
     
+    private func checkIfContactInChat(_ chat: Chat) {
+        // Проверяем, если уже закэшировано – не делаем повторный запрос
+        guard contactsInChat[chat.id] == nil else { return }
+        
+        Task {
+            let isInChat = await viewModel.isContactInChat(chat)
+            await MainActor.run {
+                contactsInChat[chat.id] = isInChat
+            }
+        }
+    }
+    
     private func addContactToChat(_ chat: Chat) {
         isLoadingAction = true
         
@@ -73,16 +89,12 @@ struct ChatSelectionView: View {
                 isLoadingAction = false
                 
                 if success {
-                    // Используем NotificationService
-                    NotificationService.shared.showSuccess("\(contact.nickname) добавлен в чат \(chat.name ?? "Неизвестное")")
-                    
-                    // Закрываем через 1 секунду
+                    NotificationService.shared.showSuccess("\(contact.contact_user?.nick_name ?? "Контакт") добавлен в чат \(chat.name ?? "Неизвестное")")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                         dismiss()
                     }
                 } else {
-                    // Используем NotificationService
-                    NotificationService.shared.showError("Не удалось добавить \(contact.nickname) в чат")
+                    NotificationService.shared.showError("Не удалось добавить \(contact.contact_user?.nick_name ?? "Контакт") в чат")
                 }
             }
         }
@@ -90,24 +102,25 @@ struct ChatSelectionView: View {
 }
 
 struct ChatSelectionRow: View {
-    let chatInfo: ChatWithContactInfo
+    let chat: Chat
+    let isContactInChat: Bool
     let isLoading: Bool
     let onAdd: () -> Void
     
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(chatInfo.chat.name ?? "Неизвестное")
+                Text(chat.name ?? "Неизвестное")
                     .font(.headline)
                 
-                Text("\(chatInfo.chat.membersCount) участников")
+                Text("\(chat.members_count) участников")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             
             Spacer()
             
-            if chatInfo.isContactInChat {
+            if isContactInChat {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
@@ -120,7 +133,7 @@ struct ChatSelectionRow: View {
                 Button(action: onAdd) {
                     if isLoading {
                         ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
                             .frame(width: 20, height: 20)
                     } else {
                         Image(systemName: "plus.circle.fill")
@@ -132,6 +145,6 @@ struct ChatSelectionRow: View {
             }
         }
         .padding(.vertical, 8)
-        .opacity(chatInfo.isContactInChat ? 0.6 : 1.0)
+        .opacity(isContactInChat ? 0.6 : 1.0)
     }
 }

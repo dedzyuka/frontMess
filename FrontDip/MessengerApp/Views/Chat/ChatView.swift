@@ -13,7 +13,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок чата (как в Telegram)
+            // Заголовок чата
             HStack {
                 Button(action: {
                     presentationMode.wrappedValue.dismiss()
@@ -28,7 +28,7 @@ struct ChatView: View {
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Text("\(chat.membersCount) участников")
+                    Text("\(chat.members_count) участников")
                         .font(.caption)
                         .foregroundColor(.gray)
                 }
@@ -54,7 +54,7 @@ struct ChatView: View {
                         ForEach(viewModel.messages) { message in
                             MessageBubbleView(
                                 message: message,
-                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId)
+                                isCurrentUser: viewModel.isCurrentUser(senderId: message.sender_id)
                             )
                             .id(message.id)
                         }

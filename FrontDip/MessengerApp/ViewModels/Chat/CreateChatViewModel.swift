@@ -1,6 +1,5 @@
 import Foundation
 import CryptoKit
-import Combine
 
 class CreateChatViewModel: ObservableObject {
     @Published var chatName = ""
@@ -9,7 +8,7 @@ class CreateChatViewModel: ObservableObject {
     @Published var inviteKey: String?
     @Published var showInviteSheet = false
     
-    private let client = GraphQLClient.shared
+    private let graphQL = GraphQLClient.shared
     private let cryptoService = CryptoService.shared
     private let keychainService = KeychainService.shared
     
@@ -26,33 +25,37 @@ class CreateChatViewModel: ObservableObject {
         
         await MainActor.run { isLoading = true; errorMessage = nil }
         
+        let trimmedName = chatName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let variables: [String: Any] = [
+            "chatType": "group",
+            "name": trimmedName,
+            "memberIds": [currentUser.id.uuidString],
+            "isPublic": false
+        ]
+        
         do {
-            let input: [String: Any] = [
-                "name": chatName.trimmingCharacters(in: .whitespacesAndNewlines),
-                "member_ids": [currentUser.id.uuidString]
-            ]
-            let variables: [String: Any] = ["input": input]
-            let response: CreateChatResponse = try await client.perform(
+            let response: CreateChatResponse = try await graphQL.perform(
                 query: GraphQLQueries.createChat,
                 variables: variables,
-                responseType: CreateChatResponse.self
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
             
-            let newChat = response.createChat
+            // ✅ Исправлено: response.chat.create
+            let newChat = response.chat.create
             
-            // Генерация и сохранение ключа чата
+            // Генерация и сохранение ключа чата (опционально)
             let chatKey = cryptoService.generateSymmetricKey()
-            guard let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) else {
-                throw NSError(domain: "ChatError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Публичный ключ не найден"])
+            if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
+                let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
+                let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
+                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chat_id)
+                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
+                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chat_id)
             }
-            let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-            let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-            _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chatId)
-            let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-            ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chatId)
             
             await MainActor.run {
-                inviteKey = newChat.chatId.uuidString
+                inviteKey = newChat.chat_id.uuidString
                 showInviteSheet = true
                 isLoading = false
                 chatName = ""
@@ -65,23 +68,5 @@ class CreateChatViewModel: ObservableObject {
             }
             return false
         }
-    }
-}
-
-// Response model
-struct CreateChatResponse: Decodable {
-    let createChat: CreatedChat
-}
-struct CreatedChat: Decodable {
-    let chatId: UUID
-    let name: String?
-    let membersCount: Int
-    let createdAt: Date
-    
-    enum CodingKeys: String, CodingKey {
-        case chatId = "chat_id"
-        case name
-        case membersCount = "members_count"
-        case createdAt = "created_at"
     }
 }

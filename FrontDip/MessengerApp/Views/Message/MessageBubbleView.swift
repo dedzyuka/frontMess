@@ -1,4 +1,3 @@
-
 import SwiftUI
 
 struct MessageBubbleView: View {
@@ -18,7 +17,7 @@ struct MessageBubbleView: View {
             
             VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
                 // Текст сообщения
-                Text(message.content)
+                Text(message.content ?? "")
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(isCurrentUser ? Color.blue : Color(.systemGray5))
@@ -26,7 +25,7 @@ struct MessageBubbleView: View {
                     .cornerRadius(18)
                     .contextMenu {
                         Button("Копировать") {
-                            UIPasteboard.general.string = message.content
+                            UIPasteboard.general.string = message.content ?? ""
                         }
                         
                         Button("Переслать") {
@@ -42,18 +41,12 @@ struct MessageBubbleView: View {
                 
                 // Время и статус
                 HStack(spacing: 4) {
-                    Text(formatTime(message.timestamp))
+                    Text(formatTime(message.created_at))
                         .font(.caption2)
                         .foregroundColor(.secondary)
                     
                     if isCurrentUser {
-                        if message.isEncrypted {
-                            Image(systemName: "lock.fill")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        
-                        // Статус доставки
+                        // Статус доставки (упрощённо)
                         Image(systemName: "checkmark")
                             .font(.caption2)
                             .foregroundColor(.blue)

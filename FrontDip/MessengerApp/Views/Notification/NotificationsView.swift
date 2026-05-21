@@ -1,7 +1,5 @@
-// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 import SwiftUI
 
-// ./FrontDip/MessengerApp/Views/Contact/NotificationsView.swift
 struct NotificationsView: View {
     @EnvironmentObject var contactService: ContactService
     @Environment(\.dismiss) var dismiss
@@ -79,8 +77,9 @@ struct NotificationsView: View {
     }
 }
 
+// Переработанная строка для входящего запроса на основе модели Contact
 struct ContactRequestRow: View {
-    let request: ContactRequest
+    let request: Contact
     @State private var showingActionSheet = false
     
     var body: some View {
@@ -89,20 +88,20 @@ struct ContactRequestRow: View {
                 .fill(Color.orange.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(request.fromNickname.prefix(1).uppercased())
+                    Text((request.contact_user?.nick_name ?? "?").prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.orange)
                 )
             
             VStack(alignment: .leading, spacing: 4) {
-                Text(request.fromNickname)
+                Text(request.contact_user?.nick_name ?? "Неизвестный")
                     .font(.headline)
                 
                 Text("Запрос на контакт")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                Text(formatDate(request.createdAt))
+                Text(formatDate(request.created_at))
                     .font(.caption2)
                     .foregroundColor(.gray)
             }

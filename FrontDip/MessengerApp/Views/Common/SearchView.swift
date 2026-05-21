@@ -71,13 +71,13 @@ struct SearchResultRow: View {
                 .fill(Color.blue.opacity(0.3))
                 .frame(width: 40, height: 40)
                 .overlay(
-                    Text(user.nickname.prefix(1).uppercased())
+                    Text(user.nick_name.prefix(1).uppercased())
                         .font(.headline)
                         .foregroundColor(.blue)
                 )
             
             VStack(alignment: .leading) {
-                Text(user.nickname)
+                Text(user.nick_name)
                     .font(.headline)
                 Text("ID: \(user.user_id.uuidString.prefix(8))...")
                     .font(.caption)
@@ -100,7 +100,7 @@ struct SearchResultRow: View {
                 onAdd()
             }
         } message: {
-            Text("Отправить запрос на добавление в контакты пользователю \(user.nickname)?")
+            Text("Отправить запрос на добавление в контакты пользователю \(user.nick_name)?")
         }
     }
 }

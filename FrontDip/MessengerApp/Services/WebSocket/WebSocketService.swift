@@ -58,6 +58,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
+    // WebSocketService.swift
     private func processJSON(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -66,24 +67,36 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         switch event {
         case "message.new":
             if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int,
-               let chatId = payload["chat_id"] as? String,
-               let senderId = payload["sender_id"] as? String,
+               let messageId = payload["message_id"] as? Int64,
+               let chatIdString = payload["chat_id"] as? String,
+               let senderIdString = payload["sender_id"] as? String,
                let content = payload["content"] as? String,
                let createdAtString = payload["created_at"] as? String,
                let createdAt = ISO8601DateFormatter().date(from: createdAtString) {
+                
+                // Преобразуем строки в UUID
+                guard let chatId = UUID(uuidString: chatIdString),
+                      let senderId = UUID(uuidString: senderIdString) else {
+                    print("Invalid UUID in message payload")
+                    return
+                }
+                
                 let message = Message(
-                    id: UUID(),
-                    chatId: UUID(uuidString: chatId)!,
-                    senderId: UUID(uuidString: senderId)!,
+                    message_id: messageId,
+                    chat_id: chatId,
+                    sender_id: senderId,
+                    reply_to_id: nil,
                     content: content,
-                    type: .text,
-                    timestamp: createdAt,
-                    isEncrypted: false
+                    type: "text",
+                    created_at: createdAt,
+                    updated_at: createdAt,
+                    deleted_at: nil,
+                    is_edited: false
                 )
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }
         case "message.ack":
+            // обработать подтверждение при необходимости
             break
         case "pong":
             print("Pong received")

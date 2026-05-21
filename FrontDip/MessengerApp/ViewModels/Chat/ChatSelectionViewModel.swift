@@ -2,12 +2,12 @@ import Foundation
 import Combine
 
 class ChatSelectionViewModel: ObservableObject {
-    @Published var chats: [ChatWithContactInfo] = []
+    @Published var chats: [Chat] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     
     private let graphQL = GraphQLClient.shared
-    let contact: Contact
+    let contact: Contact  // теперь Contact содержит contact_user_id и т.д.
     
     init(contact: Contact) {
         self.contact = contact
@@ -15,71 +15,65 @@ class ChatSelectionViewModel: ObservableObject {
     
     func loadChats() {
         Task {
-            await MainActor.run {
-                isLoading = true
-                errorMessage = nil
-            }
-            
-            guard let currentUser = AppState.shared.currentUser else {
-                await MainActor.run {
-                    isLoading = false
-                    errorMessage = "Не удалось получить информацию о пользователе"
-                }
-                return
-            }
-            
+            await MainActor.run { isLoading = true }
             do {
-                let variables: [String: Any] = ["userId": currentUser.id.uuidString]
                 let response: ListChatsResponse = try await graphQL.perform(
                     query: GraphQLQueries.listChats,
-                    variables: variables,
-                    responseType: ListChatsResponse.self
+                    variables: [:],
+                    responseType: ListChatsResponse.self,
+                    authToken: TokenManager.shared.accessToken
                 )
-                
-                let userChats = response.listChats.chats.map { chatResponse in
+                let loadedChats = response.chat.list.map { chatResponse in
                     Chat(
-                        id: chatResponse.chatId,
-                        chatType: "group",
-                        name: chatResponse.name ?? "Chat",
-                        description: nil,
-                        avatarUrl: nil,
-                        creatorId: nil,
-                        isPublic: false,
-                        membersCount: chatResponse.membersCount,
-                        createdAt: chatResponse.createdAt,
-                        updatedAt: chatResponse.createdAt,
-                        lastMessagePreview: nil
+                        chat_id: chatResponse.chat_id,
+                        chat_type: chatResponse.chat_type,
+                        name: chatResponse.name,
+                        description: chatResponse.description,
+                        avatar_url: chatResponse.avatar_url,
+                        creator_id: chatResponse.creator_id,
+                        is_public: chatResponse.is_public,
+                        max_members: 30,
+                        created_at: chatResponse.created_at,
+                        updated_at: chatResponse.updated_at,
+                        last_activity_at: chatResponse.created_at,       // или другое поле
+                        visibility: "PRIVATE",                          // дефолт или из chatResponse
+                        join_policy: "INVITE_ONLY",                     // дефолт или из chatResponse
+                        members_count: chatResponse.members_count ?? 0, // если есть
+                        last_message_preview: chatResponse.last_message_preview == nil ? nil :
+                            MessagePreview(
+                                message_id: Int64(chatResponse.last_message_preview!.message_id),
+                                sender_id: UUID(uuidString: chatResponse.last_message_preview!.sender_id) ?? UUID(),
+                                type: chatResponse.last_message_preview!.type,
+                                text_preview: chatResponse.last_message_preview!.text_preview,
+                                created_at: chatResponse.last_message_preview!.created_at,
+                                is_deleted: chatResponse.last_message_preview!.is_deleted
+                            )
                     )
                 }
-                
-                var chatsWithInfo: [ChatWithContactInfo] = []
-                for chat in userChats {
-                    let isContactInChat = await checkIfContactInChat(chatId: chat.id)
-                    chatsWithInfo.append(ChatWithContactInfo(chat: chat, isContactInChat: isContactInChat))
-                }
-                
                 await MainActor.run {
-                    self.chats = chatsWithInfo
+                    self.chats = loadedChats
                     self.isLoading = false
                 }
+
             } catch {
                 await MainActor.run {
-                    self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
+                    self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
     }
     
-    private func checkIfContactInChat(chatId: UUID) async -> Bool {
+    func isContactInChat(_ chat: Chat) async -> Bool {
         do {
-            let variables: [String: Any] = ["chatId": chatId.uuidString]
-            let response: ChatMembersListResponse = try await graphQL.perform(
+            let variables = ["chat_id": chat.chat_id.uuidString]
+            let response: ChatMembersResponse = try await graphQL.perform(
                 query: GraphQLQueries.getChatMembers,
                 variables: variables,
-                responseType: ChatMembersListResponse.self
+                responseType: ChatMembersResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
-            return response.listChatMembers.members.contains { $0.userId == contact.userId }
+            return response.chat.members.contains { $0.user_id == contact.contact_user_id }
         } catch {
             return false
         }
@@ -87,16 +81,16 @@ class ChatSelectionViewModel: ObservableObject {
     
     func addContactToChat(_ chat: Chat) async -> Bool {
         let variables: [String: Any] = [
-            "chatId": chat.id.uuidString,
-            "userId": contact.userId.uuidString
+            "chatId": chat.chat_id.uuidString,
+            "userId": contact.contact_user_id.uuidString
         ]
         do {
             let _: AddChatMemberResponse = try await graphQL.perform(
                 query: GraphQLQueries.addChatMember,
                 variables: variables,
-                responseType: AddChatMemberResponse.self
+                responseType: AddChatMemberResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
-            await MainActor.run { loadChats() }
             return true
         } catch {
             return false
