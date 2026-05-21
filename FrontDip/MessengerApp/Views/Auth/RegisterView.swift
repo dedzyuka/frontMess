@@ -40,12 +40,15 @@ struct RegisterView: View {
                     // Кнопка регистрации
                     Button {
                         Task {
-                            _ = await viewModel.register(
-                                nickname: nickname,
-                                email: email,
-                                password: password,
-                                phone: phone
-                            )
+                            let success = await viewModel.register(
+                                                nickname: nickname,
+                                                email: email,
+                                                password: password,
+                                                phone: phone
+                                            )
+                            if success {
+                                        dismiss()          // ← добавить
+                                }
                         }
                     } label: {
                         if viewModel.isLoading {

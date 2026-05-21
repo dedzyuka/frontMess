@@ -34,7 +34,7 @@ struct Chat: Identifiable, Codable {
     let is_public: Bool
     let max_members: Int
     let created_at: Date
-    let updated_at: Date
+    let updated_at: Date?
     let last_activity_at: Date?
     let visibility: String
     let join_policy: String

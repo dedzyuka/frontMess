@@ -35,7 +35,10 @@ struct LoginView: View {
                     // Кнопка входа
                     Button {
                         Task {
-                            _ = await viewModel.login(login: login, password: password)
+                            let success = await viewModel.login(login: login, password: password)
+                            if success {
+                                        dismiss()       
+                            }
                         }
                     } label: {
                         if viewModel.isLoading {

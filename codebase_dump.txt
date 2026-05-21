@@ -36,72 +36,52 @@ class AppState: ObservableObject {
 
 ./FrontDip/MessengerApp/App/MessengerApp.swift
 
-// ./FrontDip/MessengerApp/App/MessengerApp.swift
 import SwiftUI
 
 @main
 struct MessengerApp: App {
     @StateObject private var appState = AppState.shared
-    
+    @StateObject private var contactService = ContactService.shared
+
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .onAppear {
-                    appState.setup()
-                }
+                .environmentObject(contactService)
+                .preferredColorScheme(.light)
         }
     }
 }
 
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
-    @StateObject private var authViewModel = AuthViewModel()
-    @StateObject private var contactService = ContactService.shared
-    
-    @State private var isCheckingAutoLogin = true
-    
+    @State private var isChecking = true
+
     var body: some View {
         Group {
-            if isCheckingAutoLogin {
+            if isChecking {
                 LoadingView()
             } else if appState.isAuthenticated {
                 ChatListView()
-                    .environmentObject(authViewModel)
-                    .environmentObject(contactService)
             } else {
-                LoginView()
-                    .environmentObject(authViewModel)
+                WelcomeView()
             }
-        }
-        .alert("Ошибка", isPresented: .constant(appState.errorMessage != nil)) {
-            Button("OK") {
-                appState.errorMessage = nil
-            }
-        } message: {
-            Text(appState.errorMessage ?? "")
         }
         .onAppear {
             checkAutoLogin()
         }
     }
-    
+
     private func checkAutoLogin() {
-        print("🚀 Запуск приложения...")
-        
-        if authViewModel.hasSavedUser() {
-            print("👤 Найден сохраненный пользователь")
-            authViewModel.autoLogin()
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                isCheckingAutoLogin = false
-                if !appState.isAuthenticated {
-                    print("⏱️ Автологин не удался")
+        Task {
+            let success = await AuthViewModel().restoreSession()
+            await MainActor.run {
+                isChecking = false
+                if !success {
+                    // сессия не восстановлена, остаёмся на экране приветствия
                 }
             }
-        } else {
-            print("👤 Сохраненный пользователь не найден")
-            isCheckingAutoLogin = false
         }
     }
 }
@@ -308,7 +288,7 @@ struct Chat: Identifiable, Codable {
     let is_public: Bool
     let max_members: Int
     let created_at: Date
-    let updated_at: Date
+    let updated_at: Date?
     let last_activity_at: Date?
     let visibility: String
     let join_policy: String
@@ -384,6 +364,461 @@ struct UserPublicResponse: Identifiable, Codable {
     let is_online: Bool
     
     var id: UUID { user_id }
+}
+
+./FrontDip/MessengerApp/Models/Operations.swift
+
+import Foundation
+
+struct GraphQLQueries {
+    // MARK: - Users
+    static let createUser = """
+        mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) {
+            user {
+                createUser(nickName: $nickName, email: $email, password: $password, phone: $phone) {
+                                            id
+                                            userId
+                                            nickName
+                                            
+        
+                }
+            }
+        }
+        """
+    
+    static let login = """
+        mutation Login($login: String!, $password: String!) {
+            auth {
+                login(login: $login, password: $password) {
+                    accessToken
+                    refreshToken
+                    expiresIn
+                    user {
+                        id
+                        userId
+                        nickName
+                        
+                    }
+                }
+            }
+        }
+        """
+    
+    static let refreshToken = """
+        mutation RefreshToken($refreshToken: String!) {
+            auth {
+                refreshToken(refreshToken: $refreshToken) {
+                    accessToken
+                    refreshToken
+                    expiresIn
+                    user {
+                                                id
+                                                nickName
+                                                email
+                                                createdAt
+                                                updatedAt
+                                                avatarUrl
+                                                isOnline
+                    }
+                }
+            }
+        }
+        """
+    
+    // MARK: - Chats
+    static let listChats = """
+    query ListChats {
+        chat {
+            list {
+                chatId
+                chatType
+                name
+                description
+                avatarUrl
+                creatorId
+                isPublic
+                maxMembers
+                membersCount
+                createdAt
+                lastMessage {
+                    messageId
+                    senderId
+                    content
+                    createdAt
+                }
+            }
+        }
+    }
+    """
+    
+    static let createChat = """
+    mutation CreateChat($chatType: String!, $name: String, $memberIds: [String!]!, $isPublic: Boolean) {
+        chat {
+            create(chatType: $chatType, name: $name, memberIds: $memberIds, isPublic: $isPublic) {
+                chatId
+                name
+                membersCount
+                createdAt
+            }
+        }
+    }
+    """
+    
+    static let getChatMembers = """
+    query GetChatMembers($chatId: String!) {
+        chat {
+            members(chatId: $chatId) {
+                userId
+                nickname
+                joinedAt
+            }
+        }
+    }
+    """
+    
+    static let addChatMember = """
+    mutation AddChatMember($chatId: String!, $userId: String!) {
+        chat {
+            addMember(chatId: $chatId, userId: $userId) {
+                userId
+            }
+        }
+    }
+    """
+    
+    // MARK: - Contacts
+    static let listContacts = """
+    query ListContacts($status: String) {
+        contact {
+            list(status: $status) {
+                userId
+                contactUserId
+                status
+                createdAt
+                updatedAt
+                contactUser {
+                    userId
+                    nickName
+                    avatarUrl
+                }
+            }
+        }
+    }
+    """
+    
+    static let addContact = """
+    mutation AddContact($contactUserId: String!) {
+        contact {
+            add(contactUserId: $contactUserId) {
+                userId
+                contactUserId
+                status
+                createdAt
+            }
+        }
+    }
+    """
+    
+    static let acceptContact = """
+    mutation AcceptContact($contactUserId: String!) {
+        contact {
+            accept(contactUserId: $contactUserId) {
+                userId
+                contactUserId
+                status
+                updatedAt
+            }
+        }
+    }
+    """
+    
+    static let removeContact = """
+    mutation RemoveContact($contactUserId: String!) {
+        contact {
+            remove(contactUserId: $contactUserId)
+        }
+    }
+    """
+    
+    static let incomingRequests = """
+    query IncomingRequests {
+        contact {
+            incoming {
+                userId
+                contactUserId
+                status
+                createdAt
+                contactUser {
+                    userId
+                    nickName
+                    avatarUrl
+                }
+            }
+        }
+    }
+    """
+    
+    // MARK: - Messages
+    static let listMessages = """
+    query ListMessages($chatId: String!, $limit: Int, $offset: Int) {
+        message {
+            listMessages(chatId: $chatId, limit: $limit, offset: $offset) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+    
+    static let sendMessage = """
+    mutation SendMessage($chatId: String!, $content: String!) {
+        message {
+            sendMessage(chatId: $chatId, content: $content) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+    
+    // MARK: - Search
+    static let searchUsers = """
+    query SearchUsers($query: String!) {
+        user {
+            search(query: $query, page: 1, pageSize: 20) {
+                userId
+                nickName
+                avatarUrl
+                isOnline
+            }
+        }
+    }
+    """
+}
+// MARK: - Response Models
+
+// User
+
+struct CreateUserData: Decodable {
+    let user: CreateUserResult
+}
+struct CreateUserResult: Decodable {
+    let id: UUID
+    let nickName: String
+}
+struct UserResponseWrapper: Decodable {
+    let create: UserData
+}
+struct UserData: Decodable {
+    let id: UUID
+    let userId: UUID
+    let nickName: String
+}
+// MARK: - Login Response
+struct LoginResponse: Decodable {
+    let auth: AuthLogin
+}
+struct AuthLogin: Decodable {
+    let login: LoginResult
+}
+
+struct LoginData: Decodable {
+    let auth: AuthLogin
+}
+
+
+struct LoginResult: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresIn: Int
+    let user: UserData
+}
+
+// MARK: - Refresh Response
+struct RefreshResponse: Decodable {
+    let auth: AuthRefresh
+}
+struct AuthRefresh: Decodable {
+    let refreshToken: RefreshResult
+}
+
+struct RefreshResult: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresIn: Int
+    let user: UserData
+}
+struct CreateUserResponse: Decodable {
+    let user: CreateUserResult   // или сразу User, смотри по реальному ответу
+}
+
+// MARK: - User (camelCase, как отдаёт сервер)
+
+// Auth
+
+struct Tokens: Decodable {
+    let access_token: String
+    let refresh_token: String
+    let expires_in: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case access_token = "accessToken"
+        case refresh_token = "refreshToken"
+        case expires_in = "expiresIn"
+    }
+}
+
+// Chat list
+struct ListChatsResponse: Decodable {
+    let chat: ChatListWrapper
+}
+struct ChatListWrapper: Decodable {
+    let list: [ChatResponse]
+}
+struct ChatResponse: Decodable {
+    let chat_id: UUID
+    let chat_type: String
+    let name: String?
+    let description: String?
+    let avatar_url: String?
+    let creator_id: UUID?
+    let is_public: Bool
+    let max_members: Int          // ← добавить (если нужно)
+    let members_count: Int
+    let created_at: Date
+    let last_message: MessageResponse?   // ← заменили
+}
+struct MessagePreviewResponse: Decodable {
+    let message_id: Int
+    let sender_id: String
+    let type: String
+    let text_preview: String?
+    let created_at: Date
+    let is_deleted: Bool
+}
+
+// Create chat
+struct CreateChatResponse: Decodable {
+    let chat: CreateChatWrapper
+}
+struct CreateChatWrapper: Decodable {
+    let create: CreatedChat
+}
+struct CreatedChat: Decodable {
+    let chat_id: UUID
+    let chat_type: String
+    let name: String?
+    let created_at: Date
+    let updated_at: Date
+    let members_count: Int
+}
+
+// Chat members
+struct ChatMembersResponse: Decodable {
+    let chat: ChatMembersWrapper
+}
+struct ChatMembersWrapper: Decodable {
+    let members: [ChatMemberItem]
+}
+
+struct AddChatMemberResponse: Decodable {
+    let chat: AddChatMemberWrapper
+}
+struct AddChatMemberWrapper: Decodable {
+    let add_member: AddMemberResult
+}
+struct AddMemberResult: Decodable {
+    let user_id: UUID
+}
+
+// Contacts
+struct ListContactsResponse: Decodable {
+    let contact: ContactListWrapper
+}
+struct ContactListWrapper: Decodable {
+    let list: [ContactResponseData]
+}
+struct ContactResponseData: Decodable {
+    let user_id: UUID
+    let contact_user_id: UUID
+    let status: String
+    let created_at: Date
+    let updated_at: Date
+    let contact_user: ContactUserInfo?
+}
+
+struct ContactUserInfo: Decodable {
+    let user_id: UUID
+    let nick_name: String
+    let avatar_url: String?
+}
+struct AddContactResponse: Decodable {
+    let contact: ContactAddWrapper
+}
+struct ContactAddWrapper: Decodable {
+    let add: ContactResponseData
+}
+struct AcceptContactResponse: Decodable {
+    let contact: ContactAcceptWrapper
+}
+struct ContactAcceptWrapper: Decodable {
+    let accept: ContactResponseData
+}
+struct RemoveContactResponse: Decodable {
+    let contact: ContactRemoveWrapper
+}
+struct ContactRemoveWrapper: Decodable {
+    let remove: Bool
+}
+
+// Messages
+struct ListMessagesResponse: Decodable {
+    let message: MessageListWrapper
+}
+struct MessageListWrapper: Decodable {
+    let list_messages: [MessageResponse]
+}
+struct MessageResponse: Decodable {
+    let message_id: Int64
+    let chat_id: UUID
+    let sender_id: UUID
+    let content: String
+    let type: String
+    let created_at: Date
+    let updated_at: Date
+    let is_edited: Bool
+}
+struct SendMessageResponse: Decodable {
+    let message: SendMessageWrapper
+}
+struct SendMessageWrapper: Decodable {
+    let send_message: MessageResponse
+}
+
+// Search
+struct SearchUsersResponse: Decodable {
+    let user: SearchUsersWrapper
+}
+struct SearchUsersWrapper: Decodable {
+    let search: [SearchedUser]
+}
+struct SearchedUser: Decodable {
+    let user_id: UUID
+    let nick_name: String
+    let avatar_url: String?
+    let is_online: Bool
 }
 
 ./FrontDip/MessengerApp/Models/User/User.swift
@@ -474,7 +909,6 @@ struct WebSocketMessage: Codable {
 
 ./FrontDip/MessengerApp/Services/Auth/SessionManager.swift
 
-// ./FrontDip/MessengerApp/Services/Auth/SessionManager.swift
 import Foundation
 import Combine
 
@@ -521,9 +955,14 @@ class SessionManager: ObservableObject {
             .store(in: &cancellables)
     }
     
-    func register(nickname: String) async -> Bool {
-        await authViewModel.register()
-        return authViewModel.currentUser != nil
+    // ✅ Исправленный метод регистрации
+    func register(nickname: String, email: String, password: String, phone: String = "") async -> Bool {
+        return await authViewModel.register(nickname: nickname, email: email, password: password, phone: phone)
+    }
+    
+    // ✅ Добавлен метод логина
+    func login(login: String, password: String) async -> Bool {
+        return await authViewModel.login(login: login, password: password)
     }
     
     func logout() {
@@ -538,25 +977,39 @@ class SessionManager: ObservableObject {
 ./FrontDip/MessengerApp/Services/Auth/TokenManager.swift
 
 import Foundation
-
 class TokenManager {
     static let shared = TokenManager()
     private let accessKey = "access_token"
     private let refreshKey = "refresh_token"
     
     var accessToken: String? {
-        get { UserDefaults.standard.string(forKey: accessKey) }
-        set { UserDefaults.standard.set(newValue, forKey: accessKey) }
+        get {
+            let token = UserDefaults.standard.string(forKey: accessKey)
+            print("🔑 TokenManager get accessToken: \(token?.prefix(20) ?? "nil")")
+            return token
+        }
+        set {
+            print("🔑 TokenManager set accessToken: \(newValue?.prefix(20) ?? "nil")")
+            UserDefaults.standard.set(newValue, forKey: accessKey)
+        }
     }
     
     var refreshToken: String? {
-        get { UserDefaults.standard.string(forKey: refreshKey) }
-        set { UserDefaults.standard.set(newValue, forKey: refreshKey) }
+        get {
+            let token = UserDefaults.standard.string(forKey: refreshKey)
+            print("🔑 TokenManager get refreshToken: \(token?.prefix(20) ?? "nil")")
+            return token
+        }
+        set {
+            print("🔑 TokenManager set refreshToken: \(newValue?.prefix(20) ?? "nil")")
+            UserDefaults.standard.set(newValue, forKey: refreshKey)
+        }
     }
     
     func clear() {
         accessToken = nil
         refreshToken = nil
+        print("🔑 TokenManager cleared")
     }
 }
 
@@ -592,7 +1045,7 @@ class LocalDatabase {
     private let chatIsPublic = Expression<Bool>("is_public")
     private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatUpdatedAt = Expression<Date>("updated_at")
+    private let chatUpdatedAt = Expression<Date?>("updated_at")
     private let chatLastActivityAt = Expression<Date?>("last_activity_at")
     private let chatVisibility = Expression<String>("visibility")
     private let chatJoinPolicy = Expression<String>("join_policy")
@@ -1321,6 +1774,7 @@ class ContactService: ObservableObject {
     // MARK: - Local
     
     func loadContacts() {
+        guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
                 let fetched = try await fetchContacts()
@@ -1332,6 +1786,7 @@ class ContactService: ObservableObject {
     }
     
     func loadPendingRequests() {
+        guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
                 let fetched = try await fetchIncomingRequests()
@@ -1436,30 +1891,70 @@ class ContactService: ObservableObject {
        }
    }
 
+./FrontDip/MessengerApp/Services/Network/GrapgQLModels.swift
+
+//
+//  GrapgQLModels.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 21.05.26.
+//
+
+import Foundation
+
+// MARK: - Общие структуры для пользователя и чата
+struct GraphQLUser: Decodable {
+    let user_id: UUID
+    let nick_name: String
+    let email: String?
+    let avatar_url: String?
+    let created_at: Date
+    let updated_at: Date
+    let is_online: Bool
+}
+
+struct GraphQLChat: Decodable {
+    let chat_id: UUID
+    let name: String?
+    let chat_type: String
+    let members_count: Int
+    let created_at: Date
+    let updated_at: Date
+    let last_message_preview: GraphQLMessagePreview?
+}
+
+struct GraphQLMessagePreview: Decodable {
+    let message_id: Int
+    let sender_id: String
+    let text_preview: String?
+    let created_at: Date
+}
+
+
 ./FrontDip/MessengerApp/Services/Network/GraphQLClient.swift
 
 import Foundation
 
-// MARK: - GraphQL Error
 enum GraphQLError: Error, LocalizedError {
     case invalidURL
     case noData
     case decodingError(String)
     case networkError(Error)
     case httpError(Int, String?)
-    
+    case graphQLErrors([String])
+
     var errorDescription: String? {
         switch self {
-        case .invalidURL: return "Invalid URL"
-        case .noData: return "No data received"
-        case .decodingError(let msg): return "Decoding error: \(msg)"
-        case .networkError(let err): return "Network error: \(err.localizedDescription)"
-        case .httpError(let code, let msg): return "HTTP \(code): \(msg ?? "Unknown error")"
+        case .invalidURL: return "Неверный URL"
+        case .noData: return "Нет данных от сервера"
+        case .decodingError(let msg): return "Ошибка данных: \(msg)"
+        case .networkError(let err): return "Ошибка сети: \(err.localizedDescription)"
+        case .httpError(let code, let msg): return "HTTP \(code): \(msg ?? "Неизвестная ошибка")"
+        case .graphQLErrors(let msgs): return msgs.joined(separator: ", ")
         }
     }
 }
 
-// MARK: - GraphQL Response Wrappers
 struct GraphQLResponse<T: Decodable>: Decodable {
     let data: T?
     let errors: [GraphQLErrorDetail]?
@@ -1469,7 +1964,6 @@ struct GraphQLErrorDetail: Decodable {
     let message: String
 }
 
-// MARK: - GraphQL Client
 class GraphQLClient {
     static let shared = GraphQLClient()
     private let baseURL = "http://localhost:8002/graphql"
@@ -1490,6 +1984,8 @@ class GraphQLClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        print("🔑 Auth token used: \(authToken?.prefix(20) ?? "nil")")
         if let token = authToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -1502,6 +1998,11 @@ class GraphQLClient {
         
         let (data, response) = try await session.data(for: request)
         
+        // Логируем ответ для отладки
+        if let jsonString = String(data: data, encoding: .utf8) {
+            print("📦 Response JSON: \(jsonString.prefix(2000))")
+        }
+        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw GraphQLError.networkError(URLError(.badServerResponse))
         }
@@ -1511,14 +2012,13 @@ class GraphQLClient {
             throw GraphQLError.httpError(httpResponse.statusCode, errorMessage)
         }
         
-        // Используем ваш гибкий декодер дат
-        let decoder = JSONDecoder.flexibleISO8601
-        // НЕ преобразуем ключи, так как модели и сервер используют snake_case
+        
+        let decoder = JSONDecoder()
         
         let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
         
         if let errors = graphQLResponse.errors, !errors.isEmpty {
-            throw GraphQLError.decodingError(errors.first?.message ?? "GraphQL error")
+            throw GraphQLError.graphQLErrors(errors.map { $0.message })
         }
         
         guard let data = graphQLResponse.data else {
@@ -2058,9 +2558,10 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     
     func connect(userId: UUID) {
         guard let token = TokenManager.shared.accessToken else {
-            print("No access token for WebSocket")
-            return
-        }
+                print("No access token for WebSocket")
+                return
+            }
+            let urlString = "ws://127.0.0.1:8000/ws/chat?access_token=\(token)"
         connect(accessToken: token, userId: userId)
     }
     
@@ -2244,6 +2745,33 @@ struct AppConstants {
 
 ./FrontDip/MessengerApp/Utils/Extensions/Date+Extensions.swift
 
+import SwiftUI
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let a, r, g, b: UInt64
+        switch hex.count {
+        case 3: // RGB (12-bit)
+            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
+        case 6: // RGB (24-bit)
+            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        case 8: // ARGB (32-bit)
+            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (a, r, g, b) = (1, 1, 1, 0)
+        }
+        self.init(
+            .sRGB,
+            red: Double(r) / 255,
+            green: Double(g) / 255,
+            blue: Double(b) / 255,
+            opacity: Double(a) / 255
+        )
+    }
+}
 
 ./FrontDip/MessengerApp/Utils/Extensions/View+Extensions.swift
 
@@ -2277,76 +2805,6 @@ extension View {
 
 import Foundation
 
-// Вместо текущего декодера, использовать этот:
-extension JSONDecoder {
-    static let flexibleISO8601: JSONDecoder = {
-        let decoder = JSONDecoder()
-        
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let dateString = try container.decode(String.self)
-            
-            // Форматы для сервера FastAPI
-            let formatters: [ISO8601DateFormatter] = [
-                {
-                    let f = ISO8601DateFormatter()
-                    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    return f
-                }(),
-                {
-                    let f = ISO8601DateFormatter()
-                    f.formatOptions = [.withInternetDateTime]
-                    return f
-                }(),
-                {
-                    let f = ISO8601DateFormatter()
-                    f.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
-                    return f
-                }()
-            ]
-            
-            for formatter in formatters {
-                if let date = formatter.date(from: dateString) {
-                    return date
-                }
-            }
-            
-            // Пробуем старые форматы DateFormatter как fallback
-            let legacyFormatters: [DateFormatter] = [
-                {
-                    let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-                    f.locale = Locale(identifier: "en_US_POSIX")
-                    f.timeZone = TimeZone(secondsFromGMT: 0)
-                    return f
-                }(),
-                {
-                    let f = DateFormatter()
-                    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-                    f.locale = Locale(identifier: "en_US_POSIX")
-                    f.timeZone = TimeZone(secondsFromGMT: 0)
-                    return f
-                }()
-            ]
-            
-            for formatter in legacyFormatters {
-                if let date = formatter.date(from: dateString) {
-                    return date
-                }
-            }
-            
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Cannot decode date string \(dateString)"
-            )
-        }
-        
-        return decoder
-    }()
-}
-
-import Foundation
-
 extension JSONDecoder {
     static var snakeCaseDecoder: JSONDecoder {
         let decoder = JSONDecoder()
@@ -2360,7 +2818,6 @@ extension JSONDecoder {
             if let date = formatter.date(from: dateString) {
                 return date
             }
-            
             let fallbackFormatter = DateFormatter()
             fallbackFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
             fallbackFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -2368,7 +2825,6 @@ extension JSONDecoder {
             if let date = fallbackFormatter.date(from: dateString) {
                 return date
             }
-            
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
         }
         return decoder
@@ -2405,142 +2861,144 @@ class AuthViewModel: ObservableObject {
     }
     
     // MARK: - Registration
-    func register() async {
-        guard canRegister else {
-            await showError("Заполните никнейм, email и пароль")
-            return
-        }
-        await setLoading(true)
-        
+    func register(nickname: String, email: String, password: String, phone: String = "") async -> Bool {
+        await MainActor.run { isLoading = true; errorMessage = nil }
+
+        let variables: [String: Any] = [
+            "nickName": nickname.trimmingCharacters(in: .whitespaces),
+            "email": email.trimmingCharacters(in: .whitespaces),
+            "password": password,
+            "phone": phone.trimmingCharacters(in: .whitespaces)
+        ]
+
         do {
-            let cleanedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Генерация ключей (для будущего E2EE)
-            let (privateKey, publicKeyData) = cryptoService.generateKeyPair()
-            
-            // Создание пользователя через GraphQL
-            let variables: [String: Any] = [
-                "nickName": cleanedNickname,
-                "email": cleanedEmail,
-                "password": password,
-                "phone": cleanedPhone
-            ]
+            // Ожидаем правильный тип ответа
             let _: CreateUserResponse = try await graphQL.perform(
                 query: GraphQLQueries.createUser,
                 variables: variables,
-                responseType: CreateUserResponse.self
+                responseType: CreateUserResponse.self,
+                authToken: nil
             )
-            
-            // Логин для получения токенов
-            let loginVariables: [String: Any] = [
-                "login": cleanedNickname,
-                "password": password
-            ]
-            let loginResponse: LoginResponse = try await graphQL.perform(
-                query: GraphQLQueries.login,
-                variables: loginVariables,
-                responseType: LoginResponse.self
-            )
-            
-            // Сохраняем токены
-            TokenManager.shared.accessToken = loginResponse.auth.tokens.access_token
-            TokenManager.shared.refreshToken = loginResponse.auth.tokens.refresh_token
-            
-            let userData = loginResponse.auth.user
-            let user = User(
-                user_id: userData.user_id,
-                nick_name: userData.nick_name,
-                first_name: nil,
-                last_name: nil,
-                middle_name: nil,
-                email: userData.email,
-                phone: nil,
-                avatar_url: nil,
-                bio: nil,
-                last_seen: nil,
-                is_online: false,
-                status: "active",
-                email_verified: false,
-                phone_verified: false,
-                is_admin: false,
-                created_at: userData.created_at,
-                updated_at: userData.updated_at
-            )
-            
-            // Сохраняем ключи в Keychain
-            keychainService.savePrivateKey(privateKey, userId: user.id)
-            keychainService.savePublicKey(publicKeyData, userId: user.id)
-            keychainService.save(key: "user_id", value: user.id.uuidString)
-            
+            let loginSuccess = await login(login: nickname, password: password)
+            await MainActor.run { isLoading = false }
+            return loginSuccess
+        } catch {
             await MainActor.run {
-                self.currentUser = user
+                errorMessage = "Ошибка регистрации: \(error.localizedDescription)"
+                isLoading = false
+            }
+            return false
+        }
+    }
+    
+    // MARK: - Login
+    func login(login: String, password: String) async -> Bool {
+        await MainActor.run { isLoading = true; errorMessage = nil }
+
+        let variables: [String: Any] = ["login": login, "password": password]
+
+        do {
+            let response: LoginResponse = try await graphQL.perform(
+                query: GraphQLQueries.login,
+                variables: variables,
+                responseType: LoginResponse.self,
+                authToken: nil
+            )
+
+            let loginResult = response.auth.login
+            let accessToken = loginResult.accessToken
+            let refreshToken = loginResult.refreshToken
+            let userData = loginResult.user
+
+            print("✅ Получен access token: \(accessToken.prefix(20))...")
+            print("✅ Пользователь: \(userData.nickName) (\(userData.id))")
+
+            await MainActor.run {
+                TokenManager.shared.accessToken = accessToken
+                TokenManager.shared.refreshToken = refreshToken
+
+                let user = User(
+                    user_id: userData.id,
+                    nick_name: userData.nickName,
+                    first_name: nil, last_name: nil, middle_name: nil,
+                    email: nil, phone: nil,
+                    avatar_url: nil, bio: nil,
+                    last_seen: nil, is_online: true,
+                    status: "active", email_verified: false, phone_verified: false,
+                    is_admin: false,
+                    created_at: Date(), updated_at: Date()
+                )
+
                 AppState.shared.currentUser = user
                 AppState.shared.login()
                 self.isLoading = false
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    WebSocketService.shared.connect(userId: user.id)
-                }
+                WebSocketService.shared.connect(userId: user.id)
+
+                ContactService.shared.loadContacts()
+                ContactService.shared.loadPendingRequests()
             }
+            return true
         } catch {
-            await showError("Ошибка регистрации: \(error.localizedDescription)")
+            print("❌ Ошибка входа: \(error)")
+            await MainActor.run {
+                errorMessage = "Ошибка входа: \(error.localizedDescription)"
+                isLoading = false
+            }
+            return false
         }
     }
     
     // MARK: - Restore session
-    func restoreSession() async {
-        guard let refreshToken = TokenManager.shared.refreshToken else { return }
-        
+    func restoreSession() async -> Bool {
+        guard let refreshToken = TokenManager.shared.refreshToken else {
+            print("No refresh token to restore session")
+            return false
+        }
+
+        let variables: [String: Any] = ["refreshToken": refreshToken]
+
         do {
-            let variables: [String: Any] = ["refreshToken": refreshToken]
-            let response: LoginResponse = try await graphQL.perform(
+            let response: RefreshResponse = try await graphQL.perform(
                 query: GraphQLQueries.refreshToken,
                 variables: variables,
-                responseType: LoginResponse.self
+                responseType: RefreshResponse.self,
+                authToken: nil
             )
-            
-            TokenManager.shared.accessToken = response.auth.tokens.access_token
-            TokenManager.shared.refreshToken = response.auth.tokens.refresh_token
-            
-            let userData = response.auth.user
-            let user = User(
-                user_id: userData.user_id,
-                nick_name: userData.nick_name,
-                first_name: nil,
-                last_name: nil,
-                middle_name: nil,
-                email: userData.email,
-                phone: nil,
-                avatar_url: nil,
-                bio: nil,
-                last_seen: nil,
-                is_online: false,
-                status: "active",
-                email_verified: false,
-                phone_verified: false,
-                is_admin: false,
-                created_at: userData.created_at,
-                updated_at: userData.updated_at
-            )
-            
+
+            let refreshResult = response.auth.refreshToken
+            let newAccessToken = refreshResult.accessToken
+            let newRefreshToken = refreshResult.refreshToken
+            let userData = refreshResult.user
+
+            print("✅ Session restored, new access token: \(newAccessToken.prefix(20))...")
+
             await MainActor.run {
-                self.currentUser = user
+                TokenManager.shared.accessToken = newAccessToken
+                TokenManager.shared.refreshToken = newRefreshToken
+
+                let user = User(
+                    user_id: userData.id,
+                    nick_name: userData.nickName,
+                    first_name: nil, last_name: nil, middle_name: nil,
+                    email: nil, phone: nil,
+                    avatar_url: nil, bio: nil,
+                    last_seen: nil, is_online: true,
+                    status: "active", email_verified: false, phone_verified: false,
+                    is_admin: false,
+                    created_at: Date(), updated_at: Date()
+                )
+
                 AppState.shared.currentUser = user
                 AppState.shared.login()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    WebSocketService.shared.connect(userId: user.id)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    ContactService.shared.syncContacts()
-                    ContactService.shared.syncPendingRequests()
-                }
+                WebSocketService.shared.connect(userId: user.id)
+
+                ContactService.shared.loadContacts()
+                ContactService.shared.loadPendingRequests()
             }
+            return true
         } catch {
-            print("Ошибка восстановления сессии: \(error)")
-            TokenManager.shared.clear()
+            print("Failed to restore session: \(error)")
+            return false
         }
     }
     
@@ -2551,11 +3009,6 @@ class AuthViewModel: ObservableObject {
     func logout() {
         WebSocketService.shared.disconnect()
         TokenManager.shared.clear()
-        currentUser = nil
-        nickname = ""
-        email = ""
-        phone = ""
-        password = ""
         AppState.shared.logout()
     }
     
@@ -2575,19 +3028,7 @@ class AuthViewModel: ObservableObject {
     }
     
     func hasSavedUser() -> Bool {
-        return TokenManager.shared.refreshToken != nil && keychainService.loadDeviceId() != nil
-    }
-    
-    @MainActor
-    private func setLoading(_ loading: Bool) {
-        isLoading = loading
-        if loading { errorMessage = nil }
-    }
-    
-    @MainActor
-    private func showError(_ message: String) {
-        errorMessage = message
-        isLoading = false
+        return TokenManager.shared.refreshToken != nil
     }
 }
 
@@ -2603,44 +3044,48 @@ class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
-    
+
     private let graphQL = GraphQLClient.shared
-    
+
     func loadChats() async {
+        guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
-        
         do {
             let response: ListChatsResponse = try await graphQL.perform(
                 query: GraphQLQueries.listChats,
                 variables: [:],
-                responseType: ListChatsResponse.self
+                responseType: ListChatsResponse.self,
+                authToken: TokenManager.shared.accessToken
             )
             let loadedChats = response.chat.list.map { chatResponse in
-                Chat(
+                // Преобразуем sender_id из String в UUID
+                let lastMessagePreview = chatResponse.last_message.flatMap { msg -> MessagePreview? in
+                    guard let senderId = UUID(uuidString: msg.sender_id.uuidString) else { return nil }
+                    return MessagePreview(
+                        message_id: Int64(msg.message_id),
+                        sender_id: senderId,
+                        type: msg.type,
+                        text_preview: msg.content,
+                        created_at: msg.created_at,
+                        is_deleted: false
+                    )
+                }
+                return Chat(
                     chat_id: chatResponse.chat_id,
                     chat_type: chatResponse.chat_type,
                     name: chatResponse.name,
-                    description: chatResponse.description,
-                    avatar_url: chatResponse.avatar_url,
-                    creator_id: chatResponse.creator_id,
-                    is_public: chatResponse.is_public,
+                    description: nil,
+                    avatar_url: nil,
+                    creator_id: nil,
+                    is_public: false,
                     max_members: 200,
                     created_at: chatResponse.created_at,
-                    updated_at: chatResponse.updated_at,
+                    updated_at: nil,
                     last_activity_at: chatResponse.created_at,
                     visibility: "PRIVATE",
                     join_policy: "INVITE_ONLY",
                     members_count: chatResponse.members_count,
-                    last_message_preview: chatResponse.last_message_preview.map { preview in
-                        MessagePreview(
-                            message_id: Int64(preview.message_id), // если preview.message_id Int, конвертируем
-                            sender_id: UUID(uuidString: preview.sender_id) ?? UUID(),
-                            type: preview.type,
-                            text_preview: preview.text_preview,
-                            created_at: preview.created_at,
-                            is_deleted: preview.is_deleted
-                        )
-                    }
+                    last_message_preview: lastMessagePreview
                 )
             }
             await MainActor.run {
@@ -2652,6 +3097,60 @@ class ChatListViewModel: ObservableObject {
                 self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
                 self.isLoading = false
             }
+        }
+    }
+
+    func createChat(name: String) async -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return false }
+
+        guard let currentUserId = AppState.shared.currentUser?.id.uuidString else {
+            await MainActor.run { errorMessage = "Пользователь не авторизован" }
+            return false
+        }
+
+        let variables: [String: Any] = [
+            "chatType": "group",
+            "name": trimmedName,
+            "memberIds": [currentUserId],
+            "isPublic": false
+        ]
+
+        do {
+            let response: CreateChatResponse = try await graphQL.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let created = response.chat.create
+            let newChat = Chat(
+                chat_id: created.chat_id,
+                chat_type: created.chat_type,
+                name: created.name,
+                description: nil,
+                avatar_url: nil,
+                creator_id: UUID(uuidString: currentUserId),
+                is_public: false,
+                max_members: 200,
+                created_at: created.created_at,
+                updated_at: created.updated_at,
+                last_activity_at: created.created_at,
+                visibility: "PRIVATE",
+                join_policy: "INVITE_ONLY",
+                members_count: created.members_count,
+                last_message_preview: nil
+            )
+            await MainActor.run {
+                self.chats.insert(newChat, at: 0)
+                self.errorMessage = nil
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+            }
+            return false
         }
     }
 }
@@ -2677,14 +3176,29 @@ class ChatSelectionViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
+                // ⬅️ ЭТА СТРОКА БЫЛА ПРОПУЩЕНА
                 let response: ListChatsResponse = try await graphQL.perform(
                     query: GraphQLQueries.listChats,
                     variables: [:],
                     responseType: ListChatsResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
+                
+                // Теперь response доступен
                 let loadedChats = response.chat.list.map { chatResponse in
-                    Chat(
+                    let lastMessagePreview = chatResponse.last_message.flatMap { msg -> MessagePreview? in
+                        guard let senderId = UUID(uuidString: msg.sender_id.uuidString) else { return nil }
+                        return MessagePreview(
+                            message_id: msg.message_id,
+                            sender_id: senderId,
+                            type: msg.type,
+                            text_preview: msg.content,
+                            created_at: msg.created_at,
+                            is_deleted: false
+                        )
+                    }
+                    
+                    return Chat(
                         chat_id: chatResponse.chat_id,
                         chat_type: chatResponse.chat_type,
                         name: chatResponse.name,
@@ -2692,29 +3206,21 @@ class ChatSelectionViewModel: ObservableObject {
                         avatar_url: chatResponse.avatar_url,
                         creator_id: chatResponse.creator_id,
                         is_public: chatResponse.is_public,
-                        max_members: 30,
+                        max_members: chatResponse.max_members ?? 200,
                         created_at: chatResponse.created_at,
-                        updated_at: chatResponse.updated_at,
-                        last_activity_at: chatResponse.created_at,       // или другое поле
-                        visibility: "PRIVATE",                          // дефолт или из chatResponse
-                        join_policy: "INVITE_ONLY",                     // дефолт или из chatResponse
-                        members_count: chatResponse.members_count ?? 0, // если есть
-                        last_message_preview: chatResponse.last_message_preview == nil ? nil :
-                            MessagePreview(
-                                message_id: Int64(chatResponse.last_message_preview!.message_id),
-                                sender_id: UUID(uuidString: chatResponse.last_message_preview!.sender_id) ?? UUID(),
-                                type: chatResponse.last_message_preview!.type,
-                                text_preview: chatResponse.last_message_preview!.text_preview,
-                                created_at: chatResponse.last_message_preview!.created_at,
-                                is_deleted: chatResponse.last_message_preview!.is_deleted
-                            )
+                        updated_at: nil,
+                        last_activity_at: chatResponse.created_at,
+                        visibility: "PRIVATE",
+                        join_policy: "INVITE_ONLY",
+                        members_count: chatResponse.members_count,
+                        last_message_preview: lastMessagePreview
                     )
                 }
+                
                 await MainActor.run {
                     self.chats = loadedChats
                     self.isLoading = false
                 }
-
             } catch {
                 await MainActor.run {
                     self.errorMessage = error.localizedDescription
@@ -2828,50 +3334,51 @@ import Combine
 
 class ChatViewModel: ObservableObject {
     @Published var messages: [Message] = []
-    @Published var newMessage = ""
+    @Published var newMessageText = ""
     @Published var isLoading = false
-    
+
     let chat: Chat
-    private let messageService = MessageService.shared
+    private let graphQL = GraphQLClient.shared
     private var cancellables = Set<AnyCancellable>()
-    
+
     init(chat: Chat) {
         self.chat = chat
         setupNotifications()
         loadMessages()
     }
-    
+
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .sink { [weak self] notification in
-                if let message = notification.object as? Message, message.chat_id == self?.chat.id {
-                    self?.addNewMessage(message)
+                if let msg = notification.object as? Message, msg.chat_id == self?.chat.id {
+                    self?.addMessage(msg)
                 }
             }
             .store(in: &cancellables)
     }
-    
-    private func loadMessages() {
+
+    func loadMessages() {
         Task {
             await MainActor.run { isLoading = true }
             do {
-                let response: ListMessagesResponse = try await GraphQLClient.shared.perform(
+                let response: ListMessagesResponse = try await graphQL.perform(
                     query: GraphQLQueries.listMessages,
                     variables: ["chat_id": chat.id.uuidString],
-                    responseType: ListMessagesResponse.self
+                    responseType: ListMessagesResponse.self,
+                    authToken: TokenManager.shared.accessToken
                 )
-                let loadedMessages = response.message.list_messages.map { msgResponse in
+                let loadedMessages = response.message.list_messages.map { gqlMsg in
                     Message(
-                        message_id: Int64(msgResponse.message_id),
-                        chat_id: msgResponse.chat_id,
-                        sender_id: msgResponse.sender_id,
+                        message_id: Int64(gqlMsg.message_id),
+                        chat_id: gqlMsg.chat_id,
+                        sender_id: gqlMsg.sender_id,
                         reply_to_id: nil,
-                        content: msgResponse.content,
-                        type: msgResponse.type,
-                        created_at: msgResponse.created_at,
-                        updated_at: msgResponse.updated_at,
+                        content: gqlMsg.content,
+                        type: gqlMsg.type,
+                        created_at: gqlMsg.created_at,
+                        updated_at: gqlMsg.updated_at,
                         deleted_at: nil,
-                        is_edited: msgResponse.is_edited
+                        is_edited: gqlMsg.is_edited
                     )
                 }
                 await MainActor.run {
@@ -2879,60 +3386,59 @@ class ChatViewModel: ObservableObject {
                     self.isLoading = false
                 }
             } catch {
-                await MainActor.run {
-                    self.isLoading = false
-                }
+                print("Load messages error: \(error)")
+                await MainActor.run { isLoading = false }
             }
         }
     }
-    
-    private func addNewMessage(_ message: Message) {
+
+    func sendMessage() {
+        let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty, let currentUserId = AppState.shared.currentUser?.id else { return }
+
+        Task {
+            do {
+                let response: SendMessageResponse = try await graphQL.perform(
+                    query: GraphQLQueries.sendMessage,
+                    variables: [
+                        "chat_id": chat.id.uuidString,
+                        "content": content
+                    ],
+                    responseType: SendMessageResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                let gqlMsg = response.message.send_message
+                let newMsg = Message(
+                    message_id: Int64(gqlMsg.message_id),
+                    chat_id: gqlMsg.chat_id,
+                    sender_id: gqlMsg.sender_id,
+                    reply_to_id: nil,
+                    content: gqlMsg.content,
+                    type: gqlMsg.type,
+                    created_at: gqlMsg.created_at,
+                    updated_at: gqlMsg.updated_at,
+                    deleted_at: nil,
+                    is_edited: gqlMsg.is_edited
+                )
+                await MainActor.run {
+                    self.messages.append(newMsg)
+                    self.newMessageText = ""
+                }
+            } catch {
+                print("Send error: \(error)")
+            }
+        }
+    }
+
+    private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
-            // обновление self.messages
             if !self.messages.contains(where: { $0.id == message.id }) {
                 self.messages.append(message)
                 self.messages.sort(by: { $0.created_at < $1.created_at })
             }
         }
     }
-    
-    func sendMessage() {
-        guard !newMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let currentUser = AppState.shared.currentUser else { return }
-        
-        let content = newMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        newMessage = ""
-        
-        Task {
-            do {
-                let response: SendMessageResponse = try await GraphQLClient.shared.perform(
-                    query: GraphQLQueries.sendMessage,
-                    variables: [
-                        "chat_id": chat.id.uuidString,
-                        "content": content
-                    ],
-                    responseType: SendMessageResponse.self
-                )
-                let sentMessage = response.message.send_message
-                let message = Message(
-                    message_id: Int64(sentMessage.message_id),
-                    chat_id: sentMessage.chat_id,
-                    sender_id: sentMessage.sender_id,
-                    reply_to_id: nil,
-                    content: sentMessage.content,
-                    type: sentMessage.type,
-                    created_at: sentMessage.created_at,
-                    updated_at: sentMessage.updated_at,
-                    deleted_at: nil,
-                    is_edited: sentMessage.is_edited
-                )
-                addNewMessage(message)
-            } catch {
-                print("Send message error: \(error)")
-            }
-        }
-    }
-    
+
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.id
     }
@@ -3080,82 +3586,304 @@ class SearchViewModel: ObservableObject {
 import SwiftUI
 
 struct LoginView: View {
+    @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel = AuthViewModel()
-    @EnvironmentObject var appState: AppState
-    
+    @State private var login = ""
+    @State private var password = ""
+
     var body: some View {
-        NavigationView {
-            VStack(spacing: 20) {
-                Spacer()
-                
-                VStack(spacing: 10) {
-                    Image(systemName: "lock.shield.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.blue)
-                    
-                    Text("Anonymous Messenger")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    
-                    Text("Secure end-to-end encrypted messaging")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.bottom, 40)
-                
-                VStack(spacing: 16) {
-                    TextField("Nickname", text: $viewModel.nickname)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                    
-                    TextField("Email", text: $viewModel.email)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .keyboardType(.emailAddress)
-                        .autocapitalization(.none)
-                    
-                    SecureField("Password", text: $viewModel.password)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                    
-                    Button(action: {
-                        Task { await viewModel.register() }
-                    }) {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 32) {
+                    // Заголовок
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 80))
+                            .foregroundColor(.blue)
+                        Text("Добро пожаловать")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Text("Войдите в свой аккаунт")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.top, 60)
+
+                    // Поля
+                    VStack(spacing: 20) {
+                        CustomTextField(icon: "person", placeholder: "Никнейм или email", text: $login)
+                        CustomSecureField(icon: "lock", placeholder: "Пароль", text: $password)
+                    }
+                    .padding(.horizontal, 24)
+
+                    // Кнопка входа
+                    Button {
+                        Task {
+                            let success = await viewModel.login(login: login, password: password)
+                            if success {
+                                        dismiss()       
+                            }
+                        }
+                    } label: {
                         if viewModel.isLoading {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.blue)
+                                .cornerRadius(30)
                         } else {
-                            Text("Start Messaging")
+                            Text("Войти")
                                 .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(30)
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(viewModel.canRegister ? Color.blue : Color.gray)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-                    .disabled(!viewModel.canRegister || viewModel.isLoading)
+                    .padding(.horizontal, 24)
+                    .disabled(viewModel.isLoading)
+
+                    if let error = viewModel.errorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+
+                    Spacer()
+
+                    Button("Нет аккаунта? Зарегистрироваться") {
+                        dismiss()
+                    }
+                    .padding(.bottom, 30)
                 }
-                .padding(.horizontal)
-                
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .foregroundColor(.red)
-                        .font(.caption)
-                }
-                
-                Spacer()
             }
-            .padding()
-            .navigationBarHidden(true)
         }
+        .navigationBarHidden(true)
+    }
+}
+
+struct CustomTextField: View {
+    let icon: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(.gray)
+                .frame(width: 24)
+            TextField(placeholder, text: $text)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+    }
+}
+
+struct CustomSecureField: View {
+    let icon: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(.gray)
+                .frame(width: 24)
+            SecureField(placeholder, text: $text)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
     }
 }
 
 ./FrontDip/MessengerApp/Views/Auth/RegisterView.swift
 
+import SwiftUI
+
+struct RegisterView: View {
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var viewModel = AuthViewModel()
+    @State private var nickname = ""
+    @State private var email = ""
+    @State private var phone = ""
+    @State private var password = ""
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 28) {
+                    // Заголовок
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.badge.plus")
+                            .font(.system(size: 70))
+                            .foregroundColor(.green)
+                        Text("Создать аккаунт")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Text("Начните общаться безопасно")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.top, 50)
+
+                    // Поля
+                    VStack(spacing: 16) {
+                        CustomTextField(icon: "person", placeholder: "Никнейм", text: $nickname)
+                        CustomTextField(icon: "envelope", placeholder: "Email", text: $email)
+                        CustomTextField(icon: "phone", placeholder: "Телефон (опционально)", text: $phone)
+                        CustomSecureField(icon: "lock", placeholder: "Пароль", text: $password)
+                    }
+                    .padding(.horizontal, 24)
+
+                    // Кнопка регистрации
+                    Button {
+                        Task {
+                            let success = await viewModel.register(
+                                                nickname: nickname,
+                                                email: email,
+                                                password: password,
+                                                phone: phone
+                                            )
+                            if success {
+                                        dismiss()          // ← добавить
+                                }
+                        }
+                    } label: {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.green)
+                                .cornerRadius(30)
+                        } else {
+                            Text("Зарегистрироваться")
+                                .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(Color.green)
+                                .foregroundColor(.white)
+                                .cornerRadius(30)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .disabled(viewModel.isLoading)
+
+                    if let error = viewModel.errorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+
+                    Spacer()
+
+                    Button("Уже есть аккаунт? Войти") {
+                        dismiss()
+                    }
+                    .padding(.bottom, 30)
+                }
+            }
+        }
+        .navigationBarHidden(true)
+    }
+}
 
 ./FrontDip/MessengerApp/Views/Auth/WelcomeView.swift
 
+import SwiftUI
+
+struct WelcomeView: View {
+    @State private var showLogin = false
+    @State private var showRegister = false
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(colors: [Color.blue.opacity(0.7), Color.purple.opacity(0.9)]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 50) {
+                Spacer()
+
+                VStack(spacing: 16) {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 80))
+                        .foregroundColor(.white)
+                    Text("SocketUp")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                    Text("Защищённый мессенджер")
+                        .font(.headline)
+                        .foregroundColor(.white.opacity(0.9))
+                }
+
+                Spacer()
+
+                VStack(spacing: 20) {
+                    Button {
+                        withAnimation(.spring()) {
+                            showLogin = true
+                        }
+                    } label: {
+                        Text("Вход")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.white)
+                            .foregroundColor(.blue)
+                            .cornerRadius(30)
+                            .shadow(color: .black.opacity(0.1), radius: 5)
+                    }
+
+                    Button {
+                        withAnimation(.spring()) {
+                            showRegister = true
+                        }
+                    } label: {
+                        Text("Регистрация")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.white.opacity(0.3))
+                            .foregroundColor(.white)
+                            .cornerRadius(30)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 30)
+                                    .stroke(Color.white, lineWidth: 1)
+                            )
+                    }
+                }
+                .padding(.horizontal, 32)
+
+                Spacer()
+            }
+        }
+        .fullScreenCover(isPresented: $showLogin) {
+            LoginView()
+        }
+        .fullScreenCover(isPresented: $showRegister) {
+            RegisterView()
+        }
+    }
+}
 
 ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 
@@ -3302,335 +4030,151 @@ struct ContactSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 
+// Views/Chat/ChatListView.swift
+
 import SwiftUI
-import CryptoKit
 
 struct ChatListView: View {
     @StateObject private var viewModel = ChatListViewModel()
-    @EnvironmentObject var appState: AppState
-    @StateObject private var authViewModel = AuthViewModel()
-    @StateObject private var contactService = ContactService.shared
-    
+    @State private var showMenu = false
+    @State private var showCreateChat = false
     @State private var newChatName = ""
-    @State private var isLoadingChat = false
-    @State private var showInviteSheet = false
-    @State private var inviteKey: String?
-    
-    @State private var showSideMenu = false
-    @State private var showCreateChatAlert = false
-    @State private var showJoinChatAlert = false
-    @State private var joinChatKey = ""
-    
-    @State private var showingSearchView = false
-    @State private var showingContactsView = false
-    @State private var showingNotificationsView = false
-    @State private var notificationData: NotificationData?
-    
+    @State private var isCreating = false
+
     var body: some View {
         ZStack {
             NavigationView {
-                chatListContent
-            }
-            .blur(radius: showSideMenu ? 3 : 0)
-            .disabled(showSideMenu)
-            
-            SideMenuView(
-                authViewModel: authViewModel,
-                isShowing: $showSideMenu,
-                showSearchView: $showingSearchView,
-                showContactsView: $showingContactsView,
-                showNotificationsView: $showingNotificationsView
-            )
-            .environmentObject(appState)
-            .environmentObject(contactService)
-        }
-        .onAppear {
-            setupNotificationObserver()
-            Task {
-                await viewModel.loadChats()
-                contactService.loadContacts()
-                contactService.loadPendingRequests()
-            }
-        }
-        .sheet(isPresented: $showingSearchView) {
-            SearchView()
-                .environmentObject(contactService)
-        }
-        .sheet(isPresented: $showingContactsView) {
-            ContactsView()
-                .environmentObject(contactService)
-        }
-        .sheet(isPresented: $showingNotificationsView) {
-            NotificationsView()
-                .environmentObject(contactService)
-        }
-        .notificationAlert(notificationData: $notificationData)
-        .createChatAlert(
-            showCreateChatAlert: $showCreateChatAlert,
-            newChatName: $newChatName,
-            createChat: createChat
-        )
-        .joinChatAlert(
-            showJoinChatAlert: $showJoinChatAlert,
-            joinChatKey: $joinChatKey,
-            joinChat: joinChat
-        )
-        .inviteSheet(showInviteSheet: $showInviteSheet, inviteKey: inviteKey)
-    }
-    
-    private var chatListContent: some View {
-        Group {
-            if viewModel.isLoading && viewModel.chats.isEmpty {
-                LoadingView()
-            } else if viewModel.chats.isEmpty {
-                emptyStateView
-            } else {
-                List(viewModel.chats) { chat in
-                    NavigationLink(destination: ChatView(chat: chat)) {
-                        ChatRow(chat: chat)
-                    }
-                }
-                .listStyle(PlainListStyle())
-            }
-        }
-        .navigationTitle("Чаты")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: { showCreateChatAlert = true }) {
-                    Image(systemName: "square.and.pencil")
-                }
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: { withAnimation(.spring()) { showSideMenu = true } }) {
-                    ZStack(alignment: .topTrailing) {
-                        Circle()
-                            .fill(Color.blue.opacity(0.8))
-                            .frame(width: 32, height: 32)
-                            .overlay(
-                                Text(authViewModel.currentUser?.nick_name.prefix(1).uppercased() ?? "?")
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.white)
-                            )
-                        if !contactService.pendingRequests.isEmpty {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 12, height: 12)
-                                .overlay(
-                                    Text("\(contactService.pendingRequests.count)")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .foregroundColor(.white)
-                                )
-                                .offset(x: 4, y: -4)
+                mainContent
+                    .navigationTitle("Чаты")
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button {
+                                withAnimation(.spring()) { showMenu.toggle() }
+                            } label: {
+                                Image(systemName: "line.horizontal.3")
+                                    .font(.title2)
+                            }
+                        }
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button {
+                                showCreateChat = true
+                            } label: {
+                                Image(systemName: "square.and.pencil")
+                            }
                         }
                     }
+            }
+            .disabled(showMenu)
+            .blur(radius: showMenu ? 5 : 0)
+
+            SideMenuView(isShowing: $showMenu)
+                .environmentObject(viewModel)
+        }
+        .onAppear {
+            Task {
+                await viewModel.loadChats() }
+        }
+        .alert("Новый чат", isPresented: $showCreateChat) {
+            TextField("Название", text: $newChatName)
+            Button("Отмена", role: .cancel) {
+                newChatName = ""
+                isCreating = false
+            }
+            Button("Создать") {
+                isCreating = true
+                Task {
+                    await createChat()
+                    isCreating = false
+                    showCreateChat = false
                 }
             }
+            .disabled(newChatName.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
+        } message: {
+            Text("Введите название группового чата")
         }
-        .refreshable {
-            await viewModel.loadChats()
-        }
-    }
-    
-    private struct ChatRow: View {
-        let chat: Chat
-        
-        var body: some View {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(chat.name ?? "Без названия")
-                    .font(.headline)
-                Text("\(chat.members_count) участников")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(formatDate(chat.created_at))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.vertical, 8)
-        }
-        
-        private func formatDate(_ date: Date) -> String {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .medium
-            formatter.timeStyle = .none
-            formatter.locale = Locale(identifier: "ru_RU")
-            return formatter.string(from: date)
+        .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
         }
     }
-    
-    private var emptyStateView: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 70))
-                .foregroundColor(.gray.opacity(0.5))
-            VStack(spacing: 8) {
+
+    @ViewBuilder
+    private var mainContent: some View {
+        if viewModel.isLoading && viewModel.chats.isEmpty {
+            LoadingView()
+        } else if viewModel.chats.isEmpty {
+            VStack(spacing: 24) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
                 Text("Нет чатов")
                     .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Создайте первый чат или присоединитесь к существующему")
-                    .font(.body)
-                    .foregroundColor(.secondary)
+                Text("Создайте первый чат или присоединитесь по приглашению")
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-            }
-            VStack(spacing: 12) {
-                Button(action: { showCreateChatAlert = true }) {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Создать чат")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+                Button("Создать чат") {
+                    showCreateChat = true
                 }
-                .padding(.horizontal, 40)
-                Button(action: { showJoinChatAlert = true }) {
-                    HStack {
-                        Image(systemName: "person.badge.plus")
-                        Text("Присоединиться к чату")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green)
-                    .foregroundColor(.white)
-                    .cornerRadius(12)
-                }
-                .padding(.horizontal, 40)
+                .buttonStyle(.borderedProminent)
             }
-            .padding(.top, 20)
-            Spacer()
+        } else {
+            List(viewModel.chats) { chat in
+                NavigationLink(destination: ChatView(chat: chat)) {
+                    ChatRow(chat: chat)
+                }
+            }
+            .listStyle(PlainListStyle())
+            .refreshable {
+                await viewModel.loadChats()
+            }
         }
     }
-    
+
     private func createChat() async {
-        guard let currentUser = appState.currentUser ?? authViewModel.currentUser else {
-            viewModel.errorMessage = "Пользователь не авторизован"
-            return
-        }
-        let chatNameTrimmed = newChatName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !chatNameTrimmed.isEmpty else { return }
-        
-        isLoadingChat = true
-        
-        let variables: [String: Any] = [
-            "chatType": "group",
-            "name": chatNameTrimmed,
-            "memberIds": [currentUser.id.uuidString],
-            "isPublic": false
-        ]
-        
-        do {
-            let response: CreateChatResponse = try await GraphQLClient.shared.perform(
-                query: GraphQLQueries.createChat,
-                variables: variables,
-                responseType: CreateChatResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            let newChat = response.chat.create
-            
-            // Генерация ключа чата (опционально)
-            let cryptoService = CryptoService.shared
-            let keychainService = KeychainService.shared
-            let chatKey = cryptoService.generateSymmetricKey()
-            if let publicKeyData = keychainService.loadPublicKey(userId: currentUser.id) {
-                let publicKey = try P256.KeyAgreement.PublicKey(rawRepresentation: publicKeyData)
-                let encryptedChatKey = try cryptoService.encryptSymmetricKey(chatKey, with: publicKey)
-                _ = keychainService.saveChatKey(encryptedChatKey, chatId: newChat.chat_id)
-                let chatKeyData = cryptoService.symmetricKeyToData(chatKey)
-                ChatKeyManager.shared.saveChatKey(chatKeyData, for: newChat.chat_id)
-            }
-            
-            await MainActor.run {
-                isLoadingChat = false
-                inviteKey = newChat.chat_id.uuidString
-                showInviteSheet = true
-                newChatName = ""
-                Task { await viewModel.loadChats() }
-            }
-        } catch {
-            await MainActor.run {
-                isLoadingChat = false
-                viewModel.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
-            }
-        }
-    }
-    
-    private func joinChat() {
-        // TODO: реализовать присоединение по inviteKey
-        print("Присоединяемся к чату с ключом: \(joinChatKey)")
-        joinChatKey = ""
-    }
-    
-    private func setupNotificationObserver() {
-        NotificationCenter.default.addObserver(
-            forName: .showNotification,
-            object: nil,
-            queue: .main
-        ) { notification in
-            if let data = notification.object as? NotificationData {
-                notificationData = data
-            }
+        let success = await viewModel.createChat(name: newChatName)
+        if success {
+            newChatName = ""
         }
     }
 }
 
-// MARK: - View Modifiers (оставляем как есть)
-extension View {
-    func notificationAlert(notificationData: Binding<NotificationData?>) -> some View {
-        self.alert(
-            notificationData.wrappedValue?.type.title ?? "Уведомление",
-            isPresented: .constant(notificationData.wrappedValue != nil)
-        ) {
-            Button("OK") { notificationData.wrappedValue = nil }
-        } message: {
-            if let message = notificationData.wrappedValue?.message {
-                Text(message)
+struct ChatRow: View {
+    let chat: Chat
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color.blue.opacity(0.2))
+                .frame(width: 50, height: 50)
+                .overlay(
+                    Text((chat.name?.prefix(1).uppercased() ?? "?"))
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.blue)
+                )
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chat.name ?? "Чат")
+                    .font(.headline)
+                Text(chat.last_message_preview?.text_preview ?? "Нет сообщений")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
+            Spacer()
+            Text(formatDate(chat.updated_at ?? DateFormatter().date(from: "2026-05-21") ?? Date()))
+
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
+        .padding(.vertical, 8)
     }
-    
-    func createChatAlert(
-        showCreateChatAlert: Binding<Bool>,
-        newChatName: Binding<String>,
-        createChat: @escaping () async -> Void
-    ) -> some View {
-        self.alert("Создать чат", isPresented: showCreateChatAlert) {
-            TextField("Название чата", text: newChatName)
-            Button("Отмена", role: .cancel) { newChatName.wrappedValue = "" }
-            Button("Создать") {
-                Task { await createChat() }
-            }
-            .disabled(newChatName.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите название для нового чата")
-        }
-    }
-    
-    func joinChatAlert(
-        showJoinChatAlert: Binding<Bool>,
-        joinChatKey: Binding<String>,
-        joinChat: @escaping () -> Void
-    ) -> some View {
-        self.alert("Присоединиться к чату", isPresented: showJoinChatAlert) {
-            TextField("Ключ приглашения", text: joinChatKey)
-            Button("Отмена", role: .cancel) { joinChatKey.wrappedValue = "" }
-            Button("Присоединиться") { joinChat() }
-                .disabled(joinChatKey.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        } message: {
-            Text("Введите ключ приглашения для присоединения к чату")
-        }
-    }
-    
-    func inviteSheet(showInviteSheet: Binding<Bool>, inviteKey: String?) -> some View {
-        self.sheet(isPresented: showInviteSheet) {
-            if let inviteKey = inviteKey {
-                InviteShareView(inviteKey: inviteKey)
-            }
-        }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
@@ -3784,55 +4328,42 @@ struct ChatView: View {
     let chat: Chat
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
-    @State private var showChatSidebar = false
-    
+
     init(chat: Chat) {
         self.chat = chat
         _viewModel = StateObject(wrappedValue: ChatViewModel(chat: chat))
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок чата
+            // Кастомный заголовок
             HStack {
-                Button(action: {
+                Button {
                     presentationMode.wrappedValue.dismiss()
-                }) {
+                } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.title2)
                         .foregroundColor(.blue)
                 }
-                
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(chat.name ?? "Чат")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Text("\(chat.members_count) участников")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                }
-                
                 Spacer()
-                
-                Button(action: {
-                    showChatSidebar = true
-                }) {
+                Text(chat.name ?? "Чат")
+                    .font(.headline)
+                Spacer()
+                NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
-                        .font(.system(size: 20))
+                        .font(.title2)
                         .foregroundColor(.blue)
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 12)
+            .padding()
             .background(Color(.systemBackground))
-            
-            // Сообщения
+
+            // Список сообщений
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 12) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubbleView(
+                            MessageBubble(
                                 message: message,
                                 isCurrentUser: viewModel.isCurrentUser(senderId: message.sender_id)
                             )
@@ -3840,51 +4371,67 @@ struct ChatView: View {
                         }
                     }
                     .padding(.horizontal)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 12)
                 }
                 .onChange(of: viewModel.messages.count) { _ in
-                    if let lastMessage = viewModel.messages.last {
+                    if let last = viewModel.messages.last {
                         withAnimation {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
             }
             .background(Color(.systemGroupedBackground))
-            
+
             // Поле ввода
             HStack(spacing: 12) {
-                Button(action: {
-                    // Прикрепление файла
-                }) {
-                    Image(systemName: "paperclip")
-                        .font(.system(size: 20))
-                        .foregroundColor(.gray)
-                }
-                
-                TextField("Сообщение", text: $viewModel.newMessage)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                TextField("Сообщение", text: $viewModel.newMessageText)
+                    .padding(12)
                     .background(Color(.systemGray6))
-                    .cornerRadius(18)
-                
-                Button(action: {
+                    .cornerRadius(25)
+                Button {
                     viewModel.sendMessage()
-                }) {
+                } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 32))
-                        .foregroundColor(viewModel.newMessage.isEmpty ? .gray : .blue)
+                        .foregroundColor(viewModel.newMessageText.isEmpty ? .gray : .blue)
                 }
-                .disabled(viewModel.newMessage.isEmpty)
+                .disabled(viewModel.newMessageText.isEmpty)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            .padding()
             .background(Color(.systemBackground))
         }
         .navigationBarHidden(true)
-        .sheet(isPresented: $showChatSidebar) {
-            ChatSidebarView(chat: chat)
+    }
+}
+
+struct MessageBubble: View {
+    let message: Message
+    let isCurrentUser: Bool
+
+    var body: some View {
+        HStack {
+            if isCurrentUser { Spacer() }
+            VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
+                Text(message.content ?? "")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(20)
+                Text(formatTime(message.created_at))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            if !isCurrentUser { Spacer() }
         }
+        .padding(.horizontal, 8)
+    }
+
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 }
 
@@ -4108,260 +4655,101 @@ struct SearchResultRow: View {
 
 ./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
 
-// ./FrontDip/MessengerApp/Views/Common/SideMenuView.swift
 import SwiftUI
 
 struct SideMenuView: View {
-    @EnvironmentObject var appState: AppState
-        @EnvironmentObject var contactService: ContactService
-        @ObservedObject var authViewModel: AuthViewModel
-        @Binding var isShowing: Bool
-    
-    // Новые binding переменные для управления показами View
-    @Binding var showSearchView: Bool
-    @Binding var showContactsView: Bool
-    @Binding var showNotificationsView: Bool
-    
-    @State private var showWipeAlert = false
+    @Binding var isShowing: Bool
+    @EnvironmentObject var viewModel: ChatListViewModel
+    @StateObject private var authVM = AuthViewModel()
     @State private var showLogoutAlert = false
-    
-    // Для анимации
-    @State private var offset: CGFloat = UIScreen.main.bounds.width
-    @State private var opacity: Double = 0
-    
+
     var body: some View {
         ZStack {
-            // Полупрозрачный фон
             if isShowing {
-                Color.black
-                    .opacity(0.3)
+                Color.black.opacity(0.3)
                     .ignoresSafeArea()
                     .onTapGesture {
-                        withAnimation(.spring()) {
-                            isShowing = false
-                        }
+                        withAnimation { isShowing = false }
                     }
-                    .transition(.opacity)
-            }
-            
-            // Само меню
-            HStack {
-                Spacer()
-                
-                VStack(alignment: .leading, spacing: 0) {
-                    // Заголовок с аватаркой
-                    VStack(alignment: .leading, spacing: 12) {
-                        Circle()
-                            .fill(Color.blue.opacity(0.8))
-                            .frame(width: 60, height: 60)
-                            .overlay(
-                                Text(authViewModel.currentUser?.nick_name.prefix(1).uppercased() ?? "?")
-                                    .font(.title)
-                                    .fontWeight(.bold)
-                                    .foregroundColor(.white)
-                            )
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(authViewModel.currentUser?.nick_name ?? "Пользователь")
+                HStack {
+                    Spacer()
+                    VStack(alignment: .leading, spacing: 24) {
+                        // Профиль
+                        VStack(alignment: .leading, spacing: 12) {
+                            Circle()
+                                .fill(Color.blue.opacity(0.2))
+                                .frame(width: 60, height: 60)
+                                .overlay(
+                                    Text((authVM.currentUser?.nick_name.prefix(1).uppercased() ?? "U"))
+                                        .font(.title)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.blue)
+                                )
+                            Text(authVM.currentUser?.nick_name ?? "Пользователь")
                                 .font(.title2)
                                 .fontWeight(.semibold)
-                            
-                            if let userId = authViewModel.currentUser?.id {
-                                Text("ID: \(userId.uuidString.prefix(8))...")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
+                            Text("ID: \(authVM.currentUser?.id.uuidString.prefix(8) ?? "")...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
+                        .padding(.bottom, 20)
+
+                        // Пункты меню
+                        MenuItem(icon: "person.2.fill", title: "Контакты") {
+                            // показать ContactsView
+                        }
+                        MenuItem(icon: "magnifyingglass", title: "Поиск") {
+                            // показать SearchView
+                        }
+                        MenuItem(icon: "bell.fill", title: "Уведомления") {
+                            // показать NotificationsView
+                        }
+                        Divider()
+                        MenuItem(icon: "rectangle.portrait.and.arrow.right", title: "Выйти", isDestructive: true) {
+                            showLogoutAlert = true
+                        }
+
+                        Spacer()
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 60)
-                    .padding(.bottom, 32)
-                    
-                    // Пункты меню
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            MenuItem(
-                                icon: "magnifyingglass",
-                                title: "Поиск",
-                                color: .blue
-                            ) {
-                                showSearchView = true
-                                withAnimation(.spring()) {
-                                    isShowing = false
-                                }
-                            }
-                            
-                            MenuItem(
-                                icon: "person.2.fill",
-                                title: "Контакты",
-                                color: .green,
-                                badgeCount: contactService.contacts.count
-                            ) {
-                                // Показываем ContactsView
-                                showContactsView = true
-                                isShowing = false
-                            }
-
-                            MenuItem(
-                                icon: "bell.fill",
-                                title: "Уведомления",
-                                color: .orange,
-                                badgeCount: contactService.pendingRequests.count
-                            ) {
-                                // Показываем NotificationsView
-                                showNotificationsView = true
-                                isShowing = false
-                            }
-                            
-                            Divider()
-                                .padding(.vertical, 12)
-                                .padding(.horizontal, 24)
-                            
-                            MenuItem(
-                                icon: "gear",
-                                title: "Настройки",
-                                color: .gray
-                            ) {
-                                // TODO: Реализовать настройки
-                                print("Настройки")
-                                withAnimation(.spring()) {
-                                    isShowing = false
-                                }
-                            }
-                            
-                            Divider()
-                                .padding(.vertical, 12)
-                                .padding(.horizontal, 24)
-                            
-                            MenuItem(
-                                icon: "rectangle.portrait.and.arrow.right",
-                                title: "Выйти",
-                                color: .orange,
-                                isDestructive: false
-                            ) {
-                                showLogoutAlert = true
-                            }
-                            
-                            MenuItem(
-                                icon: "trash",
-                                title: "Очистить все",
-                                color: .red,
-                                isDestructive: true
-                            ) {
-                                showWipeAlert = true
-                            }
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    // Версия приложения
-                    Text("Версия 1.0.0")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.bottom, 20)
+                    .frame(width: UIScreen.main.bounds.width * 0.8)
+                    .background(Color(.systemBackground))
+                    .transition(.move(edge: .trailing))
                 }
-                .frame(width: UIScreen.main.bounds.width * 0.9)
-                .background(Color(.systemBackground))
-                .offset(x: offset)
-                .shadow(color: Color.black.opacity(0.1), radius: 5, x: -3, y: 0)
-            }
-            .ignoresSafeArea()
-        }
-        .onChange(of: isShowing) { newValue in
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                offset = newValue ? 0 : UIScreen.main.bounds.width
-                opacity = newValue ? 1 : 0
             }
         }
-        .onAppear {
-            offset = UIScreen.main.bounds.width
-            opacity = 0
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.1)) {
-                offset = isShowing ? 0 : UIScreen.main.bounds.width
-                opacity = isShowing ? 1 : 0
-            }
-        }
-        .alert("Выйти из аккаунта", isPresented: $showLogoutAlert) {
+        .animation(.spring(), value: isShowing)
+        .alert("Выход", isPresented: $showLogoutAlert) {
             Button("Отмена", role: .cancel) { }
             Button("Выйти", role: .destructive) {
-                authViewModel.logout()
-                withAnimation(.spring()) {
-                    isShowing = false
-                }
+                authVM.logout()
+                isShowing = false
             }
         } message: {
-            Text("Вы уверены, что хотите выйти из аккаунта? Ваши чаты останутся сохраненными.")
-        }
-        .alert("Очистить все данные", isPresented: $showWipeAlert) {
-            Button("Отмена", role: .cancel) { }
-            Button("Очистить", role: .destructive) {
-                authViewModel.wipeAllData()
-                withAnimation(.spring()) {
-                    isShowing = false
-                }
-            }
-        } message: {
-            Text("Все данные будут удалены: аккаунт, чаты, сообщения. Это действие нельзя отменить.")
+            Text("Вы уверены, что хотите выйти?")
         }
     }
 }
 
-// Компонент пункта меню
 struct MenuItem: View {
     let icon: String
     let title: String
-    let color: Color
-    let isDestructive: Bool
-    let badgeCount: Int?
+    var isDestructive = false
     let action: () -> Void
-    
-    init(icon: String, title: String, color: Color, isDestructive: Bool = false,
-         badgeCount: Int? = nil, action: @escaping () -> Void) {
-        self.icon = icon
-        self.title = title
-        self.color = color
-        self.isDestructive = isDestructive
-        self.badgeCount = badgeCount
-        self.action = action
-    }
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 16) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
-                    .frame(width: 24, height: 24)
-                    .foregroundColor(isDestructive ? .red : color)
-                
+                    .frame(width: 24)
+                    .foregroundColor(isDestructive ? .red : .blue)
                 Text(title)
-                    .font(.body)
                     .foregroundColor(isDestructive ? .red : .primary)
-                
                 Spacer()
-                
-                // Отображаем бейдж если есть
-                if let count = badgeCount, count > 0 {
-                    Text("\(count)")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.red)
-                        .foregroundColor(.white)
-                        .clipShape(Capsule())
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
+            .padding(.vertical, 12)
         }
-        .background(Color(.systemBackground))
-        .contentShape(Rectangle())
     }
 }
 

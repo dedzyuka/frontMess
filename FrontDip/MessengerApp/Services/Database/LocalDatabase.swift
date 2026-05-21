@@ -22,7 +22,7 @@ class LocalDatabase {
     private let chatIsPublic = Expression<Bool>("is_public")
     private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatUpdatedAt = Expression<Date>("updated_at")
+    private let chatUpdatedAt = Expression<Date?>("updated_at")
     private let chatLastActivityAt = Expression<Date?>("last_activity_at")
     private let chatVisibility = Expression<String>("visibility")
     private let chatJoinPolicy = Expression<String>("join_policy")

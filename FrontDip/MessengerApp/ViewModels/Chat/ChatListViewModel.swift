@@ -9,6 +9,7 @@ class ChatListViewModel: ObservableObject {
     private let graphQL = GraphQLClient.shared
 
     func loadChats() async {
+        guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
         do {
             let response: ListChatsResponse = try await graphQL.perform(
@@ -19,14 +20,14 @@ class ChatListViewModel: ObservableObject {
             )
             let loadedChats = response.chat.list.map { chatResponse in
                 // Преобразуем sender_id из String в UUID
-                let lastMessagePreview = chatResponse.last_message_preview.flatMap { preview -> MessagePreview? in
-                    guard let senderId = UUID(uuidString: preview.sender_id) else { return nil }
+                let lastMessagePreview = chatResponse.last_message.flatMap { msg -> MessagePreview? in
+                    guard let senderId = UUID(uuidString: msg.sender_id.uuidString) else { return nil }
                     return MessagePreview(
-                        message_id: Int64(preview.message_id),
+                        message_id: Int64(msg.message_id),
                         sender_id: senderId,
-                        type: "text",
-                        text_preview: preview.text_preview,
-                        created_at: preview.created_at,
+                        type: msg.type,
+                        text_preview: msg.content,
+                        created_at: msg.created_at,
                         is_deleted: false
                     )
                 }
@@ -40,7 +41,7 @@ class ChatListViewModel: ObservableObject {
                     is_public: false,
                     max_members: 200,
                     created_at: chatResponse.created_at,
-                    updated_at: chatResponse.updated_at,
+                    updated_at: nil,
                     last_activity_at: chatResponse.created_at,
                     visibility: "PRIVATE",
                     join_policy: "INVITE_ONLY",

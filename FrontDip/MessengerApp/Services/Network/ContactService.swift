@@ -129,6 +129,7 @@ class ContactService: ObservableObject {
     // MARK: - Local
     
     func loadContacts() {
+        guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
                 let fetched = try await fetchContacts()
@@ -140,6 +141,7 @@ class ContactService: ObservableObject {
     }
     
     func loadPendingRequests() {
+        guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
                 let fetched = try await fetchIncomingRequests()

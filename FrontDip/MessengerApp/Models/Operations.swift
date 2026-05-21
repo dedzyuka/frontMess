@@ -3,60 +3,57 @@ import Foundation
 struct GraphQLQueries {
     // MARK: - Users
     static let createUser = """
-    mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String!) {
-        user {
-            create(nickName: $nickName, email: $email, password: $password, phone: $phone) {
-                userId
-                nickName
-                email
-                createdAt
-                updatedAt
+        mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) {
+            user {
+                createUser(nickName: $nickName, email: $email, password: $password, phone: $phone) {
+                                            id
+                                            userId
+                                            nickName
+                                            
+        
+                }
             }
         }
-    }
-    """
+        """
     
     static let login = """
-    mutation Login($login: String!, $password: String!) {
-        auth {
-            login(login: $login, password: $password) {
-                tokens {
+        mutation Login($login: String!, $password: String!) {
+            auth {
+                login(login: $login, password: $password) {
                     accessToken
                     refreshToken
                     expiresIn
-                }
-                user {
-                    userId
-                    nickName
-                    email
-                    createdAt
-                    updatedAt
+                    user {
+                        id
+                        userId
+                        nickName
+                        
+                    }
                 }
             }
         }
-    }
-    """
+        """
     
     static let refreshToken = """
-    mutation RefreshToken($refreshToken: String!) {
-        auth {
-            refreshToken(refreshToken: $refreshToken) {
-                tokens {
+        mutation RefreshToken($refreshToken: String!) {
+            auth {
+                refreshToken(refreshToken: $refreshToken) {
                     accessToken
                     refreshToken
                     expiresIn
-                }
-                user {
-                    userId
-                    nickName
-                    email
-                    createdAt
-                    updatedAt
+                    user {
+                                                id
+                                                nickName
+                                                email
+                                                createdAt
+                                                updatedAt
+                                                avatarUrl
+                                                isOnline
+                    }
                 }
             }
         }
-    }
-    """
+        """
     
     // MARK: - Chats
     static let listChats = """
@@ -70,16 +67,14 @@ struct GraphQLQueries {
                 avatarUrl
                 creatorId
                 isPublic
+                maxMembers
                 membersCount
                 createdAt
-                updatedAt
-                lastMessagePreview {
+                lastMessage {
                     messageId
                     senderId
-                    type
-                    textPreview
+                    content
                     createdAt
-                    isDeleted
                 }
             }
         }
@@ -245,32 +240,74 @@ struct GraphQLQueries {
 // MARK: - Response Models
 
 // User
-struct CreateUserResponse: Decodable {
-    let user: UserResponseWrapper
+
+struct CreateUserData: Decodable {
+    let user: CreateUserResult
+}
+struct CreateUserResult: Decodable {
+    let id: UUID
+    let nickName: String
 }
 struct UserResponseWrapper: Decodable {
     let create: UserData
 }
 struct UserData: Decodable {
-    let user_id: UUID
-    let nick_name: String
-    let email: String?
-    let created_at: Date
-    let updated_at: Date
+    let id: UUID
+    let userId: UUID
+    let nickName: String
+}
+// MARK: - Login Response
+struct LoginResponse: Decodable {
+    let auth: AuthLogin
+}
+struct AuthLogin: Decodable {
+    let login: LoginResult
 }
 
-// Auth
-struct LoginResponse: Decodable {
-    let auth: AuthResult
+struct LoginData: Decodable {
+    let auth: AuthLogin
 }
-struct AuthResult: Decodable {
-    let tokens: Tokens
+
+
+struct LoginResult: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresIn: Int
     let user: UserData
 }
+
+// MARK: - Refresh Response
+struct RefreshResponse: Decodable {
+    let auth: AuthRefresh
+}
+struct AuthRefresh: Decodable {
+    let refreshToken: RefreshResult
+}
+
+struct RefreshResult: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresIn: Int
+    let user: UserData
+}
+struct CreateUserResponse: Decodable {
+    let user: CreateUserResult   // или сразу User, смотри по реальному ответу
+}
+
+// MARK: - User (camelCase, как отдаёт сервер)
+
+// Auth
+
 struct Tokens: Decodable {
     let access_token: String
     let refresh_token: String
     let expires_in: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case access_token = "accessToken"
+        case refresh_token = "refreshToken"
+        case expires_in = "expiresIn"
+    }
 }
 
 // Chat list
@@ -288,10 +325,10 @@ struct ChatResponse: Decodable {
     let avatar_url: String?
     let creator_id: UUID?
     let is_public: Bool
+    let max_members: Int          // ← добавить (если нужно)
     let members_count: Int
     let created_at: Date
-    let updated_at: Date
-    let last_message_preview: MessagePreviewResponse?
+    let last_message: MessageResponse?   // ← заменили
 }
 struct MessagePreviewResponse: Decodable {
     let message_id: Int
@@ -384,7 +421,7 @@ struct MessageListWrapper: Decodable {
     let list_messages: [MessageResponse]
 }
 struct MessageResponse: Decodable {
-    let message_id: Int
+    let message_id: Int64
     let chat_id: UUID
     let sender_id: UUID
     let content: String

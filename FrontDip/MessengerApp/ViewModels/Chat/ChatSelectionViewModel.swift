@@ -17,14 +17,29 @@ class ChatSelectionViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
+                // ⬅️ ЭТА СТРОКА БЫЛА ПРОПУЩЕНА
                 let response: ListChatsResponse = try await graphQL.perform(
                     query: GraphQLQueries.listChats,
                     variables: [:],
                     responseType: ListChatsResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
+                
+                // Теперь response доступен
                 let loadedChats = response.chat.list.map { chatResponse in
-                    Chat(
+                    let lastMessagePreview = chatResponse.last_message.flatMap { msg -> MessagePreview? in
+                        guard let senderId = UUID(uuidString: msg.sender_id.uuidString) else { return nil }
+                        return MessagePreview(
+                            message_id: msg.message_id,
+                            sender_id: senderId,
+                            type: msg.type,
+                            text_preview: msg.content,
+                            created_at: msg.created_at,
+                            is_deleted: false
+                        )
+                    }
+                    
+                    return Chat(
                         chat_id: chatResponse.chat_id,
                         chat_type: chatResponse.chat_type,
                         name: chatResponse.name,
@@ -32,29 +47,21 @@ class ChatSelectionViewModel: ObservableObject {
                         avatar_url: chatResponse.avatar_url,
                         creator_id: chatResponse.creator_id,
                         is_public: chatResponse.is_public,
-                        max_members: 30,
+                        max_members: chatResponse.max_members ?? 200,
                         created_at: chatResponse.created_at,
-                        updated_at: chatResponse.updated_at,
-                        last_activity_at: chatResponse.created_at,       // или другое поле
-                        visibility: "PRIVATE",                          // дефолт или из chatResponse
-                        join_policy: "INVITE_ONLY",                     // дефолт или из chatResponse
-                        members_count: chatResponse.members_count ?? 0, // если есть
-                        last_message_preview: chatResponse.last_message_preview == nil ? nil :
-                            MessagePreview(
-                                message_id: Int64(chatResponse.last_message_preview!.message_id),
-                                sender_id: UUID(uuidString: chatResponse.last_message_preview!.sender_id) ?? UUID(),
-                                type: chatResponse.last_message_preview!.type,
-                                text_preview: chatResponse.last_message_preview!.text_preview,
-                                created_at: chatResponse.last_message_preview!.created_at,
-                                is_deleted: chatResponse.last_message_preview!.is_deleted
-                            )
+                        updated_at: nil,
+                        last_activity_at: chatResponse.created_at,
+                        visibility: "PRIVATE",
+                        join_policy: "INVITE_ONLY",
+                        members_count: chatResponse.members_count,
+                        last_message_preview: lastMessagePreview
                     )
                 }
+                
                 await MainActor.run {
                     self.chats = loadedChats
                     self.isLoading = false
                 }
-
             } catch {
                 await MainActor.run {
                     self.errorMessage = error.localizedDescription

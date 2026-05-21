@@ -10,9 +10,10 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     
     func connect(userId: UUID) {
         guard let token = TokenManager.shared.accessToken else {
-            print("No access token for WebSocket")
-            return
-        }
+                print("No access token for WebSocket")
+                return
+            }
+            let urlString = "ws://127.0.0.1:8000/ws/chat?access_token=\(token)"
         connect(accessToken: token, userId: userId)
     }
     

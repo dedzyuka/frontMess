@@ -39,7 +39,8 @@ struct ChatListView: View {
                 .environmentObject(viewModel)
         }
         .onAppear {
-            Task { await viewModel.loadChats() }
+            Task {
+                await viewModel.loadChats() }
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
             TextField("Название", text: $newChatName)
@@ -130,7 +131,8 @@ struct ChatRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            Text(formatDate(chat.updated_at))
+            Text(formatDate(chat.updated_at ?? DateFormatter().date(from: "2026-05-21") ?? Date()))
+
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
