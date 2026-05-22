@@ -94,11 +94,7 @@ struct GraphQLQueries {
     static let getChatMembers = """
     query GetChatMembers($chatId: String!) {
         chat {
-            members(chatId: $chatId) {
-                userId
-                nickname
-                joinedAt
-            }
+            members(chatId: $chatId)
         }
     }
     """
@@ -235,13 +231,54 @@ struct GraphQLQueries {
         }
     }
     """
+    
+    static let updateMessage = """
+    mutation UpdateMessage($messageId: Int!, $chatId: String!, $content: String!) {
+        message {
+            updateMessage(messageId: $messageId, chatId: $chatId, content: $content) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                replyToId
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+
+    static let deleteMessage = """
+    mutation DeleteMessage($messageId: Int!, $chatId: String!) {
+        message {
+            deleteMessage(messageId: $messageId, chatId: $chatId)
+        }
+    }
+    """
 }
-// MARK: - Response Models
 
-// User
+struct UpdateMessageResponse: Decodable {
+    let message: UpdateMessageWrapper
+}
+struct UpdateMessageWrapper: Decodable {
+    let updateMessage: Message
+}
 
+struct DeleteMessageResponse: Decodable {
+    let message: DeleteMessageWrapper
+}
+struct DeleteMessageWrapper: Decodable {
+    let deleteMessage: Bool
+}
 
-// Auth
+struct ChatMembersIdResponse: Decodable {
+    let chat: MembersIdWrapper
+}
+struct MembersIdWrapper: Decodable {
+    let members: [String]
+}
 
 struct Tokens: Decodable {
     let access_token: String

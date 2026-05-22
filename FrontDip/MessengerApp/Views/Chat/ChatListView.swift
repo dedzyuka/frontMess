@@ -34,7 +34,11 @@ struct ChatListView: View {
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
-
+            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
+                if let newChat = notification.object as? Chat {
+                    viewModel.chats.insert(newChat, at: 0)
+                }
+            }
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
         }

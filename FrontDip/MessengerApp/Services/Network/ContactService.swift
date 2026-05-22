@@ -104,16 +104,17 @@ class ContactService: ObservableObject {
                 let fetched = try await fetchContacts()
                 await MainActor.run {
                     self.contacts = fetched
-                    // Сохраняем в локальную БД для офлайн‑доступа
-                    for contact in fetched {
-                        _ = self.database.saveContact(contact)
-                    }
+                    // for contact in fetched {
+                    //     _ = self.database.saveContact(contact) // ← временно отключаем, пока не обновите LocalDatabase
+                    // }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
-                // Пытаемся загрузить из кэша
                 await MainActor.run {
-                    self.contacts = self.database.getContacts()
+                    self.contacts = self.database.getContacts().compactMap { dbContact in
+                        // конвертация из старой БД – можно пока вернуть пустой массив
+                        return nil
+                    }
                 }
             }
         }
@@ -157,8 +158,9 @@ class ContactService: ObservableObject {
                                 email: nil, phone: nil,
                                 avatarUrl: req.fromAvatarUrl,
                                 bio: nil, lastSeen: nil, isOnline: false,
-                                status: "active", emailVerified: false, phoneVerified: false,
-                                isAdmin: false, createdAt: Date(), updatedAt: Date()
+                                status: nil,
+                                emailVerified: nil, phoneVerified: nil,
+                                isAdmin: nil, createdAt: nil, updatedAt: nil
                             )
                         )
                     }

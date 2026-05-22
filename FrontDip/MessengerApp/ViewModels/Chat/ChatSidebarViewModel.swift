@@ -17,15 +17,30 @@ class ChatSidebarViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
+                // 1. Получить список ID участников
                 let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ChatMembersResponse = try await graphQL.perform(
+                let response: ChatMembersIdResponse = try await graphQL.perform(
                     query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersResponse.self,
+                    responseType: ChatMembersIdResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
+                let memberIds = response.chat.members.compactMap { UUID(uuidString: $0) }
+                
+                // 2. Для каждого ID получить пользователя (используем существующий UserService или ContactService)
+                var items: [ChatMemberItem] = []
+                for userId in memberIds {
+                    if let user = try? await fetchUser(by: userId) {
+                        items.append(ChatMemberItem(
+                            userId: userId,
+                            nickname: user.nickName,
+                            joinedAt: Date() // бэк не отдаёт joinedAt, ставим текущую дату
+                        ))
+                    }
+                }
+                
                 await MainActor.run {
-                    self.members = response.chat.members
+                    self.members = items
                     self.isLoading = false
                 }
             } catch {
@@ -35,6 +50,30 @@ class ChatSidebarViewModel: ObservableObject {
                 }
             }
         }
+    }
+    private func fetchUser(by userId: UUID) async throws -> User {
+        let query = """
+        query GetUser($userId: String!) {
+            user {
+                get(id: $userId) {
+                    userId
+                    nickName
+                    avatarUrl
+                    isOnline
+                }
+            }
+        }
+        """
+        struct Wrapper: Decodable { let user: UserGetWrapper }
+        struct UserGetWrapper: Decodable { let get: User }
+        let variables = ["userId": userId.uuidString]
+        let response: Wrapper = try await graphQL.perform(
+            query: query,
+            variables: variables,
+            responseType: Wrapper.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.user.get
     }
     
     func addUserToChat(_ userId: UUID) async -> Bool {

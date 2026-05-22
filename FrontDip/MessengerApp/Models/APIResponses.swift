@@ -143,3 +143,10 @@ struct SearchUsersResponse: Decodable {
 struct SearchUsersWrapper: Decodable {
     let search: [UserPublicResponse]
 }
+
+struct IncomingContactsResponse: Decodable {
+    let contact: IncomingContactWrapper
+}
+struct IncomingContactWrapper: Decodable {
+    let incoming: [Contact]
+}

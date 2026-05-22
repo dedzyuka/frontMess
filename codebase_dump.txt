@@ -371,17 +371,16 @@ struct User: Identifiable, Codable {
     let bio: String?
     let lastSeen: Date?
     let isOnline: Bool
-    let status: String
-    let emailVerified: Bool
-    let phoneVerified: Bool
-    let isAdmin: Bool
-    let createdAt: Date
-    let updatedAt: Date
+    let status: String?          // опционально
+    let emailVerified: Bool?
+    let phoneVerified: Bool?
+    let isAdmin: Bool?
+    let createdAt: Date?
+    let updatedAt: Date?
     
     var id: UUID { userId }
 }
 
-// MARK: - Chat
 struct Chat: Identifiable, Codable {
     let chatId: UUID
     let chatType: String
@@ -391,15 +390,11 @@ struct Chat: Identifiable, Codable {
     let creatorId: UUID?
     let isPublic: Bool
     let maxMembers: Int
-    let createdAt: Date
-    let updatedAt: Date?
-    let lastActivityAt: Date?
-    let visibility: String
-    let joinPolicy: String
+    let createdAt: Date      // снова Date
     let membersCount: Int
-    let lastMessagePreview: MessagePreview?
+    let lastMessage: String?
     
-    var id: UUID { chatId }
+    var id: UUID { chatId } 
 }
 
 // MARK: - MessagePreview
@@ -410,6 +405,13 @@ struct MessagePreview: Codable {
     let textPreview: String?
     let createdAt: Date
     let isDeleted: Bool
+}
+
+struct IncomingContactsResponse: Decodable {
+    let contact: IncomingContactWrapper
+}
+struct IncomingContactWrapper: Decodable {
+    let incoming: [Contact]
 }
 
 // MARK: - Message
@@ -443,7 +445,7 @@ struct Contact: Identifiable, Codable {
     let status: String
     let createdAt: Date
     let updatedAt: Date
-    let contactUser: User?
+    let contactUser: User?   // ← теперь UserPublic, а не User
 }
 
 // MARK: - ContactRequest (входящие)
@@ -465,6 +467,7 @@ struct UserPublicResponse: Identifiable, Codable {
     
     var id: UUID { userId }
 }
+
 
 ./FrontDip/MessengerApp/Models/Operations.swift
 
@@ -528,32 +531,21 @@ struct GraphQLQueries {
     // MARK: - Chats
     static let listChats = """
     query ListChats {
-        chat {
-            list {
-                chatId
-                chatType
-                name
-                description
-                avatarUrl
-                creatorId
-                isPublic
-                maxMembers
-                membersCount
-                createdAt
-                updatedAt
-                lastActivityAt
-                visibility
-                joinPolicy
-                lastMessagePreview {
-                    messageId
-                    senderId
-                    type
-                    textPreview
-                    createdAt
-                    isDeleted
-                }
-            }
+      chat {
+        list {
+          chatId
+          chatType
+          name
+          description
+          avatarUrl
+          creatorId
+          isPublic
+          maxMembers
+          membersCount
+          createdAt
+          lastMessage
         }
+      }
     }
     """
     
@@ -575,11 +567,7 @@ struct GraphQLQueries {
     static let getChatMembers = """
     query GetChatMembers($chatId: String!) {
         chat {
-            members(chatId: $chatId) {
-                userId
-                nickname
-                joinedAt
-            }
+            members(chatId: $chatId)
         }
     }
     """
@@ -716,13 +704,54 @@ struct GraphQLQueries {
         }
     }
     """
+    
+    static let updateMessage = """
+    mutation UpdateMessage($messageId: Int!, $chatId: String!, $content: String!) {
+        message {
+            updateMessage(messageId: $messageId, chatId: $chatId, content: $content) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                replyToId
+                createdAt
+                updatedAt
+                isEdited
+            }
+        }
+    }
+    """
+
+    static let deleteMessage = """
+    mutation DeleteMessage($messageId: Int!, $chatId: String!) {
+        message {
+            deleteMessage(messageId: $messageId, chatId: $chatId)
+        }
+    }
+    """
 }
-// MARK: - Response Models
 
-// User
+struct UpdateMessageResponse: Decodable {
+    let message: UpdateMessageWrapper
+}
+struct UpdateMessageWrapper: Decodable {
+    let updateMessage: Message
+}
 
+struct DeleteMessageResponse: Decodable {
+    let message: DeleteMessageWrapper
+}
+struct DeleteMessageWrapper: Decodable {
+    let deleteMessage: Bool
+}
 
-// Auth
+struct ChatMembersIdResponse: Decodable {
+    let chat: MembersIdWrapper
+}
+struct MembersIdWrapper: Decodable {
+    let members: [String]
+}
 
 struct Tokens: Decodable {
     let access_token: String
@@ -962,10 +991,11 @@ class LocalDatabase {
     private let chatIsPublic = Expression<Bool>("is_public")
     private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-    private let chatUpdatedAt = Expression<Date?>("updated_at")
-    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
-    private let chatVisibility = Expression<String>("visibility")
-    private let chatJoinPolicy = Expression<String>("join_policy")
+//    private let chatUpdatedAt = Expression<Date?>("updated_at")
+//    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
+//    private let chatVisibility = Expression<String>("visibility")
+//    private let chatJoinPolicy = Expression<String>("join_policy")
+    private let chatLastMessageJSON = Expression<String?>("last_message_json")
     private let chatMembersCount = Expression<Int>("members_count")
     
     // Для last_message_preview храним JSON
@@ -1020,12 +1050,9 @@ class LocalDatabase {
                 t.column(chatIsPublic)
                 t.column(chatMaxMembers)
                 t.column(chatCreatedAt)
-                t.column(chatUpdatedAt)
-                t.column(chatLastActivityAt)
-                t.column(chatVisibility)
-                t.column(chatJoinPolicy)
                 t.column(chatMembersCount)
-                t.column(chatLastMessagePreviewJSON)
+                t.column(chatLastMessageJSON)  // новая колонка
+                // остальные (updatedAt, lastActivityAt, visibility, joinPolicy) удалить
             })
             
             try db?.run(messagesTable.create(ifNotExists: true) { t in
@@ -1070,7 +1097,7 @@ class LocalDatabase {
     func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         do {
-            let previewJSON = chat.lastMessagePreview.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+            let lastMessageString = chat.lastMessage   // String?
             let existing = chatsTable.filter(chatId == chat.chatId)
             let count = try db.scalar(existing.count)
             if count > 0 {
@@ -1083,12 +1110,8 @@ class LocalDatabase {
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
                     chatCreatedAt <- chat.createdAt,
-                    chatUpdatedAt <- chat.updatedAt,
-                    chatLastActivityAt <- chat.lastActivityAt,
-                    chatVisibility <- chat.visibility,
-                    chatJoinPolicy <- chat.joinPolicy,
                     chatMembersCount <- chat.membersCount,
-                    chatLastMessagePreviewJSON <- previewJSON
+                    chatLastMessageJSON <- lastMessageString
                 ))
             } else {
                 try db.run(chatsTable.insert(
@@ -1101,12 +1124,8 @@ class LocalDatabase {
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
                     chatCreatedAt <- chat.createdAt,
-                    chatUpdatedAt <- chat.updatedAt,
-                    chatLastActivityAt <- chat.lastActivityAt,
-                    chatVisibility <- chat.visibility,
-                    chatJoinPolicy <- chat.joinPolicy,
                     chatMembersCount <- chat.membersCount,
-                    chatLastMessagePreviewJSON <- previewJSON
+                    chatLastMessageJSON <- lastMessageString
                 ))
             }
             return true
@@ -1121,11 +1140,8 @@ class LocalDatabase {
         do {
             var chats: [Chat] = []
             for row in try db.prepare(chatsTable.order(chatCreatedAt.desc)) {
-                var preview: MessagePreview? = nil
-                if let jsonStr = row[chatLastMessagePreviewJSON],
-                   let data = jsonStr.data(using: .utf8) {
-                    preview = try? JSONDecoder().decode(MessagePreview.self, from: data)
-                }
+                let lastMessageString = row[chatLastMessageJSON]  // теперь это String?
+                
                 let chat = Chat(
                     chatId: row[chatId],
                     chatType: row[chatType],
@@ -1136,12 +1152,8 @@ class LocalDatabase {
                     isPublic: row[chatIsPublic],
                     maxMembers: row[chatMaxMembers],
                     createdAt: row[chatCreatedAt],
-                    updatedAt: row[chatUpdatedAt],
-                    lastActivityAt: row[chatLastActivityAt],
-                    visibility: row[chatVisibility],
-                    joinPolicy: row[chatJoinPolicy],
                     membersCount: row[chatMembersCount],
-                    lastMessagePreview: preview
+                    lastMessage: lastMessageString   // тип String?
                 )
                 chats.append(chat)
             }
@@ -1261,6 +1273,7 @@ class LocalDatabase {
                 var contactUser: User? = nil
                 if let jsonStr = row[contactUserJSON], let data = jsonStr.data(using: .utf8) {
                     contactUser = try? JSONDecoder().decode(User.self, from: data)
+                
                 }
                 let contact = Contact(
                     userId: row[contactUserId],
@@ -1632,13 +1645,13 @@ class ContactService: ObservableObject {
     }
     
     func fetchIncomingRequests() async throws -> [Contact] {
-        let response: ListContactsResponse = try await graphQL.perform(
+        let response: IncomingContactsResponse = try await graphQL.perform(
             query: GraphQLQueries.incomingRequests,
             variables: [:],
-            responseType: ListContactsResponse.self,
+            responseType: IncomingContactsResponse.self,
             authToken: TokenManager.shared.accessToken
         )
-        return response.contact.list
+        return response.contact.incoming
     }
     
     func searchUsers(query: String) async throws -> [UserPublicResponse] {
@@ -1661,16 +1674,17 @@ class ContactService: ObservableObject {
                 let fetched = try await fetchContacts()
                 await MainActor.run {
                     self.contacts = fetched
-                    // Сохраняем в локальную БД для офлайн‑доступа
-                    for contact in fetched {
-                        _ = self.database.saveContact(contact)
-                    }
+                    // for contact in fetched {
+                    //     _ = self.database.saveContact(contact) // ← временно отключаем, пока не обновите LocalDatabase
+                    // }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
-                // Пытаемся загрузить из кэша
                 await MainActor.run {
-                    self.contacts = self.database.getContacts()
+                    self.contacts = self.database.getContacts().compactMap { dbContact in
+                        // конвертация из старой БД – можно пока вернуть пустой массив
+                        return nil
+                    }
                 }
             }
         }
@@ -1697,9 +1711,9 @@ class ContactService: ObservableObject {
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
+                // загружаем из базы
+                let stored = self.database.getPendingContactRequests()
                 await MainActor.run {
-                    // Загружаем из локальной БД
-                    let stored = self.database.getPendingContactRequests()
                     self.pendingRequests = stored.compactMap { req in
                         Contact(
                             userId: req.fromUserId,
@@ -1714,8 +1728,9 @@ class ContactService: ObservableObject {
                                 email: nil, phone: nil,
                                 avatarUrl: req.fromAvatarUrl,
                                 bio: nil, lastSeen: nil, isOnline: false,
-                                status: "active", emailVerified: false, phoneVerified: false,
-                                isAdmin: false, createdAt: Date(), updatedAt: Date()
+                                status: nil,
+                                emailVerified: nil, phoneVerified: nil,
+                                isAdmin: nil, createdAt: nil, updatedAt: nil
                             )
                         )
                     }
@@ -1924,7 +1939,7 @@ class GraphQLClient {
         }
         
         
-        let decoder = JSONDecoder()
+        let decoder = JSONDecoder.snakeCaseDecoder
         
         let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
         
@@ -1959,6 +1974,10 @@ extension Notification.Name {
     static let websocketConnected = Notification.Name("websocketConnected")
     static let websocketDisconnected = Notification.Name("websocketDisconnected")
     static let websocketError = Notification.Name("websocketError")
+    static let typingStarted = Notification.Name("typingStarted")
+    static let typingStopped = Notification.Name("typingStopped")
+    static let messageAcknowledged = Notification.Name("messageAcknowledged")
+    static let chatCreated = Notification.Name("chatCreated")
 }
 
 class NotificationService {
@@ -2551,9 +2570,25 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                 )
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }
+        case "typing.start", "typing.stop":
+            // Можно отправить уведомление для ChatView
+            if let payload = json["payload"] as? [String: Any],
+               let chatIdString = payload["chat_id"] as? String,
+               let userIdString = payload["user_id"] as? String,
+               let chatId = UUID(uuidString: chatIdString),
+               let userId = UUID(uuidString: userIdString) {
+                NotificationCenter.default.post(
+                    name: event == "typing.start" ? .typingStarted : .typingStopped,
+                    object: nil,
+                    userInfo: ["chatId": chatId, "userId": userId]
+                )
+            }
+
         case "message.ack":
-            // обработать подтверждение при необходимости
-            break
+            if let payload = json["payload"] as? [String: Any],
+               let messageId = payload["message_id"] as? Int64 {
+                NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
+            }
         case "pong":
             print("Pong received")
         default:
@@ -2562,17 +2597,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     }
     
     func sendMessage(_ message: WebSocketMessage) {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(message)
-            if let jsonString = String(data: data, encoding: .utf8) {
-                let envelope: [String: Any] = ["event": "message", "payload": jsonString]
-                send(envelope)
-            }
-        } catch {
-            print("Error encoding WebSocketMessage: \(error)")
-        }
+        guard let chatId = message.chatId, let content = message.content else { return }
+        sendMessage(chatId: chatId, content: content)
     }
     
     func sendMessage(chatId: UUID, content: String) {
@@ -2716,23 +2742,36 @@ extension JSONDecoder {
     static var snakeCaseDecoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let dateString = try container.decode(String.self)
             
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            // Формат с микросекундами (6 цифр после точки)
+            formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZZZZZ"
             if let date = formatter.date(from: dateString) {
                 return date
             }
-            let fallbackFormatter = DateFormatter()
-            fallbackFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-            fallbackFormatter.locale = Locale(identifier: "en_US_POSIX")
-            fallbackFormatter.timeZone = TimeZone(secondsFromGMT: 0)
-            if let date = fallbackFormatter.date(from: dateString) {
+            // Формат с миллисекундами (3 цифры)
+            formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ"
+            if let date = formatter.date(from: dateString) {
                 return date
             }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
+            // Стандартный ISO8601
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = isoFormatter.date(from: dateString) {
+                return date
+            }
+            
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Cannot parse date: \(dateString)"
+            )
         }
         return decoder
     }
@@ -3020,12 +3059,8 @@ class ChatListViewModel: ObservableObject {
                 isPublic: false,
                 maxMembers: 200,
                 createdAt: created.createdAt,
-                updatedAt: created.updatedAt,
-                lastActivityAt: created.createdAt,
-                visibility: "PRIVATE",
-                joinPolicy: "INVITE_ONLY",
                 membersCount: created.membersCount,
-                lastMessagePreview: nil
+                lastMessage: nil
             )
             await MainActor.run {
                 self.chats.insert(newChat, at: 0)
@@ -3136,15 +3171,30 @@ class ChatSidebarViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
+                // 1. Получить список ID участников
                 let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ChatMembersResponse = try await graphQL.perform(
+                let response: ChatMembersIdResponse = try await graphQL.perform(
                     query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersResponse.self,
+                    responseType: ChatMembersIdResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
+                let memberIds = response.chat.members.compactMap { UUID(uuidString: $0) }
+                
+                // 2. Для каждого ID получить пользователя (используем существующий UserService или ContactService)
+                var items: [ChatMemberItem] = []
+                for userId in memberIds {
+                    if let user = try? await fetchUser(by: userId) {
+                        items.append(ChatMemberItem(
+                            userId: userId,
+                            nickname: user.nickName,
+                            joinedAt: Date() // бэк не отдаёт joinedAt, ставим текущую дату
+                        ))
+                    }
+                }
+                
                 await MainActor.run {
-                    self.members = response.chat.members
+                    self.members = items
                     self.isLoading = false
                 }
             } catch {
@@ -3154,6 +3204,30 @@ class ChatSidebarViewModel: ObservableObject {
                 }
             }
         }
+    }
+    private func fetchUser(by userId: UUID) async throws -> User {
+        let query = """
+        query GetUser($userId: String!) {
+            user {
+                get(id: $userId) {
+                    userId
+                    nickName
+                    avatarUrl
+                    isOnline
+                }
+            }
+        }
+        """
+        struct Wrapper: Decodable { let user: UserGetWrapper }
+        struct UserGetWrapper: Decodable { let get: User }
+        let variables = ["userId": userId.uuidString]
+        let response: Wrapper = try await graphQL.perform(
+            query: query,
+            variables: variables,
+            responseType: Wrapper.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.user.get
     }
     
     func addUserToChat(_ userId: UUID) async -> Bool {
@@ -3272,6 +3346,55 @@ class ChatViewModel: ObservableObject {
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.userId
     }
+    
+    
+    func editMessage(_ message: Message, newContent: String) {
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "messageId": message.messageId,
+                    "chatId": chat.id.uuidString,
+                    "content": newContent
+                ]
+                let response: UpdateMessageResponse = try await graphQL.perform(
+                    query: GraphQLQueries.updateMessage,
+                    variables: variables,
+                    responseType: UpdateMessageResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                let updated = response.message.updateMessage
+                await MainActor.run {
+                    if let index = self.messages.firstIndex(where: { $0.id == updated.id }) {
+                        self.messages[index] = updated
+                    }
+                }
+            } catch {
+                print("Edit error: \(error)")
+            }
+        }
+    }
+
+    func deleteMessage(_ message: Message) {
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "messageId": message.messageId,
+                    "chatId": chat.id.uuidString
+                ]
+                let _: DeleteMessageResponse = try await graphQL.perform(
+                    query: GraphQLQueries.deleteMessage,
+                    variables: variables,
+                    responseType: DeleteMessageResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                await MainActor.run {
+                    self.messages.removeAll { $0.id == message.id }
+                }
+            } catch {
+                print("Delete error: \(error)")
+            }
+        }
+    }
 }
 
 ./FrontDip/MessengerApp/ViewModels/Chat/CreateChatViewModel.swift
@@ -3342,6 +3465,46 @@ class CreateChatViewModel: ObservableObject {
             await MainActor.run {
                 errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
                 isLoading = false
+            }
+            return false
+        }
+    }
+    func createPrivateChat(with userId: String) async -> Bool {
+        guard let currentUserId = AppState.shared.currentUser?.userId.uuidString else { return false }
+        let variables: [String: Any] = [
+            "chatType": "PRIVATE",
+            "memberIds": [currentUserId, userId],
+            "isPublic": false
+        ]
+        do {
+            let response: CreateChatResponse = try await graphQL.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newChat = response.chat.create
+            let chatObj = Chat(
+                chatId: newChat.chatId,
+                chatType: newChat.chatType,
+                name: newChat.name,
+                description: nil,
+                avatarUrl: nil,
+                creatorId: UUID(uuidString: currentUserId),
+                isPublic: false,
+                maxMembers: newChat.membersCount,
+                createdAt: newChat.createdAt,
+                membersCount: newChat.membersCount,
+                lastMessage: nil
+            )
+            await MainActor.run {
+                NotificationCenter.default.post(name: .chatCreated, object: newChat)
+                self.showInviteSheet = true
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
             }
             return false
         }
@@ -3909,7 +4072,11 @@ struct ChatListView: View {
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
-
+            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
+                if let newChat = notification.object as? Chat {
+                    viewModel.chats.insert(newChat, at: 0)
+                }
+            }
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
         }
@@ -4000,13 +4167,13 @@ struct ChatRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(chat.name ?? "Чат")
                     .font(.headline)
-                Text(chat.lastMessagePreview?.textPreview ?? "Нет сообщений")
+                Text(chat.lastMessage ?? "Нет сообщений")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            Text(formatDate(chat.updatedAt ?? Date()))
+            Text(chat.lastMessage ?? formatDate(chat.createdAt))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

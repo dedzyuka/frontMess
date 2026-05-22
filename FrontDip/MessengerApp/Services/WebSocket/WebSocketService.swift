@@ -92,9 +92,25 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                 )
                 NotificationCenter.default.post(name: .newMessageReceived, object: message)
             }
+        case "typing.start", "typing.stop":
+            // Можно отправить уведомление для ChatView
+            if let payload = json["payload"] as? [String: Any],
+               let chatIdString = payload["chat_id"] as? String,
+               let userIdString = payload["user_id"] as? String,
+               let chatId = UUID(uuidString: chatIdString),
+               let userId = UUID(uuidString: userIdString) {
+                NotificationCenter.default.post(
+                    name: event == "typing.start" ? .typingStarted : .typingStopped,
+                    object: nil,
+                    userInfo: ["chatId": chatId, "userId": userId]
+                )
+            }
+
         case "message.ack":
-            // обработать подтверждение при необходимости
-            break
+            if let payload = json["payload"] as? [String: Any],
+               let messageId = payload["message_id"] as? Int64 {
+                NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
+            }
         case "pong":
             print("Pong received")
         default:
@@ -103,17 +119,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     }
     
     func sendMessage(_ message: WebSocketMessage) {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(message)
-            if let jsonString = String(data: data, encoding: .utf8) {
-                let envelope: [String: Any] = ["event": "message", "payload": jsonString]
-                send(envelope)
-            }
-        } catch {
-            print("Error encoding WebSocketMessage: \(error)")
-        }
+        guard let chatId = message.chatId, let content = message.content else { return }
+        sendMessage(chatId: chatId, content: content)
     }
     
     func sendMessage(chatId: UUID, content: String) {

@@ -12,6 +12,10 @@ extension Notification.Name {
     static let websocketConnected = Notification.Name("websocketConnected")
     static let websocketDisconnected = Notification.Name("websocketDisconnected")
     static let websocketError = Notification.Name("websocketError")
+    static let typingStarted = Notification.Name("typingStarted")
+    static let typingStopped = Notification.Name("typingStopped")
+    static let messageAcknowledged = Notification.Name("messageAcknowledged")
+    static let chatCreated = Notification.Name("chatCreated")
 }
 
 class NotificationService {

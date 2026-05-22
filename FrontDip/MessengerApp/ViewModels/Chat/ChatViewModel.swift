@@ -88,4 +88,53 @@ class ChatViewModel: ObservableObject {
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.userId
     }
+    
+    
+    func editMessage(_ message: Message, newContent: String) {
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "messageId": message.messageId,
+                    "chatId": chat.id.uuidString,
+                    "content": newContent
+                ]
+                let response: UpdateMessageResponse = try await graphQL.perform(
+                    query: GraphQLQueries.updateMessage,
+                    variables: variables,
+                    responseType: UpdateMessageResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                let updated = response.message.updateMessage
+                await MainActor.run {
+                    if let index = self.messages.firstIndex(where: { $0.id == updated.id }) {
+                        self.messages[index] = updated
+                    }
+                }
+            } catch {
+                print("Edit error: \(error)")
+            }
+        }
+    }
+
+    func deleteMessage(_ message: Message) {
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "messageId": message.messageId,
+                    "chatId": chat.id.uuidString
+                ]
+                let _: DeleteMessageResponse = try await graphQL.perform(
+                    query: GraphQLQueries.deleteMessage,
+                    variables: variables,
+                    responseType: DeleteMessageResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                await MainActor.run {
+                    self.messages.removeAll { $0.id == message.id }
+                }
+            } catch {
+                print("Delete error: \(error)")
+            }
+        }
+    }
 }

@@ -13,12 +13,12 @@ struct User: Identifiable, Codable {
     let bio: String?
     let lastSeen: Date?
     let isOnline: Bool
-    let status: String
-    let emailVerified: Bool
-    let phoneVerified: Bool
-    let isAdmin: Bool
-    let createdAt: Date
-    let updatedAt: Date
+    let status: String?          // опционально
+    let emailVerified: Bool?
+    let phoneVerified: Bool?
+    let isAdmin: Bool?
+    let createdAt: Date?
+    let updatedAt: Date?
     
     var id: UUID { userId }
 }
@@ -49,12 +49,7 @@ struct MessagePreview: Codable {
     let isDeleted: Bool
 }
 
-struct IncomingContactsResponse: Decodable {
-    let contact: IncomingContactWrapper
-}
-struct IncomingContactWrapper: Decodable {
-    let incoming: [Contact]
-}
+
 
 // MARK: - Message
 struct Message: Identifiable, Codable {
@@ -81,13 +76,13 @@ struct ChatMemberItem: Codable {
 
 // MARK: - Contact
 struct Contact: Identifiable, Codable {
-    let id = UUID()   // добавляем для Identifiable
+    let id = UUID()
     let userId: UUID
     let contactUserId: UUID
     let status: String
     let createdAt: Date
-    let updatedAt: Date
-    let contactUser: User?   // теперь User, а не UserPublicResponse
+    let updatedAt: Date?
+    let contactUser: User?   // ← теперь UserPublic, а не User
 }
 
 // MARK: - ContactRequest (входящие)
@@ -109,3 +104,4 @@ struct UserPublicResponse: Identifiable, Codable {
     
     var id: UUID { userId }
 }
+

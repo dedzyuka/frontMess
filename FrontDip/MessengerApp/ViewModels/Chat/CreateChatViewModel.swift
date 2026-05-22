@@ -68,4 +68,44 @@ class CreateChatViewModel: ObservableObject {
             return false
         }
     }
+    func createPrivateChat(with userId: String) async -> Bool {
+        guard let currentUserId = AppState.shared.currentUser?.userId.uuidString else { return false }
+        let variables: [String: Any] = [
+            "chatType": "PRIVATE",
+            "memberIds": [currentUserId, userId],
+            "isPublic": false
+        ]
+        do {
+            let response: CreateChatResponse = try await graphQL.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newChat = response.chat.create
+            let chatObj = Chat(
+                chatId: newChat.chatId,
+                chatType: newChat.chatType,
+                name: newChat.name,
+                description: nil,
+                avatarUrl: nil,
+                creatorId: UUID(uuidString: currentUserId),
+                isPublic: false,
+                maxMembers: newChat.membersCount,
+                createdAt: newChat.createdAt,
+                membersCount: newChat.membersCount,
+                lastMessage: nil
+            )
+            await MainActor.run {
+                NotificationCenter.default.post(name: .chatCreated, object: newChat)
+                self.showInviteSheet = true
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Ошибка создания чата: \(error.localizedDescription)"
+            }
+            return false
+        }
+    }
 }
