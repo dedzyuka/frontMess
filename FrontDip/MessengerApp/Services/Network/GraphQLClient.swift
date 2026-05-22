@@ -60,7 +60,7 @@ class GraphQLClient {
             "variables": variables ?? [:]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+        print("📤 GraphQL Query: \(query)")
         let (data, response) = try await session.data(for: request)
         
         // Логируем ответ для отладки

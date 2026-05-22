@@ -286,7 +286,7 @@ class LocalDatabase {
                 contactContactUserId <- contact.contactUserId,
                 contactStatus <- contact.status,
                 contactCreatedAt <- contact.createdAt,
-                contactUpdatedAt <- contact.updatedAt,
+                contactUpdatedAt <- contact.updatedAt ?? Date(),
                 contactUserJSON <- userJSON
             ))
             return true

@@ -100,7 +100,7 @@ struct UserPublicResponse: Identifiable, Codable {
     let userId: UUID
     let nickName: String
     let avatarUrl: String?
-    let isOnline: Bool
+    let isOnline: Bool?
     
     var id: UUID { userId }
 }
