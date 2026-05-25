@@ -1,3 +1,5 @@
+// ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
+
 import SwiftUI
 
 struct NotificationsView: View {
@@ -8,7 +10,7 @@ struct NotificationsView: View {
     var body: some View {
         NavigationView {
             VStack {
-                if contactService.pendingRequests.isEmpty {
+                if contactService.pendingRequests.isEmpty && contactService.outgoingRequests.isEmpty {
                     Spacer()
                     VStack(spacing: 20) {
                         Image(systemName: "bell.slash")
@@ -21,33 +23,55 @@ struct NotificationsView: View {
                     }
                     Spacer()
                 } else {
-                    List(contactService.pendingRequests) { request in
-                        ContactRequestRow(request: request)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    contactService.declineContactRequest(request)
-                                } label: {
-                                    Label("Отклонить", systemImage: "xmark.circle")
-                                }
-                                
-                                Button {
-                                    contactService.acceptContactRequest(request)
-                                } label: {
-                                    Label("Принять", systemImage: "checkmark.circle")
-                                        .tint(.green)
+                    List {
+                        if !contactService.outgoingRequests.isEmpty {
+                            Section(header: Text("Отправленные запросы")) {
+                                ForEach(contactService.outgoingRequests) { request in
+                                    ContactRequestRow(request: request, isOutgoing: true)
+                                        .swipeActions(edge: .trailing) {
+                                            Button(role: .destructive) {
+                                                contactService.cancelOutgoingRequest(userId: request.contactUserId)
+                                            } label: {
+                                                Label("Отменить", systemImage: "xmark.circle")
+                                            }
+                                        }
                                 }
                             }
+                        }
+                        
+                        if !contactService.pendingRequests.isEmpty {
+                            Section(header: Text("Входящие запросы")) {
+                                ForEach(contactService.pendingRequests) { request in
+                                    ContactRequestRow(request: request, isOutgoing: false)
+                                        .swipeActions(edge: .trailing) {
+                                            Button(role: .destructive) {
+                                                contactService.declineContactRequest(request)
+                                            } label: {
+                                                Label("Отклонить", systemImage: "xmark.circle")
+                                            }
+                                            
+                                            Button {
+                                                contactService.acceptContactRequest(request)
+                                            } label: {
+                                                Label("Принять", systemImage: "checkmark.circle")
+                                                    .tint(.green)
+                                            }
+                                        }
+                                }
+                            }
+                        }
                     }
-                    .listStyle(PlainListStyle())
+                    .listStyle(InsetGroupedListStyle())
+                    .refreshable {
+                        await refreshRequests()
+                    }
                 }
             }
             .navigationTitle("Уведомления")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") {
-                        dismiss()
-                    }
+                    Button("Готово") { dismiss() }
                 }
                 
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -55,50 +79,48 @@ struct NotificationsView: View {
                         ProgressView()
                     } else {
                         Button("Обновить") {
-                            refreshRequests()
+                            Task { await refreshRequests() }
                         }
                     }
                 }
             }
             .onAppear {
                 contactService.loadPendingRequests()
+                contactService.loadOutgoingRequests()
             }
         }
     }
     
-    private func refreshRequests() {
+    private func refreshRequests() async {
         isLoading = true
-        Task {
-            await contactService.syncPendingRequests()
-            await MainActor.run {
-                isLoading = false
-            }
-        }
+        await contactService.syncPendingRequests()
+        await contactService.syncOutgoingRequests()
+        isLoading = false
     }
 }
 
-// Переработанная строка для входящего запроса на основе модели Contact
 struct ContactRequestRow: View {
     let request: Contact
+    let isOutgoing: Bool
     @State private var showingActionSheet = false
     
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
             HStack {
                 Circle()
-                    .fill(Color.orange.opacity(0.3))
+                    .fill(isOutgoing ? Color.blue.opacity(0.3) : Color.orange.opacity(0.3))
                     .frame(width: 40, height: 40)
                     .overlay(
                         Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
                             .font(.headline)
-                            .foregroundColor(.orange)
+                            .foregroundColor(isOutgoing ? .blue : .orange)
                     )
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(request.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
                     
-                    Text("Запрос на контакт")
+                    Text(isOutgoing ? "Ожидает подтверждения" : "Запрос на контакт")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -109,7 +131,15 @@ struct ContactRequestRow: View {
                 
                 Spacer()
                 
-                if request.status == "pending" {
+                if isOutgoing {
+                    Text("Отправлен")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(8)
+                } else if request.status == "pending" {
                     Text("Ждет ответа")
                         .font(.caption)
                         .foregroundColor(.orange)
@@ -122,16 +152,8 @@ struct ContactRequestRow: View {
             .padding(.vertical, 8)
         }
         .buttonStyle(PlainButtonStyle())
-                .swipeActions {
-                    Button("Принять") {
-                        ContactService.shared.acceptContactRequest(request)
-                    }
-                    .tint(.green)
-                    Button("Отклонить", role: .destructive) {
-                        ContactService.shared.declineContactRequest(request)
-                    }
-                }
     }
+    
     private func formatDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short

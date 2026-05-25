@@ -21,17 +21,24 @@ struct ChatView: View {
                         .font(.title2)
                         .foregroundColor(.blue)
                 }
+                .frame(width: 44, height: 44) // увеличиваем область нажатия
+                
                 Spacer()
+                
                 Text(chat.name ?? "Чат")
                     .font(.headline)
+                
                 Spacer()
+                
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
                         .font(.title2)
                         .foregroundColor(.blue)
                 }
+                .frame(width: 44, height: 44)
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 8)
             .background(Color(.systemBackground))
 
             // Список сообщений
@@ -47,6 +54,7 @@ struct ChatView: View {
                             .id(message.id)
                         }
                     }
+                    
                     .padding(.horizontal)
                     .padding(.vertical, 12)
                 }

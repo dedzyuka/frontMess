@@ -142,7 +142,7 @@ class ChatListViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let newChatData = response.chat.create
-            let newChat = Chat(
+            let chat = Chat(
                 chatId: newChatData.chatId,
                 chatType: newChatData.chatType,
                 name: newChatData.name,
@@ -155,7 +155,8 @@ class ChatListViewModel: ObservableObject {
                 membersCount: newChatData.membersCount,
                 lastMessage: nil
             )
-            return newChat
+            NotificationCenter.default.post(name: .chatCreated, object: chat)
+            return chat
         } catch {
             print("Error creating private chat: \(error)")
             return nil

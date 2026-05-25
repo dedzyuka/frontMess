@@ -17,6 +17,7 @@ extension Notification.Name {
     static let messageAcknowledged = Notification.Name("messageAcknowledged")
     static let chatCreated = Notification.Name("chatCreated")
     static let openChat = Notification.Name("openChat")
+    static let openProfile = Notification.Name("openProfile")
 }
 
 class NotificationService {

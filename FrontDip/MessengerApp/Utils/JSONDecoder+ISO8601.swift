@@ -23,6 +23,10 @@ extension JSONDecoder {
             if let date = formatter.date(from: dateString) {
                 return date
             }
+            formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+            if let date = formatter.date(from: dateString) {
+                return date
+            }
             // Стандартный ISO8601
             let isoFormatter = ISO8601DateFormatter()
             isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

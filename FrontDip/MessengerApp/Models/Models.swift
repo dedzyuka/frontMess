@@ -12,7 +12,7 @@ struct User: Identifiable, Codable {
     let avatarUrl: String?
     let bio: String?
     let lastSeen: Date?
-    let isOnline: Bool
+    let isOnline: Bool?
     let status: String?          // опционально
     let emailVerified: Bool?
     let phoneVerified: Bool?

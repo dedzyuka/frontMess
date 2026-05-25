@@ -22,7 +22,7 @@ struct ChatSelectionView: View {
                 } else if viewModel.chats.isEmpty {
                     Spacer()
                     VStack(spacing: 20) {
-                        Image(systemName: "bubble.left.and.bubble.right.slash")
+                        Image(systemName: "bubble.left.and.bubble.right")
                             .font(.system(size: 60))
                             .foregroundColor(.gray.opacity(0.5))
                         

@@ -1,8 +1,10 @@
+// ./FrontDip/MessengerApp/ViewModels/Profile/UserProfileViewModel.swift
+
 import Foundation
 
 class UserProfileViewModel: ObservableObject {
     @Published var user: User?
-    @Published var isContact = false
+    @Published var contactStatus: String?  // nil, "pending", "accepted", "incoming_pending"
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -22,7 +24,8 @@ class UserProfileViewModel: ObservableObject {
                 let user = try await userService.getUser(userId: userId)
                 await MainActor.run {
                     self.user = user
-                    self.isContact = self.contactService.isContact(userId: userId)
+                    // Обновляем статус контакта через ContactService
+                    self.contactStatus = self.contactService.getContactStatus(for: userId)
                     self.isLoading = false
                 }
             } catch {
@@ -39,8 +42,62 @@ class UserProfileViewModel: ObservableObject {
             do {
                 _ = try await contactService.sendContactRequest(to: userId.uuidString)
                 await MainActor.run {
-                    self.isContact = true
+                    self.contactStatus = "pending"
+                    self.contactService.loadOutgoingRequests()
                     NotificationService.shared.showSuccess("Запрос отправлен")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func cancelOutgoingRequest() {
+        Task {
+            do {
+                _ = try await contactService.removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = nil
+                    self.contactService.loadOutgoingRequests()
+                    NotificationService.shared.showInfo("Запрос отменён")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func acceptIncomingRequest() {
+        Task {
+            print("➡️ Accepting contact from user ID: \(userId.uuidString)")
+            do {
+                _ = try await contactService.acceptContact(contactUserId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = "accepted"
+                    self.contactService.loadContacts()
+                    self.contactService.loadPendingRequests()
+                    NotificationService.shared.showSuccess("Контакт добавлен")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func declineIncomingRequest() {
+        Task {
+            do {
+                _ = try await contactService.removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = nil
+                    self.contactService.loadPendingRequests()
+                    NotificationService.shared.showInfo("Запрос отклонён")
                 }
             } catch {
                 await MainActor.run {
@@ -55,7 +112,8 @@ class UserProfileViewModel: ObservableObject {
             do {
                 _ = try await contactService.removeContact(userId: userId.uuidString)
                 await MainActor.run {
-                    self.isContact = false
+                    self.contactStatus = nil
+                    self.contactService.loadContacts()
                     NotificationService.shared.showInfo("Контакт удалён")
                 }
             } catch {

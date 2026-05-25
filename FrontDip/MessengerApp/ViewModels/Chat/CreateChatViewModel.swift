@@ -83,7 +83,7 @@ class CreateChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let newChat = response.chat.create
-            let chatObj = Chat(
+            let chat = Chat(
                 chatId: newChat.chatId,
                 chatType: newChat.chatType,
                 name: newChat.name,
@@ -97,7 +97,7 @@ class CreateChatViewModel: ObservableObject {
                 lastMessage: nil
             )
             await MainActor.run {
-                NotificationCenter.default.post(name: .chatCreated, object: newChat)
+                NotificationCenter.default.post(name: .chatCreated, object: chat)
                 self.showInviteSheet = true
             }
             return true

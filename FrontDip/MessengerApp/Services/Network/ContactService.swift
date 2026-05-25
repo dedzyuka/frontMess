@@ -7,7 +7,8 @@ class ContactService: ObservableObject {
     static let shared = ContactService()
     
     @Published var contacts: [Contact] = []
-    @Published var pendingRequests: [Contact] = []
+    @Published var pendingRequests: [Contact] = []   // входящие pending (contact_user_id = currentUser)
+    @Published var outgoingRequests: [Contact] = [] // исходящие pending (user_id = currentUser)
     @Published var isLoading = false
     
     private let graphQL = GraphQLClient.shared
@@ -23,6 +24,7 @@ class ContactService: ObservableObject {
             .sink { [weak self] _ in
                 self?.loadContacts()
                 self?.loadPendingRequests()
+                self?.loadOutgoingRequests()
             }
             .store(in: &cancellables)
     }
@@ -101,17 +103,15 @@ class ContactService: ObservableObject {
         guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
-                let fetched = try await fetchContacts()
+                let fetched = try await fetchContacts(status: "accepted")
                 await MainActor.run {
                     self.contacts = fetched
-                    // Сохраняем в БД
-                    for contact in fetched {
-                        _ = self.database.saveContact(contact)
-                    }
+                    // for contact in fetched {
+                    //     _ = self.database.saveContact(contact)
+                    // }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
-                // Загружаем из БД
                 let storedContacts = self.database.getContacts()
                 await MainActor.run {
                     self.contacts = storedContacts
@@ -128,7 +128,6 @@ class ContactService: ObservableObject {
                 let pending = fetched.filter { $0.status.lowercased() == "pending" }
                 await MainActor.run {
                     self.pendingRequests = pending
-                    // Сохраняем в базу (опционально)
                     for req in pending {
                         let contactRequest = ContactRequest(
                             fromUserId: req.contactUserId,
@@ -142,7 +141,6 @@ class ContactService: ObservableObject {
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
-                // Загружаем из локальной БД
                 let stored = self.database.getPendingContactRequests()
                 await MainActor.run {
                     self.pendingRequests = stored.compactMap { req in
@@ -178,8 +176,27 @@ class ContactService: ObservableObject {
         }
     }
     
+    func loadOutgoingRequests() {
+        guard TokenManager.shared.accessToken != nil else { return }
+        Task {
+            do {
+                let fetched = try await fetchContacts(status: "pending")
+                let pendingOutgoing = fetched.filter { $0.status.lowercased() == "pending" }
+                await MainActor.run {
+                    self.outgoingRequests = pendingOutgoing
+                }
+            } catch {
+                print("Failed to load outgoing requests: \(error)")
+                await MainActor.run {
+                    self.outgoingRequests = []
+                }
+            }
+        }
+    }
+    
     func syncContacts() { loadContacts() }
     func syncPendingRequests() { loadPendingRequests() }
+    func syncOutgoingRequests() { loadOutgoingRequests() }
     
     // MARK: - Helpers
     
@@ -187,15 +204,29 @@ class ContactService: ObservableObject {
         return contacts.contains(where: { $0.contactUserId == userId })
     }
     
+    func getContactStatus(for userId: UUID) -> String? {
+        if contacts.contains(where: { $0.contactUserId == userId }) {
+            return "accepted"
+        }
+        if outgoingRequests.contains(where: { $0.contactUserId == userId }) {
+            return "pending"
+        }
+        if pendingRequests.contains(where: { $0.contactUserId == userId }) {
+            return "incoming_pending"
+        }
+        return nil
+    }
+    
     func sendContactRequest(to user: UserPublicResponse) {
         guard let currentUser = AppState.shared.currentUser else { return }
         guard currentUser.id != user.userId else { return }
-        guard !isContact(userId: user.userId) else { return }
+        guard getContactStatus(for: user.userId) == nil else { return }
         
         Task {
             do {
                 _ = try await sendContactRequest(to: user.userId.uuidString)
                 await MainActor.run {
+                    self.loadOutgoingRequests()
                     NotificationService.shared.showSuccess("Запрос отправлен \(user.nickName)")
                 }
             } catch {
@@ -211,8 +242,8 @@ class ContactService: ObservableObject {
             do {
                 _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
                 await MainActor.run {
-                    loadContacts()
-                    loadPendingRequests()
+                    self.loadContacts()
+                    self.loadPendingRequests()
                     NotificationService.shared.showSuccess("Контакт добавлен")
                 }
             } catch {
@@ -228,7 +259,7 @@ class ContactService: ObservableObject {
             do {
                 _ = try await removeContact(userId: request.contactUserId.uuidString)
                 await MainActor.run {
-                    loadPendingRequests()
+                    self.loadPendingRequests()
                     NotificationService.shared.showInfo("Запрос отклонён")
                 }
             } catch {
@@ -244,8 +275,25 @@ class ContactService: ObservableObject {
             do {
                 _ = try await removeContact(userId: userId.uuidString)
                 await MainActor.run {
-                    loadContacts()
+                    self.loadContacts()
+                    self.loadOutgoingRequests()
                     NotificationService.shared.showInfo("Контакт удалён")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func cancelOutgoingRequest(userId: UUID) {
+        Task {
+            do {
+                _ = try await removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.loadOutgoingRequests()
+                    NotificationService.shared.showInfo("Запрос отменён")
                 }
             } catch {
                 await MainActor.run {

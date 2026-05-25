@@ -6,7 +6,7 @@ struct MessageBubbleView: View {
     let senderUser: User?
     
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
                 NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                     AvatarView(urlString: senderUser?.avatarUrl, size: 32)

@@ -84,7 +84,6 @@ struct GraphQLQueries {
                 chatType
                 name
                 createdAt
-                updatedAt
                 membersCount
             }
         }
@@ -222,7 +221,7 @@ struct GraphQLQueries {
     static let searchUsers = """
     query SearchUsers($query: String!) {
         user {
-            search(query: $query, page: 1, pageSize: 20) {
+            search(query: $query, page: 1) {
                 userId
                 nickName
                 avatarUrl
