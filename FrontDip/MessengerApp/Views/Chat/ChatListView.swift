@@ -1,5 +1,3 @@
-// Views/Chat/ChatListView.swift
-
 import SwiftUI
 
 struct ChatListView: View {
@@ -8,6 +6,8 @@ struct ChatListView: View {
     @State private var showCreateChat = false
     @State private var newChatName = ""
     @State private var isCreating = false
+    @State private var selectedChat: Chat?
+    @State private var showChat = false
 
     var body: some View {
         ZStack {
@@ -31,20 +31,32 @@ struct ChatListView: View {
                             }
                         }
                     }
+                    .background(
+                        NavigationLink(destination: selectedChat.map { ChatView(chat: $0) }, isActive: $showChat) {
+                            EmptyView()
+                        }
+                    )
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
             .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
                 if let newChat = notification.object as? Chat {
-                    viewModel.chats.insert(newChat, at: 0)
+                    viewModel.addChat(newChat)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+                if let chatId = notification.object as? UUID,
+                   let chat = viewModel.chats.first(where: { $0.id == chatId }) {
+                    selectedChat = chat
+                    showChat = true
+                }
+            }
+
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
         }
         .onAppear {
-            Task {
-                await viewModel.loadChats() }
+            Task { await viewModel.loadChats() }
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
             TextField("Название", text: $newChatName)
@@ -135,7 +147,7 @@ struct ChatRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            Text(chat.lastMessage ?? formatDate(chat.createdAt))
+            Text(formatDate(chat.createdAt))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

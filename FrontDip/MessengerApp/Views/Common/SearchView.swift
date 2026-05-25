@@ -65,41 +65,47 @@ struct SearchResultRow: View {
     @State private var showingAlert = false
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(user.nickName.prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: user.userId)) {
+            HStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(user.nickName.prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    )
+                
+                VStack(alignment: .leading) {
+                    Text(user.nickName)
                         .font(.headline)
+                    Text("ID: \(user.userId.uuidString.prefix(8))...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    showingAlert = true
+                }) {
+                    Image(systemName: "person.badge.plus")
                         .foregroundColor(.blue)
-                )
-            
-            VStack(alignment: .leading) {
-                Text(user.nickName)
-                    .font(.headline)
-                Text("ID: \(user.userId.uuidString.prefix(8))...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                }
             }
-            
-            Spacer()
-            
-            Button(action: {
-                showingAlert = true
-            }) {
-                Image(systemName: "person.badge.plus")
-                    .foregroundColor(.blue)
+            .padding(.vertical, 8)
+            .alert("Добавить в контакты", isPresented: $showingAlert) {
+                Button("Отмена", role: .cancel) { }
+                Button("Добавить", role: .none) {
+                    onAdd()
+                }
+            } message: {
+                Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
             }
         }
-        .padding(.vertical, 8)
-        .alert("Добавить в контакты", isPresented: $showingAlert) {
-            Button("Отмена", role: .cancel) { }
-            Button("Добавить", role: .none) {
-                onAdd()
-            }
-        } message: {
-            Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
-        }
+        .buttonStyle(PlainButtonStyle())
+                .swipeActions {
+                    Button("Добавить") { onAdd() }
+                }
     }
 }

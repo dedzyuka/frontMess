@@ -234,6 +234,13 @@ struct SearchUsersWrapper: Decodable {
     let search: [UserPublicResponse]
 }
 
+struct IncomingContactsResponse: Decodable {
+    let contact: IncomingContactWrapper
+}
+struct IncomingContactWrapper: Decodable {
+    let incoming: [Contact]
+}
+
 ./FrontDip/MessengerApp/Models/Chat/Chat.swift
 
 
@@ -407,12 +414,7 @@ struct MessagePreview: Codable {
     let isDeleted: Bool
 }
 
-struct IncomingContactsResponse: Decodable {
-    let contact: IncomingContactWrapper
-}
-struct IncomingContactWrapper: Decodable {
-    let incoming: [Contact]
-}
+
 
 // MARK: - Message
 struct Message: Identifiable, Codable {
@@ -444,7 +446,7 @@ struct Contact: Identifiable, Codable {
     let contactUserId: UUID
     let status: String
     let createdAt: Date
-    let updatedAt: Date
+    let updatedAt: Date?
     let contactUser: User?   // ← теперь UserPublic, а не User
 }
 
@@ -463,7 +465,7 @@ struct UserPublicResponse: Identifiable, Codable {
     let userId: UUID
     let nickName: String
     let avatarUrl: String?
-    let isOnline: Bool
+    let isOnline: Bool?
     
     var id: UUID { userId }
 }
@@ -1255,7 +1257,7 @@ class LocalDatabase {
                 contactContactUserId <- contact.contactUserId,
                 contactStatus <- contact.status,
                 contactCreatedAt <- contact.createdAt,
-                contactUpdatedAt <- contact.updatedAt,
+                contactUpdatedAt <- contact.updatedAt ?? Date(),
                 contactUserJSON <- userJSON
             ))
             return true
@@ -1674,17 +1676,17 @@ class ContactService: ObservableObject {
                 let fetched = try await fetchContacts()
                 await MainActor.run {
                     self.contacts = fetched
-                    // for contact in fetched {
-                    //     _ = self.database.saveContact(contact) // ← временно отключаем, пока не обновите LocalDatabase
-                    // }
+                    // Сохраняем в БД
+                    for contact in fetched {
+                        _ = self.database.saveContact(contact)
+                    }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
+                // Загружаем из БД
+                let storedContacts = self.database.getContacts()
                 await MainActor.run {
-                    self.contacts = self.database.getContacts().compactMap { dbContact in
-                        // конвертация из старой БД – можно пока вернуть пустой массив
-                        return nil
-                    }
+                    self.contacts = storedContacts
                 }
             }
         }
@@ -1698,6 +1700,7 @@ class ContactService: ObservableObject {
                 let pending = fetched.filter { $0.status.lowercased() == "pending" }
                 await MainActor.run {
                     self.pendingRequests = pending
+                    // Сохраняем в базу (опционально)
                     for req in pending {
                         let contactRequest = ContactRequest(
                             fromUserId: req.contactUserId,
@@ -1711,7 +1714,7 @@ class ContactService: ObservableObject {
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
-                // загружаем из базы
+                // Загружаем из локальной БД
                 let stored = self.database.getPendingContactRequests()
                 await MainActor.run {
                     self.pendingRequests = stored.compactMap { req in
@@ -1724,13 +1727,21 @@ class ContactService: ObservableObject {
                             contactUser: User(
                                 userId: req.fromUserId,
                                 nickName: req.fromNickname,
-                                firstName: nil, lastName: nil, middleName: nil,
-                                email: nil, phone: nil,
+                                firstName: nil,
+                                lastName: nil,
+                                middleName: nil,
+                                email: nil,
+                                phone: nil,
                                 avatarUrl: req.fromAvatarUrl,
-                                bio: nil, lastSeen: nil, isOnline: false,
+                                bio: nil,
+                                lastSeen: nil,
+                                isOnline: false,
                                 status: nil,
-                                emailVerified: nil, phoneVerified: nil,
-                                isAdmin: nil, createdAt: nil, updatedAt: nil
+                                emailVerified: nil,
+                                phoneVerified: nil,
+                                isAdmin: nil,
+                                createdAt: nil,
+                                updatedAt: nil
                             )
                         )
                     }
@@ -1921,7 +1932,7 @@ class GraphQLClient {
             "variables": variables ?? [:]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+        print("📤 GraphQL Query: \(query)")
         let (data, response) = try await session.data(for: request)
         
         // Логируем ответ для отладки
@@ -1958,6 +1969,58 @@ class GraphQLClient {
 ./FrontDip/MessengerApp/Services/Network/NetworkManager.swift
 
 
+./FrontDip/MessengerApp/Services/Network/UserService.swift
+
+import Foundation
+
+class UserService {
+    static let shared = UserService()
+    private let graphQL = GraphQLClient.shared
+    private init() {}
+    
+    func getUser(userId: UUID) async throws -> User {
+        let query = """
+        query GetUser($userId: String!) {
+            user {
+                get(id: $userId) {
+                    userId
+                    nickName
+                    firstName
+                    lastName
+                    middleName
+                    email
+                    phone
+                    avatarUrl
+                    bio
+                    lastSeen
+                    isOnline
+                    status
+                    emailVerified
+                    phoneVerified
+                    isAdmin
+                    createdAt
+                    updatedAt
+                }
+            }
+        }
+        """
+        struct Response: Decodable {
+            let user: UserWrapper
+        }
+        struct UserWrapper: Decodable {
+            let get: User
+        }
+        let variables = ["userId": userId.uuidString]
+        let response: Response = try await graphQL.perform(
+            query: query,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.user.get
+    }
+}
+
 ./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
 
 // ./FrontDip/MessengerApp/Services/Notification/NotificationService.swift
@@ -1978,6 +2041,7 @@ extension Notification.Name {
     static let typingStopped = Notification.Name("typingStopped")
     static let messageAcknowledged = Notification.Name("messageAcknowledged")
     static let chatCreated = Notification.Name("chatCreated")
+    static let openChat = Notification.Name("openChat")
 }
 
 class NotificationService {
@@ -3073,6 +3137,97 @@ class ChatListViewModel: ObservableObject {
             return false
         }
     }
+
+    func findOrCreatePrivateChat(with userId: UUID) async -> Chat? {
+        // Сначала ищем существующий
+        if let existing = await findExistingPrivateChat(with: userId) {
+            return existing
+        }
+        // Создаём новый
+        return await createPrivateChat(with: userId)
+    }
+
+    private func findExistingPrivateChat(with userId: UUID) async -> Chat? {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
+        do {
+            let response: ListChatsResponse = try await graphQL.perform(
+                query: GraphQLQueries.listChats,
+                variables: [:],
+                responseType: ListChatsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let chats = response.chat.list
+            for chat in chats where chat.chatType == "1" || chat.chatType.lowercased() == "private" {
+                let members = await getChatMembers(chatId: chat.id)
+                if members.contains(currentUserId) && members.contains(userId) {
+                    return chat
+                }
+            }
+            return nil
+        } catch {
+            print("Error finding private chat: \(error)")
+            return nil
+        }
+    }
+
+    private func getChatMembers(chatId: UUID) async -> [UUID] {
+        do {
+            let variables = ["chatId": chatId.uuidString]
+            let response: ChatMembersIdResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMembers,
+                variables: variables,
+                responseType: ChatMembersIdResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.compactMap { UUID(uuidString: $0) }
+        } catch {
+            return []
+        }
+    }
+
+    private func createPrivateChat(with userId: UUID) async -> Chat? {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
+        let variables: [String: Any] = [
+            "chatType": "PRIVATE",
+            "memberIds": [currentUserId.uuidString, userId.uuidString],
+            "isPublic": false
+        ]
+        do {
+            let response: CreateChatResponse = try await graphQL.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newChatData = response.chat.create
+            let newChat = Chat(
+                chatId: newChatData.chatId,
+                chatType: newChatData.chatType,
+                name: newChatData.name,
+                description: nil,
+                avatarUrl: nil,
+                creatorId: currentUserId,
+                isPublic: false,
+                maxMembers: newChatData.membersCount,
+                createdAt: newChatData.createdAt,
+                membersCount: newChatData.membersCount,
+                lastMessage: nil
+            )
+            return newChat
+        } catch {
+            print("Error creating private chat: \(error)")
+            return nil
+        }
+    }
+
+    func addChat(_ chat: Chat) {
+        DispatchQueue.main.async {
+            if !self.chats.contains(where: { $0.id == chat.id }) {
+                self.chats.insert(chat, at: 0)
+            }
+        }
+    }
+    
 }
 
 ./FrontDip/MessengerApp/ViewModels/Chat/ChatSelectionViewModel.swift
@@ -3263,6 +3418,7 @@ class ChatViewModel: ObservableObject {
     @Published var messages: [Message] = []
     @Published var newMessageText = ""
     @Published var isLoading = false
+    @Published var usersCache: [UUID: User] = [:]
     
     let chat: Chat
     private let graphQL = GraphQLClient.shared
@@ -3285,27 +3441,47 @@ class ChatViewModel: ObservableObject {
     }
     
     func loadMessages() {
-        Task {
-            await MainActor.run { isLoading = true }
-            do {
-                let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ListMessagesResponse = try await graphQL.perform(
-                    query: GraphQLQueries.listMessages,
-                    variables: variables,
-                    responseType: ListMessagesResponse.self,
-                    authToken: TokenManager.shared.accessToken
-                )
-                let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
-                await MainActor.run {
-                    self.messages = loadedMessages
-                    self.isLoading = false
+            Task {
+                await MainActor.run { isLoading = true }
+                do {
+                    let variables: [String: Any] = ["chatId": chat.id.uuidString]
+                    let response: ListMessagesResponse = try await graphQL.perform(
+                        query: GraphQLQueries.listMessages,
+                        variables: variables,
+                        responseType: ListMessagesResponse.self,
+                        authToken: TokenManager.shared.accessToken
+                    )
+                    let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
+                    await MainActor.run {
+                        self.messages = loadedMessages
+                        self.isLoading = false
+                    }
+                    await loadUsersForMessages(loadedMessages)
+                } catch {
+                    print("Load messages error: \(error)")
+                    await MainActor.run { isLoading = false }
                 }
-            } catch {
-                print("Load messages error: \(error)")
-                await MainActor.run { isLoading = false }
             }
         }
-    }
+    
+    private func loadUsersForMessages(_ messages: [Message]) async {
+            let uniqueSenderIds = Set(messages.map { $0.senderId })
+            for userId in uniqueSenderIds {
+                if usersCache[userId] == nil {
+                    do {
+                        let user = try await UserService.shared.getUser(userId: userId)
+                        await MainActor.run {
+                            self.usersCache[userId] = user
+                        }
+                    } catch {
+                        print("Failed to load user \(userId): \(error)")
+                    }
+                }
+            }
+        }
+    func getUser(for senderId: UUID) -> User? {
+            return usersCache[senderId]
+        }
     
     func sendMessage() {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3516,6 +3692,92 @@ class CreateChatViewModel: ObservableObject {
 
 ./FrontDip/MessengerApp/ViewModels/Profile/ProfileViewModel.swift
 
+
+./FrontDip/MessengerApp/ViewModels/Profile/UserProfileViewModel.swift
+
+import Foundation
+
+class UserProfileViewModel: ObservableObject {
+    @Published var user: User?
+    @Published var isContact = false
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    let userId: UUID
+    private let userService = UserService.shared
+    private let contactService = ContactService.shared
+    private let chatVM = ChatListViewModel()
+    
+    init(userId: UUID) {
+        self.userId = userId
+    }
+    
+    func loadUser() {
+        isLoading = true
+        Task {
+            do {
+                let user = try await userService.getUser(userId: userId)
+                await MainActor.run {
+                    self.user = user
+                    self.isContact = self.contactService.isContact(userId: userId)
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Не удалось загрузить профиль: \(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    func addToContacts() {
+        Task {
+            do {
+                _ = try await contactService.sendContactRequest(to: userId.uuidString)
+                await MainActor.run {
+                    self.isContact = true
+                    NotificationService.shared.showSuccess("Запрос отправлен")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func removeFromContacts() {
+        Task {
+            do {
+                _ = try await contactService.removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.isContact = false
+                    NotificationService.shared.showInfo("Контакт удалён")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func startPrivateChat() {
+        Task {
+            if let chat = await chatVM.findOrCreatePrivateChat(with: userId) {
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .chatCreated, object: chat)
+                    NotificationCenter.default.post(name: .openChat, object: chat.id)
+                }
+            } else {
+                await MainActor.run {
+                    self.errorMessage = "Не удалось создать чат"
+                }
+            }
+        }
+    }
+}
 
 ./FrontDip/MessengerApp/ViewModels/SearchViewModel.swift
 
@@ -4036,8 +4298,6 @@ struct ContactSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 
-// Views/Chat/ChatListView.swift
-
 import SwiftUI
 
 struct ChatListView: View {
@@ -4046,6 +4306,8 @@ struct ChatListView: View {
     @State private var showCreateChat = false
     @State private var newChatName = ""
     @State private var isCreating = false
+    @State private var selectedChat: Chat?
+    @State private var showChat = false
 
     var body: some View {
         ZStack {
@@ -4069,20 +4331,32 @@ struct ChatListView: View {
                             }
                         }
                     }
+                    .background(
+                        NavigationLink(destination: selectedChat.map { ChatView(chat: $0) }, isActive: $showChat) {
+                            EmptyView()
+                        }
+                    )
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
             .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
                 if let newChat = notification.object as? Chat {
-                    viewModel.chats.insert(newChat, at: 0)
+                    viewModel.addChat(newChat)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+                if let chatId = notification.object as? UUID,
+                   let chat = viewModel.chats.first(where: { $0.id == chatId }) {
+                    selectedChat = chat
+                    showChat = true
+                }
+            }
+
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
         }
         .onAppear {
-            Task {
-                await viewModel.loadChats() }
+            Task { await viewModel.loadChats() }
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
             TextField("Название", text: $newChatName)
@@ -4173,7 +4447,7 @@ struct ChatRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            Text(chat.lastMessage ?? formatDate(chat.createdAt))
+            Text(formatDate(chat.createdAt))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
@@ -4288,35 +4562,39 @@ struct ChatSidebarView: View {
 }
 
 struct ChatMemberRow: View {
-    let member: ChatMemberItem   // используем ChatMemberItem, а не ChatMemberDetailed
+    let member: ChatMemberItem
+    // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(member.nickname.prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: member.userId)) {
+            HStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(member.nickname.prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    )
+                
+                VStack(alignment: .leading) {
+                    Text(member.nickname)
                         .font(.headline)
-                        .foregroundColor(.blue)
-                )
-            
-            VStack(alignment: .leading) {
-                Text(member.nickname)
-                    .font(.headline)
-                HStack {
-                    Text("ID: \(member.userId.uuidString.prefix(8))...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("•")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Присоединился: \(formatDate(member.joinedAt))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("ID: \(member.userId.uuidString.prefix(8))...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("•")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("Присоединился: \(formatDate(member.joinedAt))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
+                Spacer()
             }
-            Spacer()
+            .buttonStyle(PlainButtonStyle())
         }
     }
     
@@ -4372,9 +4650,10 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubble(
+                            MessageBubbleView(
                                 message: message,
-                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId)
+                                isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
+                                senderUser: viewModel.getUser(for: message.senderId)
                             )
                             .id(message.id)
                         }
@@ -4622,42 +4901,48 @@ struct SearchResultRow: View {
     @State private var showingAlert = false
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(user.nickName.prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: user.userId)) {
+            HStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(user.nickName.prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    )
+                
+                VStack(alignment: .leading) {
+                    Text(user.nickName)
                         .font(.headline)
+                    Text("ID: \(user.userId.uuidString.prefix(8))...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    showingAlert = true
+                }) {
+                    Image(systemName: "person.badge.plus")
                         .foregroundColor(.blue)
-                )
-            
-            VStack(alignment: .leading) {
-                Text(user.nickName)
-                    .font(.headline)
-                Text("ID: \(user.userId.uuidString.prefix(8))...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                }
             }
-            
-            Spacer()
-            
-            Button(action: {
-                showingAlert = true
-            }) {
-                Image(systemName: "person.badge.plus")
-                    .foregroundColor(.blue)
+            .padding(.vertical, 8)
+            .alert("Добавить в контакты", isPresented: $showingAlert) {
+                Button("Отмена", role: .cancel) { }
+                Button("Добавить", role: .none) {
+                    onAdd()
+                }
+            } message: {
+                Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
             }
         }
-        .padding(.vertical, 8)
-        .alert("Добавить в контакты", isPresented: $showingAlert) {
-            Button("Отмена", role: .cancel) { }
-            Button("Добавить", role: .none) {
-                onAdd()
-            }
-        } message: {
-            Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
-        }
+        .buttonStyle(PlainButtonStyle())
+                .swipeActions {
+                    Button("Добавить") { onAdd() }
+                }
     }
 }
 
@@ -4670,6 +4955,9 @@ struct SideMenuView: View {
     @EnvironmentObject var viewModel: ChatListViewModel
     @StateObject private var authVM = AuthViewModel()
     @State private var showLogoutAlert = false
+    @State private var showContacts = false
+    @State private var showSearch = false
+    @State private var showNotifications = false
 
     var body: some View {
         ZStack {
@@ -4682,41 +4970,21 @@ struct SideMenuView: View {
                 HStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 24) {
-                        // Профиль
-                        VStack(alignment: .leading, spacing: 12) {
-                            Circle()
-                                .fill(Color.blue.opacity(0.2))
-                                .frame(width: 60, height: 60)
-                                .overlay(
-                                    Text((authVM.currentUser?.nickName.prefix(1).uppercased() ?? "U"))
-                                        .font(.title)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.blue)
-                                )
-                            Text(authVM.currentUser?.nickName ?? "Пользователь")
-                                .font(.title2)
-                                .fontWeight(.semibold)
-                            Text("ID: \(authVM.currentUser?.id.uuidString.prefix(8) ?? "")...")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.bottom, 20)
-
-                        // Пункты меню
+                        // ... профиль ...
+                        
                         MenuItem(icon: "person.2.fill", title: "Контакты") {
-                            // показать ContactsView
+                            showContacts = true
                         }
                         MenuItem(icon: "magnifyingglass", title: "Поиск") {
-                            // показать SearchView
+                            showSearch = true
                         }
                         MenuItem(icon: "bell.fill", title: "Уведомления") {
-                            // показать NotificationsView
+                            showNotifications = true
                         }
                         Divider()
                         MenuItem(icon: "rectangle.portrait.and.arrow.right", title: "Выйти", isDestructive: true) {
                             showLogoutAlert = true
                         }
-
                         Spacer()
                     }
                     .padding(.horizontal, 24)
@@ -4728,6 +4996,18 @@ struct SideMenuView: View {
             }
         }
         .animation(.spring(), value: isShowing)
+        .sheet(isPresented: $showContacts) {
+            ContactsView()
+                .environmentObject(ContactService.shared)
+        }
+        .sheet(isPresented: $showSearch) {
+            SearchView()
+                .environmentObject(ContactService.shared)
+        }
+        .sheet(isPresented: $showNotifications) {
+            NotificationsView()
+                .environmentObject(ContactService.shared)
+        }
         .alert("Выход", isPresented: $showLogoutAlert) {
             Button("Отмена", role: .cancel) { }
             Button("Выйти", role: .destructive) {
@@ -4922,11 +5202,13 @@ import SwiftUI
 struct ContactsView: View {
     @EnvironmentObject var contactService: ContactService
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         NavigationView {
             VStack {
-                if contactService.contacts.isEmpty {
+                if contactService.isLoading {
+                    ProgressView()
+                } else if contactService.contacts.isEmpty {
                     Spacer()
                     Text("Нет контактов")
                         .foregroundColor(.secondary)
@@ -4935,16 +5217,21 @@ struct ContactsView: View {
                     List(contactService.contacts) { contact in
                         ContactRow(contact: contact)
                     }
+                    .listStyle(PlainListStyle())
+                    .refreshable {
+                        contactService.loadContacts()
+                    }
                 }
             }
             .navigationTitle("Контакты")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") {
-                        dismiss()
-                    }
+                    Button("Готово") { dismiss() }
                 }
+            }
+            .onAppear {
+                contactService.loadContacts()
             }
         }
     }
@@ -4956,51 +5243,61 @@ struct ContactRow: View {
     @State private var showingChatSelection = false
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(contact.contactUser?.nickName.prefix(1).uppercased() ?? "?")
+        NavigationLink(destination: UserProfileView(userId: contact.contactUserId)) {
+            HStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(contact.contactUser?.nickName.prefix(1).uppercased() ?? "?")
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    )
+                
+                VStack(alignment: .leading) {
+                    Text(contact.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
+                    Text("Добавлен: \(formatDate(contact.createdAt))")
+                        .font(.caption)
+                }
+                
+                
+                Spacer()
+                
+                Button(action: {
+                    showingActionSheet = true
+                }) {
+                    Image(systemName: "ellipsis.circle")
                         .foregroundColor(.blue)
-                )
-
-            VStack(alignment: .leading) {
-                Text(contact.contactUser?.nickName ?? "Неизвестный")
-                    .font(.headline)
-                Text("Добавлен: \(formatDate(contact.createdAt))")
-                    .font(.caption)
-            }
-            
-            
-            Spacer()
-            
-            Button(action: {
-                showingActionSheet = true
-            }) {
-                Image(systemName: "ellipsis.circle")
-                    .foregroundColor(.blue)
+                }
+                .buttonStyle(PlainButtonStyle())
             }
             .buttonStyle(PlainButtonStyle())
-        }
-        .padding(.vertical, 8)
-        .actionSheet(isPresented: $showingActionSheet) {
-            ActionSheet(
-                title: Text(contact.contactUser?.avatarUrl ?? "Неизвестный"),
-                buttons: [
-                    .default(Text("Добавить в чат")) {
-                        showingChatSelection = true
-                    },
-                    .destructive(Text("Удалить контакт")) {
-                        ContactService.shared.removeContact(userId: contact.userId)
-                    },
-                    .cancel()
-                ]
-            )
-        }
-        .sheet(isPresented: $showingChatSelection) {
-            ChatSelectionView(contact: contact)
+            .swipeActions {
+                Button(role: .destructive) {
+                    ContactService.shared.removeContact(userId: contact.contactUserId)
+                } label: {
+                    Label("Удалить", systemImage: "trash")
+                }
+            }
+            .padding(.vertical, 8)
+            .actionSheet(isPresented: $showingActionSheet) {
+                ActionSheet(
+                    title: Text(contact.contactUser?.avatarUrl ?? "Неизвестный"),
+                    buttons: [
+                        .default(Text("Добавить в чат")) {
+                            showingChatSelection = true
+                        },
+                        .destructive(Text("Удалить контакт")) {
+                            ContactService.shared.removeContact(userId: contact.userId)
+                        },
+                        .cancel()
+                    ]
+                )
+            }
+            .sheet(isPresented: $showingChatSelection) {
+                ChatSelectionView(contact: contact)
+            }
         }
     }
     
@@ -5020,50 +5317,32 @@ import SwiftUI
 struct MessageBubbleView: View {
     let message: Message
     let isCurrentUser: Bool
-    
-    init(message: Message, isCurrentUser: Bool = false) {
-        self.message = message
-        self.isCurrentUser = isCurrentUser
-    }
+    let senderUser: User?
     
     var body: some View {
-        HStack {
-            if isCurrentUser {
-                Spacer()
+        HStack(alignment: .bottom, spacing: 8) {
+            if !isCurrentUser {
+                NavigationLink(destination: UserProfileView(userId: message.senderId)) {
+                    AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                }
+                .buttonStyle(PlainButtonStyle())
+            } else {
+                Spacer().frame(width: 32)
             }
             
             VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
-                // Текст сообщения
                 Text(message.content ?? "")
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(isCurrentUser ? Color.blue : Color(.systemGray5))
                     .foregroundColor(isCurrentUser ? .white : .primary)
                     .cornerRadius(18)
-                    .contextMenu {
-                        Button("Копировать") {
-                            UIPasteboard.general.string = message.content ?? ""
-                        }
-                        
-                        Button("Переслать") {
-                            // TODO: Реализовать пересылку
-                        }
-                        
-                        if isCurrentUser {
-                            Button("Удалить", role: .destructive) {
-                                // TODO: Реализовать удаление
-                            }
-                        }
-                    }
                 
-                // Время и статус
                 HStack(spacing: 4) {
                     Text(formatTime(message.createdAt))
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
                     if isCurrentUser {
-                        // Статус доставки (упрощённо)
                         Image(systemName: "checkmark")
                             .font(.caption2)
                             .foregroundColor(.blue)
@@ -5071,8 +5350,10 @@ struct MessageBubbleView: View {
                 }
             }
             
-            if !isCurrentUser {
-                Spacer()
+            if isCurrentUser {
+                Spacer().frame(width: 32)
+            } else {
+                Spacer().frame(width: 32)
             }
         }
         .padding(.horizontal, 8)
@@ -5083,6 +5364,31 @@ struct MessageBubbleView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+struct AvatarView: View {
+    let urlString: String?
+    let size: CGFloat
+    
+    var body: some View {
+        if let urlString, let url = URL(string: urlString), !urlString.isEmpty {
+            AsyncImage(url: url) { image in
+                image.resizable()
+            } placeholder: {
+                Circle().fill(Color.gray.opacity(0.3))
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: size, height: size)
+                .overlay(
+                    Image(systemName: "person")
+                        .foregroundColor(.gray)
+                )
+        }
     }
 }
 
@@ -5179,44 +5485,55 @@ struct ContactRequestRow: View {
     @State private var showingActionSheet = false
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.orange.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
+            HStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                    )
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(request.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
+                    
+                    Text("Запрос на контакт")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text(formatDate(request.createdAt))
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                if request.status == "pending" {
+                    Text("Ждет ответа")
+                        .font(.caption)
                         .foregroundColor(.orange)
-                )
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(request.contactUser?.nickName ?? "Неизвестный")
-                    .font(.headline)
-                
-                Text("Запрос на контакт")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Text(formatDate(request.createdAt))
-                    .font(.caption2)
-                    .foregroundColor(.gray)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                }
             }
-            
-            Spacer()
-            
-            if request.status == "pending" {
-                Text("Ждет ответа")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(8)
-            }
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 8)
+        .buttonStyle(PlainButtonStyle())
+                .swipeActions {
+                    Button("Принять") {
+                        ContactService.shared.acceptContactRequest(request)
+                    }
+                    .tint(.green)
+                    Button("Отклонить", role: .destructive) {
+                        ContactService.shared.declineContactRequest(request)
+                    }
+                }
     }
-    
     private func formatDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -5230,3 +5547,91 @@ struct ContactRequestRow: View {
 ./FrontDip/MessengerApp/Views/Profile/SettingsView.swift
 
 
+./FrontDip/MessengerApp/Views/Profile/UserProfileView.swift
+
+import SwiftUI
+
+struct UserProfileView: View {
+    let userId: UUID
+    @StateObject private var viewModel: UserProfileViewModel
+    @Environment(\.dismiss) var dismiss
+    
+    init(userId: UUID) {
+        self.userId = userId
+        _viewModel = StateObject(wrappedValue: UserProfileViewModel(userId: userId))
+    }
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 20) {
+                    AvatarView(urlString: viewModel.user?.avatarUrl, size: 100)
+                        .padding(.top, 20)
+                    
+                    Text(viewModel.user?.nickName ?? "Загрузка...")
+                        .font(.title)
+                        .fontWeight(.bold)
+                    
+                    if let isOnline = viewModel.user?.isOnline {
+                        Text(isOnline ? "Онлайн" : "Был(а) недавно")
+                            .font(.subheadline)
+                            .foregroundColor(isOnline ? .green : .secondary)
+                    }
+                    
+                    if let bio = viewModel.user?.bio, !bio.isEmpty {
+                        Text(bio)
+                            .font(.body)
+                            .padding(.horizontal)
+                    }
+                    
+                    VStack(spacing: 12) {
+                        if viewModel.isContact {
+                            Button("Написать") {
+                                viewModel.startPrivateChat()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            
+                            Button("Удалить из контактов", role: .destructive) {
+                                viewModel.removeFromContacts()
+                            }
+                            .buttonStyle(.bordered)
+                        } else {
+                            Button("Добавить в контакты") {
+                                viewModel.addToContacts()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            
+                            Button("Написать") {
+                                viewModel.startPrivateChat()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.horizontal, 40)
+                    
+                    Spacer()
+                }
+            }
+            .navigationTitle("Профиль")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+            .onAppear {
+                viewModel.loadUser()
+            }
+            .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") { viewModel.errorMessage = nil }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
+            .overlay {
+                if viewModel.isLoading {
+                    ProgressView()
+                }
+            }
+        }
+    }
+}

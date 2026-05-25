@@ -5,6 +5,7 @@ class ChatViewModel: ObservableObject {
     @Published var messages: [Message] = []
     @Published var newMessageText = ""
     @Published var isLoading = false
+    @Published var usersCache: [UUID: User] = [:]
     
     let chat: Chat
     private let graphQL = GraphQLClient.shared
@@ -27,27 +28,47 @@ class ChatViewModel: ObservableObject {
     }
     
     func loadMessages() {
-        Task {
-            await MainActor.run { isLoading = true }
-            do {
-                let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ListMessagesResponse = try await graphQL.perform(
-                    query: GraphQLQueries.listMessages,
-                    variables: variables,
-                    responseType: ListMessagesResponse.self,
-                    authToken: TokenManager.shared.accessToken
-                )
-                let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
-                await MainActor.run {
-                    self.messages = loadedMessages
-                    self.isLoading = false
+            Task {
+                await MainActor.run { isLoading = true }
+                do {
+                    let variables: [String: Any] = ["chatId": chat.id.uuidString]
+                    let response: ListMessagesResponse = try await graphQL.perform(
+                        query: GraphQLQueries.listMessages,
+                        variables: variables,
+                        responseType: ListMessagesResponse.self,
+                        authToken: TokenManager.shared.accessToken
+                    )
+                    let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
+                    await MainActor.run {
+                        self.messages = loadedMessages
+                        self.isLoading = false
+                    }
+                    await loadUsersForMessages(loadedMessages)
+                } catch {
+                    print("Load messages error: \(error)")
+                    await MainActor.run { isLoading = false }
                 }
-            } catch {
-                print("Load messages error: \(error)")
-                await MainActor.run { isLoading = false }
             }
         }
-    }
+    
+    private func loadUsersForMessages(_ messages: [Message]) async {
+            let uniqueSenderIds = Set(messages.map { $0.senderId })
+            for userId in uniqueSenderIds {
+                if usersCache[userId] == nil {
+                    do {
+                        let user = try await UserService.shared.getUser(userId: userId)
+                        await MainActor.run {
+                            self.usersCache[userId] = user
+                        }
+                    } catch {
+                        print("Failed to load user \(userId): \(error)")
+                    }
+                }
+            }
+        }
+    func getUser(for senderId: UUID) -> User? {
+            return usersCache[senderId]
+        }
     
     func sendMessage() {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)

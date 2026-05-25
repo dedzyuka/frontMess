@@ -83,44 +83,55 @@ struct ContactRequestRow: View {
     @State private var showingActionSheet = false
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.orange.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
+            HStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.orange)
+                    )
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(request.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
+                    
+                    Text("Запрос на контакт")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text(formatDate(request.createdAt))
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                if request.status == "pending" {
+                    Text("Ждет ответа")
+                        .font(.caption)
                         .foregroundColor(.orange)
-                )
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(request.contactUser?.nickName ?? "Неизвестный")
-                    .font(.headline)
-                
-                Text("Запрос на контакт")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Text(formatDate(request.createdAt))
-                    .font(.caption2)
-                    .foregroundColor(.gray)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                }
             }
-            
-            Spacer()
-            
-            if request.status == "pending" {
-                Text("Ждет ответа")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(8)
-            }
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 8)
+        .buttonStyle(PlainButtonStyle())
+                .swipeActions {
+                    Button("Принять") {
+                        ContactService.shared.acceptContactRequest(request)
+                    }
+                    .tint(.green)
+                    Button("Отклонить", role: .destructive) {
+                        ContactService.shared.declineContactRequest(request)
+                    }
+                }
     }
-    
     private func formatDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short

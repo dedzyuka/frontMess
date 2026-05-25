@@ -104,17 +104,17 @@ class ContactService: ObservableObject {
                 let fetched = try await fetchContacts()
                 await MainActor.run {
                     self.contacts = fetched
-                    // for contact in fetched {
-                    //     _ = self.database.saveContact(contact) // ← временно отключаем, пока не обновите LocalDatabase
-                    // }
+                    // Сохраняем в БД
+                    for contact in fetched {
+                        _ = self.database.saveContact(contact)
+                    }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
+                // Загружаем из БД
+                let storedContacts = self.database.getContacts()
                 await MainActor.run {
-                    self.contacts = self.database.getContacts().compactMap { dbContact in
-                        // конвертация из старой БД – можно пока вернуть пустой массив
-                        return nil
-                    }
+                    self.contacts = storedContacts
                 }
             }
         }
@@ -128,6 +128,7 @@ class ContactService: ObservableObject {
                 let pending = fetched.filter { $0.status.lowercased() == "pending" }
                 await MainActor.run {
                     self.pendingRequests = pending
+                    // Сохраняем в базу (опционально)
                     for req in pending {
                         let contactRequest = ContactRequest(
                             fromUserId: req.contactUserId,
@@ -141,7 +142,7 @@ class ContactService: ObservableObject {
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
-                // загружаем из базы
+                // Загружаем из локальной БД
                 let stored = self.database.getPendingContactRequests()
                 await MainActor.run {
                     self.pendingRequests = stored.compactMap { req in
@@ -154,13 +155,21 @@ class ContactService: ObservableObject {
                             contactUser: User(
                                 userId: req.fromUserId,
                                 nickName: req.fromNickname,
-                                firstName: nil, lastName: nil, middleName: nil,
-                                email: nil, phone: nil,
+                                firstName: nil,
+                                lastName: nil,
+                                middleName: nil,
+                                email: nil,
+                                phone: nil,
                                 avatarUrl: req.fromAvatarUrl,
-                                bio: nil, lastSeen: nil, isOnline: false,
+                                bio: nil,
+                                lastSeen: nil,
+                                isOnline: false,
                                 status: nil,
-                                emailVerified: nil, phoneVerified: nil,
-                                isAdmin: nil, createdAt: nil, updatedAt: nil
+                                emailVerified: nil,
+                                phoneVerified: nil,
+                                isAdmin: nil,
+                                createdAt: nil,
+                                updatedAt: nil
                             )
                         )
                     }

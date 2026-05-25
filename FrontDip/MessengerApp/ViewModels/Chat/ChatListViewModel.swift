@@ -79,4 +79,95 @@ class ChatListViewModel: ObservableObject {
             return false
         }
     }
+
+    func findOrCreatePrivateChat(with userId: UUID) async -> Chat? {
+        // Сначала ищем существующий
+        if let existing = await findExistingPrivateChat(with: userId) {
+            return existing
+        }
+        // Создаём новый
+        return await createPrivateChat(with: userId)
+    }
+
+    private func findExistingPrivateChat(with userId: UUID) async -> Chat? {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
+        do {
+            let response: ListChatsResponse = try await graphQL.perform(
+                query: GraphQLQueries.listChats,
+                variables: [:],
+                responseType: ListChatsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let chats = response.chat.list
+            for chat in chats where chat.chatType == "1" || chat.chatType.lowercased() == "private" {
+                let members = await getChatMembers(chatId: chat.id)
+                if members.contains(currentUserId) && members.contains(userId) {
+                    return chat
+                }
+            }
+            return nil
+        } catch {
+            print("Error finding private chat: \(error)")
+            return nil
+        }
+    }
+
+    private func getChatMembers(chatId: UUID) async -> [UUID] {
+        do {
+            let variables = ["chatId": chatId.uuidString]
+            let response: ChatMembersIdResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMembers,
+                variables: variables,
+                responseType: ChatMembersIdResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.compactMap { UUID(uuidString: $0) }
+        } catch {
+            return []
+        }
+    }
+
+    private func createPrivateChat(with userId: UUID) async -> Chat? {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
+        let variables: [String: Any] = [
+            "chatType": "PRIVATE",
+            "memberIds": [currentUserId.uuidString, userId.uuidString],
+            "isPublic": false
+        ]
+        do {
+            let response: CreateChatResponse = try await graphQL.perform(
+                query: GraphQLQueries.createChat,
+                variables: variables,
+                responseType: CreateChatResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newChatData = response.chat.create
+            let newChat = Chat(
+                chatId: newChatData.chatId,
+                chatType: newChatData.chatType,
+                name: newChatData.name,
+                description: nil,
+                avatarUrl: nil,
+                creatorId: currentUserId,
+                isPublic: false,
+                maxMembers: newChatData.membersCount,
+                createdAt: newChatData.createdAt,
+                membersCount: newChatData.membersCount,
+                lastMessage: nil
+            )
+            return newChat
+        } catch {
+            print("Error creating private chat: \(error)")
+            return nil
+        }
+    }
+
+    func addChat(_ chat: Chat) {
+        DispatchQueue.main.async {
+            if !self.chats.contains(where: { $0.id == chat.id }) {
+                self.chats.insert(chat, at: 0)
+            }
+        }
+    }
+    
 }

@@ -3,50 +3,32 @@ import SwiftUI
 struct MessageBubbleView: View {
     let message: Message
     let isCurrentUser: Bool
-    
-    init(message: Message, isCurrentUser: Bool = false) {
-        self.message = message
-        self.isCurrentUser = isCurrentUser
-    }
+    let senderUser: User?
     
     var body: some View {
-        HStack {
-            if isCurrentUser {
-                Spacer()
+        HStack(alignment: .bottom, spacing: 8) {
+            if !isCurrentUser {
+                NavigationLink(destination: UserProfileView(userId: message.senderId)) {
+                    AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                }
+                .buttonStyle(PlainButtonStyle())
+            } else {
+                Spacer().frame(width: 32)
             }
             
             VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
-                // Текст сообщения
                 Text(message.content ?? "")
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(isCurrentUser ? Color.blue : Color(.systemGray5))
                     .foregroundColor(isCurrentUser ? .white : .primary)
                     .cornerRadius(18)
-                    .contextMenu {
-                        Button("Копировать") {
-                            UIPasteboard.general.string = message.content ?? ""
-                        }
-                        
-                        Button("Переслать") {
-                            // TODO: Реализовать пересылку
-                        }
-                        
-                        if isCurrentUser {
-                            Button("Удалить", role: .destructive) {
-                                // TODO: Реализовать удаление
-                            }
-                        }
-                    }
                 
-                // Время и статус
                 HStack(spacing: 4) {
                     Text(formatTime(message.createdAt))
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    
                     if isCurrentUser {
-                        // Статус доставки (упрощённо)
                         Image(systemName: "checkmark")
                             .font(.caption2)
                             .foregroundColor(.blue)
@@ -54,8 +36,10 @@ struct MessageBubbleView: View {
                 }
             }
             
-            if !isCurrentUser {
-                Spacer()
+            if isCurrentUser {
+                Spacer().frame(width: 32)
+            } else {
+                Spacer().frame(width: 32)
             }
         }
         .padding(.horizontal, 8)
@@ -66,5 +50,30 @@ struct MessageBubbleView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
+    }
+}
+
+struct AvatarView: View {
+    let urlString: String?
+    let size: CGFloat
+    
+    var body: some View {
+        if let urlString, let url = URL(string: urlString), !urlString.isEmpty {
+            AsyncImage(url: url) { image in
+                image.resizable()
+            } placeholder: {
+                Circle().fill(Color.gray.opacity(0.3))
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: size, height: size)
+                .overlay(
+                    Image(systemName: "person")
+                        .foregroundColor(.gray)
+                )
+        }
     }
 }

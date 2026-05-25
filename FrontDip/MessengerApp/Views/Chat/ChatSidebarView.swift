@@ -94,35 +94,39 @@ struct ChatSidebarView: View {
 }
 
 struct ChatMemberRow: View {
-    let member: ChatMemberItem   // используем ChatMemberItem, а не ChatMemberDetailed
+    let member: ChatMemberItem
+    // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
-        HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(member.nickname.prefix(1).uppercased())
+        NavigationLink(destination: UserProfileView(userId: member.userId)) {
+            HStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.3))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Text(member.nickname.prefix(1).uppercased())
+                            .font(.headline)
+                            .foregroundColor(.blue)
+                    )
+                
+                VStack(alignment: .leading) {
+                    Text(member.nickname)
                         .font(.headline)
-                        .foregroundColor(.blue)
-                )
-            
-            VStack(alignment: .leading) {
-                Text(member.nickname)
-                    .font(.headline)
-                HStack {
-                    Text("ID: \(member.userId.uuidString.prefix(8))...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("•")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("Присоединился: \(formatDate(member.joinedAt))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("ID: \(member.userId.uuidString.prefix(8))...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("•")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("Присоединился: \(formatDate(member.joinedAt))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
+                Spacer()
             }
-            Spacer()
+            .buttonStyle(PlainButtonStyle())
         }
     }
     

@@ -5,6 +5,9 @@ struct SideMenuView: View {
     @EnvironmentObject var viewModel: ChatListViewModel
     @StateObject private var authVM = AuthViewModel()
     @State private var showLogoutAlert = false
+    @State private var showContacts = false
+    @State private var showSearch = false
+    @State private var showNotifications = false
 
     var body: some View {
         ZStack {
@@ -17,41 +20,21 @@ struct SideMenuView: View {
                 HStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 24) {
-                        // Профиль
-                        VStack(alignment: .leading, spacing: 12) {
-                            Circle()
-                                .fill(Color.blue.opacity(0.2))
-                                .frame(width: 60, height: 60)
-                                .overlay(
-                                    Text((authVM.currentUser?.nickName.prefix(1).uppercased() ?? "U"))
-                                        .font(.title)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.blue)
-                                )
-                            Text(authVM.currentUser?.nickName ?? "Пользователь")
-                                .font(.title2)
-                                .fontWeight(.semibold)
-                            Text("ID: \(authVM.currentUser?.id.uuidString.prefix(8) ?? "")...")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.bottom, 20)
-
-                        // Пункты меню
+                        // ... профиль ...
+                        
                         MenuItem(icon: "person.2.fill", title: "Контакты") {
-                            // показать ContactsView
+                            showContacts = true
                         }
                         MenuItem(icon: "magnifyingglass", title: "Поиск") {
-                            // показать SearchView
+                            showSearch = true
                         }
                         MenuItem(icon: "bell.fill", title: "Уведомления") {
-                            // показать NotificationsView
+                            showNotifications = true
                         }
                         Divider()
                         MenuItem(icon: "rectangle.portrait.and.arrow.right", title: "Выйти", isDestructive: true) {
                             showLogoutAlert = true
                         }
-
                         Spacer()
                     }
                     .padding(.horizontal, 24)
@@ -63,6 +46,18 @@ struct SideMenuView: View {
             }
         }
         .animation(.spring(), value: isShowing)
+        .sheet(isPresented: $showContacts) {
+            ContactsView()
+                .environmentObject(ContactService.shared)
+        }
+        .sheet(isPresented: $showSearch) {
+            SearchView()
+                .environmentObject(ContactService.shared)
+        }
+        .sheet(isPresented: $showNotifications) {
+            NotificationsView()
+                .environmentObject(ContactService.shared)
+        }
         .alert("Выход", isPresented: $showLogoutAlert) {
             Button("Отмена", role: .cancel) { }
             Button("Выйти", role: .destructive) {
