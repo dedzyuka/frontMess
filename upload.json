@@ -1,0 +1,620 @@
+{
+    "info": {
+        "_postman_id": "socketup-collection",
+        "name": "SocketUp API Tests",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8002",
+            "type": "string"
+        },
+        {
+            "key": "ws_url",
+            "value": "ws://localhost:8000",
+            "type": "string"
+        },
+        {
+            "key": "access_token",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "refresh_token",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "user_id",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "chat_id",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "message_id",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "contact_user_id",
+            "value": "",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "Auth",
+            "item": [
+                {
+                    "name": "Register",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) { user { create(nickName: $nickName, email: $email, password: $password, phone: $phone) { userId nickName email } } }\",\n    \"variables\": {\n        \"nickName\": \"testuser\",\n        \"email\": \"test@example.com\",\n        \"password\": \"secret123\",\n        \"phone\": \"+1234567890\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Login",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation Login($login: String!, $password: String!) { auth { login(login: $login, password: $password) { accessToken refreshToken expiresIn user { userId nickName avatarUrl isOnline } } } }\",\n    \"variables\": {\n        \"login\": \"testuser\",\n        \"password\": \"secret123\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Refresh Token",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation RefreshToken($refreshToken: String!) { auth { refreshToken(refreshToken: $refreshToken) { accessToken refreshToken expiresIn user { userId nickName } } } }\",\n    \"variables\": {\n        \"refreshToken\": \"{{refresh_token}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Users",
+            "item": [
+                {
+                    "name": "Get My Profile",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query MyProfile { user { myProfile { userId nickName avatarUrl isOnline email } } }\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search Users",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query SearchUsers($query: String!) { user { search(query: $query, page: 1) { userId nickName avatarUrl isOnline } } }\",\n    \"variables\": {\n        \"query\": \"test\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Chats",
+            "item": [
+                {
+                    "name": "List Chats",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query ListChats { chat { list { chatId chatType name membersCount createdAt lastMessage } } }\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Create Group Chat",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation CreateChat($chatType: String!, $name: String, $memberIds: [String!]!, $isPublic: Boolean) { chat { create(chatType: $chatType, name: $name, memberIds: $memberIds, isPublic: $isPublic) { chatId chatType name membersCount createdAt } } }\",\n    \"variables\": {\n        \"chatType\": \"GROUP\",\n        \"name\": \"Test Group\",\n        \"memberIds\": [\"{{user_id}}\"],\n        \"isPublic\": false\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Chat Members",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query GetChatMembers($chatId: String!) { chat { members(chatId: $chatId) } }\",\n    \"variables\": {\n        \"chatId\": \"{{chat_id}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Messages",
+            "item": [
+                {
+                    "name": "List Messages",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query ListMessages($chatId: String!, $page: Int, $pageSize: Int) { message { listMessages(chatId: $chatId, page: $page, pageSize: $pageSize) { messageId chatId senderId content type createdAt updatedAt isEdited } } }\",\n    \"variables\": {\n        \"chatId\": \"{{chat_id}}\",\n        \"page\": 1,\n        \"pageSize\": 20\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Send Message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation SendMessage($chatId: String!, $content: String!) { message { sendMessage(chatId: $chatId, content: $content) { messageId chatId senderId content createdAt } } }\",\n    \"variables\": {\n        \"chatId\": \"{{chat_id}}\",\n        \"content\": \"Hello from Postman!\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Update Message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation UpdateMessage($messageId: Int!, $chatId: String!, $content: String!) { message { updateMessage(messageId: $messageId, chatId: $chatId, content: $content) { messageId content updatedAt isEdited } } }\",\n    \"variables\": {\n        \"messageId\": {{message_id}},\n        \"chatId\": \"{{chat_id}}\",\n        \"content\": \"Edited message text\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Delete Message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation DeleteMessage($messageId: Int!, $chatId: String!) { message { deleteMessage(messageId: $messageId, chatId: $chatId) } }\",\n    \"variables\": {\n        \"messageId\": {{message_id}},\n        \"chatId\": \"{{chat_id}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Add Reaction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation AddReaction($messageId: Int!, $chatId: String!, $emoji: String!) { message { addReaction(messageId: $messageId, chatId: $chatId, emoji: $emoji) { messageId user_id emoji created_at } } }\",\n    \"variables\": {\n        \"messageId\": {{message_id}},\n        \"chatId\": \"{{chat_id}}\",\n        \"emoji\": \"👍\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Remove Reaction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation RemoveReaction($messageId: Int!, $chatId: String!, $emoji: String!) { message { removeReaction(messageId: $messageId, chatId: $chatId, emoji: $emoji) } }\",\n    \"variables\": {\n        \"messageId\": {{message_id}},\n        \"chatId\": \"{{chat_id}}\",\n        \"emoji\": \"👍\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search Messages",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query SearchMessages($chatId: String!, $query: String!, $page: Int, $pageSize: Int) { message { searchMessages(chatId: $chatId, query: $query, page: $page, pageSize: $pageSize) { messageId content senderId createdAt } } }\",\n    \"variables\": {\n        \"chatId\": \"{{chat_id}}\",\n        \"query\": \"Hello\",\n        \"page\": 1,\n        \"pageSize\": 10\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Contacts",
+            "item": [
+                {
+                    "name": "List Contacts",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query ListContacts($status: String) { contact { list(status: $status) { userId contactUserId status createdAt contactUser { userId nickName avatarUrl } } } }\",\n    \"variables\": {\n        \"status\": \"accepted\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Add Contact",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation AddContact($contactUserId: String!) { contact { add(contactUserId: $contactUserId) { userId contactUserId status createdAt } } }\",\n    \"variables\": {\n        \"contactUserId\": \"{{contact_user_id}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Accept Contact",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation AcceptContact($contactUserId: String!) { contact { accept(contactUserId: $contactUserId) { userId contactUserId status updatedAt } } }\",\n    \"variables\": {\n        \"contactUserId\": \"{{contact_user_id}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Remove Contact",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"mutation RemoveContact($contactUserId: String!) { contact { remove(contactUserId: $contactUserId) } }\",\n    \"variables\": {\n        \"contactUserId\": \"{{contact_user_id}}\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Incoming Requests",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"query IncomingRequests { contact { incoming { userId contactUserId status createdAt contactUser { userId nickName avatarUrl } } } }\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/graphql",
+                            "host": ["{{base_url}}"],
+                            "path": ["graphql"]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "WebSocket Test",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{ws_url}}/ws/chat?access_token={{access_token}}",
+                    "host": ["{{ws_url}}"],
+                    "path": ["ws", "chat"],
+                    "query": [
+                        {
+                            "key": "access_token",
+                            "value": "{{access_token}}"
+                        }
+                    ]
+                }
+            },
+            "response": []
+        }
+    ],
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Автоматически устанавливаем заголовок Authorization для всех запросов, кроме логина/регистрации",
+                    "if (pm.request.url.path.includes('graphql') && pm.collectionVariables.get('access_token')) {",
+                    "    pm.request.headers.add({",
+                    "        key: 'Authorization',",
+                    "        value: 'Bearer ' + pm.collectionVariables.get('access_token')",
+                    "    });",
+                    "}"
+                ]
+            }
+        }
+    ]
+}

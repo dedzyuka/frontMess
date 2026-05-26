@@ -377,7 +377,7 @@ struct User: Identifiable, Codable {
     let avatarUrl: String?
     let bio: String?
     let lastSeen: Date?
-    let isOnline: Bool
+    let isOnline: Bool?
     let status: String?          // опционально
     let emailVerified: Bool?
     let phoneVerified: Bool?
@@ -559,7 +559,6 @@ struct GraphQLQueries {
                 chatType
                 name
                 createdAt
-                updatedAt
                 membersCount
             }
         }
@@ -697,7 +696,7 @@ struct GraphQLQueries {
     static let searchUsers = """
     query SearchUsers($query: String!) {
         user {
-            search(query: $query, page: 1, pageSize: 20) {
+            search(query: $query, page: 1) {
                 userId
                 nickName
                 avatarUrl
@@ -1579,7 +1578,8 @@ class ContactService: ObservableObject {
     static let shared = ContactService()
     
     @Published var contacts: [Contact] = []
-    @Published var pendingRequests: [Contact] = []
+    @Published var pendingRequests: [Contact] = []   // входящие pending (contact_user_id = currentUser)
+    @Published var outgoingRequests: [Contact] = [] // исходящие pending (user_id = currentUser)
     @Published var isLoading = false
     
     private let graphQL = GraphQLClient.shared
@@ -1595,6 +1595,7 @@ class ContactService: ObservableObject {
             .sink { [weak self] _ in
                 self?.loadContacts()
                 self?.loadPendingRequests()
+                self?.loadOutgoingRequests()
             }
             .store(in: &cancellables)
     }
@@ -1673,17 +1674,15 @@ class ContactService: ObservableObject {
         guard TokenManager.shared.accessToken != nil else { return }
         Task {
             do {
-                let fetched = try await fetchContacts()
+                let fetched = try await fetchContacts(status: "accepted")
                 await MainActor.run {
                     self.contacts = fetched
-                    // Сохраняем в БД
-                    for contact in fetched {
-                        _ = self.database.saveContact(contact)
-                    }
+                    // for contact in fetched {
+                    //     _ = self.database.saveContact(contact)
+                    // }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
-                // Загружаем из БД
                 let storedContacts = self.database.getContacts()
                 await MainActor.run {
                     self.contacts = storedContacts
@@ -1700,7 +1699,6 @@ class ContactService: ObservableObject {
                 let pending = fetched.filter { $0.status.lowercased() == "pending" }
                 await MainActor.run {
                     self.pendingRequests = pending
-                    // Сохраняем в базу (опционально)
                     for req in pending {
                         let contactRequest = ContactRequest(
                             fromUserId: req.contactUserId,
@@ -1714,7 +1712,6 @@ class ContactService: ObservableObject {
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
-                // Загружаем из локальной БД
                 let stored = self.database.getPendingContactRequests()
                 await MainActor.run {
                     self.pendingRequests = stored.compactMap { req in
@@ -1750,8 +1747,27 @@ class ContactService: ObservableObject {
         }
     }
     
+    func loadOutgoingRequests() {
+        guard TokenManager.shared.accessToken != nil else { return }
+        Task {
+            do {
+                let fetched = try await fetchContacts(status: "pending")
+                let pendingOutgoing = fetched.filter { $0.status.lowercased() == "pending" }
+                await MainActor.run {
+                    self.outgoingRequests = pendingOutgoing
+                }
+            } catch {
+                print("Failed to load outgoing requests: \(error)")
+                await MainActor.run {
+                    self.outgoingRequests = []
+                }
+            }
+        }
+    }
+    
     func syncContacts() { loadContacts() }
     func syncPendingRequests() { loadPendingRequests() }
+    func syncOutgoingRequests() { loadOutgoingRequests() }
     
     // MARK: - Helpers
     
@@ -1759,15 +1775,29 @@ class ContactService: ObservableObject {
         return contacts.contains(where: { $0.contactUserId == userId })
     }
     
+    func getContactStatus(for userId: UUID) -> String? {
+        if contacts.contains(where: { $0.contactUserId == userId }) {
+            return "accepted"
+        }
+        if outgoingRequests.contains(where: { $0.contactUserId == userId }) {
+            return "pending"
+        }
+        if pendingRequests.contains(where: { $0.contactUserId == userId }) {
+            return "incoming_pending"
+        }
+        return nil
+    }
+    
     func sendContactRequest(to user: UserPublicResponse) {
         guard let currentUser = AppState.shared.currentUser else { return }
         guard currentUser.id != user.userId else { return }
-        guard !isContact(userId: user.userId) else { return }
+        guard getContactStatus(for: user.userId) == nil else { return }
         
         Task {
             do {
                 _ = try await sendContactRequest(to: user.userId.uuidString)
                 await MainActor.run {
+                    self.loadOutgoingRequests()
                     NotificationService.shared.showSuccess("Запрос отправлен \(user.nickName)")
                 }
             } catch {
@@ -1783,8 +1813,8 @@ class ContactService: ObservableObject {
             do {
                 _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
                 await MainActor.run {
-                    loadContacts()
-                    loadPendingRequests()
+                    self.loadContacts()
+                    self.loadPendingRequests()
                     NotificationService.shared.showSuccess("Контакт добавлен")
                 }
             } catch {
@@ -1800,7 +1830,7 @@ class ContactService: ObservableObject {
             do {
                 _ = try await removeContact(userId: request.contactUserId.uuidString)
                 await MainActor.run {
-                    loadPendingRequests()
+                    self.loadPendingRequests()
                     NotificationService.shared.showInfo("Запрос отклонён")
                 }
             } catch {
@@ -1816,8 +1846,25 @@ class ContactService: ObservableObject {
             do {
                 _ = try await removeContact(userId: userId.uuidString)
                 await MainActor.run {
-                    loadContacts()
+                    self.loadContacts()
+                    self.loadOutgoingRequests()
                     NotificationService.shared.showInfo("Контакт удалён")
+                }
+            } catch {
+                await MainActor.run {
+                    NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    func cancelOutgoingRequest(userId: UUID) {
+        Task {
+            do {
+                _ = try await removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.loadOutgoingRequests()
+                    NotificationService.shared.showInfo("Запрос отменён")
                 }
             } catch {
                 await MainActor.run {
@@ -2042,6 +2089,7 @@ extension Notification.Name {
     static let messageAcknowledged = Notification.Name("messageAcknowledged")
     static let chatCreated = Notification.Name("chatCreated")
     static let openChat = Notification.Name("openChat")
+    static let openProfile = Notification.Name("openProfile")
 }
 
 class NotificationService {
@@ -2825,6 +2873,10 @@ extension JSONDecoder {
             if let date = formatter.date(from: dateString) {
                 return date
             }
+            formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+            if let date = formatter.date(from: dateString) {
+                return date
+            }
             // Стандартный ISO8601
             let isoFormatter = ISO8601DateFormatter()
             isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -3200,7 +3252,7 @@ class ChatListViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let newChatData = response.chat.create
-            let newChat = Chat(
+            let chat = Chat(
                 chatId: newChatData.chatId,
                 chatType: newChatData.chatType,
                 name: newChatData.name,
@@ -3213,7 +3265,8 @@ class ChatListViewModel: ObservableObject {
                 membersCount: newChatData.membersCount,
                 lastMessage: nil
             )
-            return newChat
+            NotificationCenter.default.post(name: .chatCreated, object: chat)
+            return chat
         } catch {
             print("Error creating private chat: \(error)")
             return nil
@@ -3660,7 +3713,7 @@ class CreateChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let newChat = response.chat.create
-            let chatObj = Chat(
+            let chat = Chat(
                 chatId: newChat.chatId,
                 chatType: newChat.chatType,
                 name: newChat.name,
@@ -3674,7 +3727,7 @@ class CreateChatViewModel: ObservableObject {
                 lastMessage: nil
             )
             await MainActor.run {
-                NotificationCenter.default.post(name: .chatCreated, object: newChat)
+                NotificationCenter.default.post(name: .chatCreated, object: chat)
                 self.showInviteSheet = true
             }
             return true
@@ -3695,11 +3748,13 @@ class CreateChatViewModel: ObservableObject {
 
 ./FrontDip/MessengerApp/ViewModels/Profile/UserProfileViewModel.swift
 
+// ./FrontDip/MessengerApp/ViewModels/Profile/UserProfileViewModel.swift
+
 import Foundation
 
 class UserProfileViewModel: ObservableObject {
     @Published var user: User?
-    @Published var isContact = false
+    @Published var contactStatus: String?  // nil, "pending", "accepted", "incoming_pending"
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -3719,7 +3774,8 @@ class UserProfileViewModel: ObservableObject {
                 let user = try await userService.getUser(userId: userId)
                 await MainActor.run {
                     self.user = user
-                    self.isContact = self.contactService.isContact(userId: userId)
+                    // Обновляем статус контакта через ContactService
+                    self.contactStatus = self.contactService.getContactStatus(for: userId)
                     self.isLoading = false
                 }
             } catch {
@@ -3736,8 +3792,62 @@ class UserProfileViewModel: ObservableObject {
             do {
                 _ = try await contactService.sendContactRequest(to: userId.uuidString)
                 await MainActor.run {
-                    self.isContact = true
+                    self.contactStatus = "pending"
+                    self.contactService.loadOutgoingRequests()
                     NotificationService.shared.showSuccess("Запрос отправлен")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func cancelOutgoingRequest() {
+        Task {
+            do {
+                _ = try await contactService.removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = nil
+                    self.contactService.loadOutgoingRequests()
+                    NotificationService.shared.showInfo("Запрос отменён")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func acceptIncomingRequest() {
+        Task {
+            print("➡️ Accepting contact from user ID: \(userId.uuidString)")
+            do {
+                _ = try await contactService.acceptContact(contactUserId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = "accepted"
+                    self.contactService.loadContacts()
+                    self.contactService.loadPendingRequests()
+                    NotificationService.shared.showSuccess("Контакт добавлен")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Ошибка: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    func declineIncomingRequest() {
+        Task {
+            do {
+                _ = try await contactService.removeContact(userId: userId.uuidString)
+                await MainActor.run {
+                    self.contactStatus = nil
+                    self.contactService.loadPendingRequests()
+                    NotificationService.shared.showInfo("Запрос отклонён")
                 }
             } catch {
                 await MainActor.run {
@@ -3752,7 +3862,8 @@ class UserProfileViewModel: ObservableObject {
             do {
                 _ = try await contactService.removeContact(userId: userId.uuidString)
                 await MainActor.run {
-                    self.isContact = false
+                    self.contactStatus = nil
+                    self.contactService.loadContacts()
                     NotificationService.shared.showInfo("Контакт удалён")
                 }
             } catch {
@@ -4632,17 +4743,24 @@ struct ChatView: View {
                         .font(.title2)
                         .foregroundColor(.blue)
                 }
+                .frame(width: 44, height: 44) // увеличиваем область нажатия
+                
                 Spacer()
+                
                 Text(chat.name ?? "Чат")
                     .font(.headline)
+                
                 Spacer()
+                
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
                         .font(.title2)
                         .foregroundColor(.blue)
                 }
+                .frame(width: 44, height: 44)
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 8)
             .background(Color(.systemBackground))
 
             // Список сообщений
@@ -4658,6 +4776,7 @@ struct ChatView: View {
                             .id(message.id)
                         }
                     }
+                    
                     .padding(.horizontal)
                     .padding(.vertical, 12)
                 }
@@ -5067,7 +5186,7 @@ struct ChatSelectionView: View {
                 } else if viewModel.chats.isEmpty {
                     Spacer()
                     VStack(spacing: 20) {
-                        Image(systemName: "bubble.left.and.bubble.right.slash")
+                        Image(systemName: "bubble.left.and.bubble.right")
                             .font(.system(size: 60))
                             .foregroundColor(.gray.opacity(0.5))
                         
@@ -5320,7 +5439,7 @@ struct MessageBubbleView: View {
     let senderUser: User?
     
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
                 NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                     AvatarView(urlString: senderUser?.avatarUrl, size: 32)
@@ -5400,6 +5519,8 @@ struct AvatarView: View {
 
 ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
 
+// ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
+
 import SwiftUI
 
 struct NotificationsView: View {
@@ -5410,7 +5531,7 @@ struct NotificationsView: View {
     var body: some View {
         NavigationView {
             VStack {
-                if contactService.pendingRequests.isEmpty {
+                if contactService.pendingRequests.isEmpty && contactService.outgoingRequests.isEmpty {
                     Spacer()
                     VStack(spacing: 20) {
                         Image(systemName: "bell.slash")
@@ -5423,33 +5544,55 @@ struct NotificationsView: View {
                     }
                     Spacer()
                 } else {
-                    List(contactService.pendingRequests) { request in
-                        ContactRequestRow(request: request)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    contactService.declineContactRequest(request)
-                                } label: {
-                                    Label("Отклонить", systemImage: "xmark.circle")
-                                }
-                                
-                                Button {
-                                    contactService.acceptContactRequest(request)
-                                } label: {
-                                    Label("Принять", systemImage: "checkmark.circle")
-                                        .tint(.green)
+                    List {
+                        if !contactService.outgoingRequests.isEmpty {
+                            Section(header: Text("Отправленные запросы")) {
+                                ForEach(contactService.outgoingRequests) { request in
+                                    ContactRequestRow(request: request, isOutgoing: true)
+                                        .swipeActions(edge: .trailing) {
+                                            Button(role: .destructive) {
+                                                contactService.cancelOutgoingRequest(userId: request.contactUserId)
+                                            } label: {
+                                                Label("Отменить", systemImage: "xmark.circle")
+                                            }
+                                        }
                                 }
                             }
+                        }
+                        
+                        if !contactService.pendingRequests.isEmpty {
+                            Section(header: Text("Входящие запросы")) {
+                                ForEach(contactService.pendingRequests) { request in
+                                    ContactRequestRow(request: request, isOutgoing: false)
+                                        .swipeActions(edge: .trailing) {
+                                            Button(role: .destructive) {
+                                                contactService.declineContactRequest(request)
+                                            } label: {
+                                                Label("Отклонить", systemImage: "xmark.circle")
+                                            }
+                                            
+                                            Button {
+                                                contactService.acceptContactRequest(request)
+                                            } label: {
+                                                Label("Принять", systemImage: "checkmark.circle")
+                                                    .tint(.green)
+                                            }
+                                        }
+                                }
+                            }
+                        }
                     }
-                    .listStyle(PlainListStyle())
+                    .listStyle(InsetGroupedListStyle())
+                    .refreshable {
+                        await refreshRequests()
+                    }
                 }
             }
             .navigationTitle("Уведомления")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") {
-                        dismiss()
-                    }
+                    Button("Готово") { dismiss() }
                 }
                 
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -5457,50 +5600,48 @@ struct NotificationsView: View {
                         ProgressView()
                     } else {
                         Button("Обновить") {
-                            refreshRequests()
+                            Task { await refreshRequests() }
                         }
                     }
                 }
             }
             .onAppear {
                 contactService.loadPendingRequests()
+                contactService.loadOutgoingRequests()
             }
         }
     }
     
-    private func refreshRequests() {
+    private func refreshRequests() async {
         isLoading = true
-        Task {
-            await contactService.syncPendingRequests()
-            await MainActor.run {
-                isLoading = false
-            }
-        }
+        await contactService.syncPendingRequests()
+        await contactService.syncOutgoingRequests()
+        isLoading = false
     }
 }
 
-// Переработанная строка для входящего запроса на основе модели Contact
 struct ContactRequestRow: View {
     let request: Contact
+    let isOutgoing: Bool
     @State private var showingActionSheet = false
     
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
             HStack {
                 Circle()
-                    .fill(Color.orange.opacity(0.3))
+                    .fill(isOutgoing ? Color.blue.opacity(0.3) : Color.orange.opacity(0.3))
                     .frame(width: 40, height: 40)
                     .overlay(
                         Text((request.contactUser?.nickName ?? "?").prefix(1).uppercased())
                             .font(.headline)
-                            .foregroundColor(.orange)
+                            .foregroundColor(isOutgoing ? .blue : .orange)
                     )
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(request.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
                     
-                    Text("Запрос на контакт")
+                    Text(isOutgoing ? "Ожидает подтверждения" : "Запрос на контакт")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -5511,7 +5652,15 @@ struct ContactRequestRow: View {
                 
                 Spacer()
                 
-                if request.status == "pending" {
+                if isOutgoing {
+                    Text("Отправлен")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(8)
+                } else if request.status == "pending" {
                     Text("Ждет ответа")
                         .font(.caption)
                         .foregroundColor(.orange)
@@ -5524,16 +5673,8 @@ struct ContactRequestRow: View {
             .padding(.vertical, 8)
         }
         .buttonStyle(PlainButtonStyle())
-                .swipeActions {
-                    Button("Принять") {
-                        ContactService.shared.acceptContactRequest(request)
-                    }
-                    .tint(.green)
-                    Button("Отклонить", role: .destructive) {
-                        ContactService.shared.declineContactRequest(request)
-                    }
-                }
     }
+    
     private func formatDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -5548,6 +5689,8 @@ struct ContactRequestRow: View {
 
 
 ./FrontDip/MessengerApp/Views/Profile/UserProfileView.swift
+
+// ./FrontDip/MessengerApp/Views/Profile/UserProfileView.swift
 
 import SwiftUI
 
@@ -5578,39 +5721,86 @@ struct UserProfileView: View {
                             .foregroundColor(isOnline ? .green : .secondary)
                     }
                     
+                    if let lastSeen = viewModel.user?.lastSeen {
+                        Text("Последний раз: \(formatRelativeDate(lastSeen))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
                     if let bio = viewModel.user?.bio, !bio.isEmpty {
                         Text(bio)
                             .font(.body)
+                            .multilineTextAlignment(.center)
                             .padding(.horizontal)
                     }
                     
+                    // MARK: - Кнопки действий в зависимости от contactStatus
                     VStack(spacing: 12) {
-                        if viewModel.isContact {
+                        if viewModel.contactStatus == "accepted" {
+                            // Уже контакт
                             Button("Написать") {
                                 viewModel.startPrivateChat()
                             }
                             .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity)
                             
                             Button("Удалить из контактов", role: .destructive) {
                                 viewModel.removeFromContacts()
                             }
                             .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            
+                        } else if viewModel.contactStatus == "pending" {
+                            // Исходящий запрос (ожидаем подтверждения)
+                            Text("Запрос отправлен")
+                                .font(.subheadline)
+                                .foregroundColor(.orange)
+                            
+                            Button("Отменить запрос", role: .destructive) {
+                                viewModel.cancelOutgoingRequest()
+                            }
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            
+                        } else if viewModel.contactStatus == "incoming_pending" {
+                            // Входящий запрос (кто-то добавил меня)
+                            Text("Запрос на добавление")
+                                .font(.subheadline)
+                                .foregroundColor(.blue)
+                            
+                            HStack(spacing: 20) {
+                                Button("Принять") {
+                                    viewModel.acceptIncomingRequest()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                
+                                Button("Отклонить", role: .destructive) {
+                                    viewModel.declineIncomingRequest()
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            .frame(maxWidth: .infinity)
+                            
                         } else {
+                            // Нет контакта
                             Button("Добавить в контакты") {
                                 viewModel.addToContacts()
                             }
                             .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity)
                             
                             Button("Написать") {
                                 viewModel.startPrivateChat()
                             }
                             .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(.horizontal, 40)
                     
-                    Spacer()
+                    Spacer(minLength: 40)
                 }
+                .padding(.bottom, 20)
             }
             .navigationTitle("Профиль")
             .navigationBarTitleDisplayMode(.inline)
@@ -5633,5 +5823,11 @@ struct UserProfileView: View {
                 }
             }
         }
+    }
+    
+    private func formatRelativeDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
