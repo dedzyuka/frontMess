@@ -95,7 +95,6 @@ struct ChatSidebarView: View {
 
 struct ChatMemberRow: View {
     let member: ChatMemberItem
-    // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: member.userId)) {
@@ -104,37 +103,26 @@ struct ChatMemberRow: View {
                     .fill(Color.blue.opacity(0.3))
                     .frame(width: 40, height: 40)
                     .overlay(
-                        Text(member.nickname.prefix(1).uppercased())
+                        Text(member.nickName.prefix(1).uppercased())
                             .font(.headline)
                             .foregroundColor(.blue)
                     )
                 
                 VStack(alignment: .leading) {
-                    Text(member.nickname)
+                    Text(member.nickName)
                         .font(.headline)
                     HStack {
-                        Text("ID: \(member.userId.uuidString.prefix(8))...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("Присоединился: \(formatDate(member.joinedAt))")
+                        Circle()
+                            .fill(member.isOnline ? Color.green : Color.gray)
+                            .frame(width: 8, height: 8)
+                        Text(member.isOnline ? "онлайн" : "офлайн")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
                 Spacer()
             }
-            .buttonStyle(PlainButtonStyle())
+            .padding(.vertical, 8)
         }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
     }
 }

@@ -500,9 +500,19 @@ class LocalDatabase {
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
     }
+    // MARK: - Reaction operations
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
+            let query = reactionsTable.filter(
+                reactionMessageId == reaction.messageId &&
+                reactionUserId == reaction.userId &&
+                reactionEmoji == reaction.emoji
+            )
+            if try db.scalar(query.count) > 0 {
+                try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
+                return true
+            }
             try db.run(reactionsTable.insert(
                 reactionMessageId <- reaction.messageId,
                 reactionUserId <- reaction.userId,
@@ -511,7 +521,9 @@ class LocalDatabase {
             ))
             return true
         } catch {
-            print("❌ saveReaction error: \(error)")
+            if let error = error as? NSError, error.code != 19 {
+                print("❌ saveReaction error: \(error)")
+            }
             return false
         }
     }

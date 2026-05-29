@@ -35,7 +35,8 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Кастомный заголовок
-            HStack {
+            HStack(spacing: 12) {
+                // Кнопка назад
                 Button {
                     presentationMode.wrappedValue.dismiss()
                 } label: {
@@ -45,13 +46,41 @@ struct ChatView: View {
                 }
                 .frame(width: 44, height: 44)
                 
+                // Аватар и информация о собеседнике (для личного чата)
+                if viewModel.chat.chatType.lowercased() == "private", let otherUser = viewModel.otherUser {
+                    NavigationLink(destination: UserProfileView(userId: otherUser.userId)) {
+                        HStack(spacing: 8) {
+                            // Аватар
+                            AvatarView(urlString: otherUser.avatarUrl, size: 40)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(otherUser.nickName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                
+                                // Статус онлайн/офлайн
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(viewModel.isOtherUserOnline ? Color.green : Color.gray)
+                                        .frame(width: 8, height: 8)
+                                    Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                } else {
+                    // Для групповых чатов – просто название
+                    Text(viewModel.chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                }
+                
                 Spacer()
                 
-                Text(viewModel.chatTitle)
-                    .font(.headline)
-                
-                Spacer()
-                
+                // Кнопка информации о чате
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
                         .font(.title2)

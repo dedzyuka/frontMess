@@ -196,6 +196,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             handleReactionRemove(json)
         case "status.update":
             handleStatusUpdate(json)
+            
+        case "user.online":
+            handleUserOnline(json)
         case "pong":
             print("Pong received")
         default:
@@ -205,7 +208,15 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     
     // MARK: - Обработчики событий
     
-    
+    private func handleUserOnline(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let userIdString = payload["user_id"] as? String,
+              let isOnline = payload["is_online"] as? Bool,
+              let userId = UUID(uuidString: userIdString) else { return }
+        
+        let update: [String: Any] = ["userId": userId, "is_online": isOnline]
+        NotificationCenter.default.post(name: .statusUpdated, object: update)
+    }
     
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],

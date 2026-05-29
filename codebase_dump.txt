@@ -403,7 +403,8 @@ struct User: Identifiable, Codable {
     let avatarUrl: String?
     let bio: String?
     let lastSeen: Date?
-    let isOnline: Bool?
+    
+    var isOnline: Bool?
     let status: String?          // опционально
     let emailVerified: Bool?
     let phoneVerified: Bool?
@@ -826,6 +827,32 @@ struct GraphQLQueries {
     mutation DeleteMessage($messageId: Int!, $chatId: String!) {
         message {
             deleteMessage(messageId: $messageId, chatId: $chatId)
+        }
+    }
+    """
+    
+    static let getUser = """
+    query GetUser($userId: String!) {
+        user {
+            get(id: $userId) {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
         }
     }
     """
@@ -2281,38 +2308,17 @@ class UserService {
     private init() {}
     
     func getUser(userId: UUID) async throws -> User {
-        let query = """
-        query GetUser($userId: String!) {
-            user {
-                get(id: $userId) {
-                    userId
-                    nickName
-                    firstName
-                    lastName
-                    middleName
-                    email
-                    phone
-                    avatarUrl
-                    bio
-                    lastSeen
-                    isOnline
-                    status
-                    emailVerified
-                    phoneVerified
-                    isAdmin
-                    createdAt
-                    updatedAt
-                }
-            }
-        }
-        """
+        let query = GraphQLQueries.getUser
+        let variables = ["userId": userId.uuidString]
+        
+        // Структура для декодирования ответа
         struct Response: Decodable {
             let user: UserWrapper
         }
         struct UserWrapper: Decodable {
             let get: User
         }
-        let variables = ["userId": userId.uuidString]
+        
         let response: Response = try await graphQL.perform(
             query: query,
             variables: variables,
@@ -3047,6 +3053,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             handleReactionRemove(json)
         case "status.update":
             handleStatusUpdate(json)
+            
+        case "user.online":
+            handleUserOnline(json)
         case "pong":
             print("Pong received")
         default:
@@ -3056,7 +3065,15 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     
     // MARK: - Обработчики событий
     
-    
+    private func handleUserOnline(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let userIdString = payload["user_id"] as? String,
+              let isOnline = payload["is_online"] as? Bool,
+              let userId = UUID(uuidString: userIdString) else { return }
+        
+        let update: [String: Any] = ["userId": userId, "is_online": isOnline]
+        NotificationCenter.default.post(name: .statusUpdated, object: update)
+    }
     
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
@@ -4098,7 +4115,9 @@ class ChatViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var usersCache: [UUID: User] = [:]
     @Published var chatTitle: String = ""
-    @Published var reactionsDict: [Int64: [Reaction]] = [:] // messageId -> [Reaction]
+    @Published var reactionsDict: [Int64: [Reaction]] = [:]
+    @Published var otherUser: User?
+    @Published var isOtherUserOnline: Bool = false
     private let database = LocalDatabase.shared
     
     let chat: Chat
@@ -4113,6 +4132,7 @@ class ChatViewModel: ObservableObject {
         setupNotifications()
         loadMessages()
         Task { await loadChatTitle() }
+        Task { await loadOtherUserIfNeeded() }   // ← добавить
     }
     
     private func setupNotifications() {
@@ -4197,7 +4217,43 @@ class ChatViewModel: ObservableObject {
                 self.updateStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
             .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool,
+                      userId == self.otherUser?.userId else { return }
+                DispatchQueue.main.async {
+                    self.isOtherUserOnline = isOnline
+                    self.otherUser?.isOnline = isOnline
+                }
+            }
+            .store(in: &cancellables)
     }
+    
+    func loadOtherUserIfNeeded() async {
+            guard chat.chatType == "PRIVATE" || chat.chatType.lowercased() == "private" else { return }
+            guard let currentUserId = AppState.shared.currentUser?.userId else { return }
+            
+            let memberIds = await getChatMemberIds()
+            let otherId = memberIds.first(where: { $0 != currentUserId })
+            guard let otherId = otherId else { return }
+            
+            do {
+                let user = try await UserService.shared.getUser(userId: otherId)
+                await MainActor.run {
+                    self.otherUser = user
+                    self.isOtherUserOnline = user.isOnline ?? false
+                    if self.chatTitle.isEmpty || self.chatTitle == "Чат" {
+                        self.chatTitle = user.nickName
+                    }
+                }
+            } catch {
+                print("Failed to load other user: \(error)")
+            }
+        }
     
     @MainActor
     func loadChatTitle() async {
@@ -5819,7 +5875,8 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Кастомный заголовок
-            HStack {
+            HStack(spacing: 12) {
+                // Кнопка назад
                 Button {
                     presentationMode.wrappedValue.dismiss()
                 } label: {
@@ -5829,13 +5886,41 @@ struct ChatView: View {
                 }
                 .frame(width: 44, height: 44)
                 
+                // Аватар и информация о собеседнике (для личного чата)
+                if viewModel.chat.chatType.lowercased() == "private", let otherUser = viewModel.otherUser {
+                    NavigationLink(destination: UserProfileView(userId: otherUser.userId)) {
+                        HStack(spacing: 8) {
+                            // Аватар
+                            AvatarView(urlString: otherUser.avatarUrl, size: 40)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(otherUser.nickName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                
+                                // Статус онлайн/офлайн
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(viewModel.isOtherUserOnline ? Color.green : Color.gray)
+                                        .frame(width: 8, height: 8)
+                                    Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                } else {
+                    // Для групповых чатов – просто название
+                    Text(viewModel.chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                }
+                
                 Spacer()
                 
-                Text(viewModel.chatTitle)
-                    .font(.headline)
-                
-                Spacer()
-                
+                // Кнопка информации о чате
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
                     Image(systemName: "info.circle")
                         .font(.title2)
@@ -6654,69 +6739,84 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
+                // Аватар отправителя (только для чужих сообщений)
                 NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                     AvatarView(urlString: senderUser?.avatarUrl, size: 32)
                 }
                 .buttonStyle(PlainButtonStyle())
-            } else {
-                Spacer().frame(width: 32)
-            }
-            
-            VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
-                if !isCurrentUser && senderUser != nil {
-                    Text(senderUser?.nickName ?? "")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 12)
-                }
                 
-                Text(message.content ?? "")
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
-                    .foregroundColor(isCurrentUser ? .white : .primary)
-                    .cornerRadius(18)
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        showMenu = true
+                VStack(alignment: .leading, spacing: 4) {
+                    if let nickname = senderUser?.nickName, !nickname.isEmpty {
+                        Text(nickname)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 12)
                     }
-                
-                // Реакции
-                if !viewModel.reactionsForMessage(message.messageId).isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
-                            let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
-                            let isCurrentUserReaction = currentUserReactionEmoji == emoji
-                            HStack(spacing: 2) {
-                                Text(emoji)
-                                    .font(.caption)
-                                Text("\(count)")
-                                    .font(.caption2)
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(isCurrentUserReaction ? Color.blue.opacity(0.2) : Color(.systemGray5))
-                            .cornerRadius(12)
-                            .onTapGesture {
-                                toggleReaction(emoji: emoji)
-                            }
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-                
-                HStack(spacing: 4) {
-                    Text(formatTime(message.createdAt))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                     
-                    if message.isEdited {
-                        Text("(ред.)")
+                    Text(message.content ?? "")
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.primary)
+                        .cornerRadius(18)
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            showMenu = true
+                        }
+                    
+                    // Реакции
+                    if !viewModel.reactionsForMessage(message.messageId).isEmpty {
+                        reactionRow
+                    }
+                    
+                    // Время и статус (только время для чужих)
+                    HStack(spacing: 4) {
+                        Text(formatTime(message.createdAt))
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                        
+                        if message.isEdited {
+                            Text("(ред.)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                Spacer() // Прижимает блок к левому краю
+            } else {
+                // Свои сообщения – справа
+                Spacer() // Прижимает блок к правому краю
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(message.content ?? "")
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(18)
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            showMenu = true
+                        }
+                    
+                    // Реакции (если есть)
+                    if !viewModel.reactionsForMessage(message.messageId).isEmpty {
+                        reactionRow
                     }
                     
-                    if isCurrentUser {
+                    // Время и статусы доставки/прочтения
+                    HStack(spacing: 4) {
+                        Text(formatTime(message.createdAt))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        if message.isEdited {
+                            Text("(ред.)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
                         if let readAt = message.readAt {
+                            // Две галочки синие – прочитано
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
                                 Image(systemName: "checkmark")
@@ -6724,22 +6824,19 @@ struct MessageBubbleView: View {
                             .font(.caption2)
                             .foregroundColor(.blue)
                         } else if let deliveredAt = message.deliveredAt {
+                            // Одна галочка серая – доставлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         } else {
+                            // Одна галочка – отправлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         }
                     }
                 }
-            }
-            
-            if isCurrentUser {
-                Spacer().frame(width: 32)
-            } else {
-                Spacer().frame(width: 32)
+                // Аватар для своих не показываем (можно добавить иконку статуса при желании)
             }
         }
         .padding(.horizontal, 8)
@@ -6764,6 +6861,30 @@ struct MessageBubbleView: View {
         }
     }
     
+    // MARK: - Реакции (общий вид для своих и чужих)
+    private var reactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
+                let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
+                let isCurrentUserReaction = currentUserReactionEmoji == emoji
+                HStack(spacing: 2) {
+                    Text(emoji)
+                        .font(.caption)
+                    Text("\(count)")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(isCurrentUserReaction ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                .cornerRadius(12)
+                .onTapGesture {
+                    toggleReaction(emoji: emoji)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+    
     private func toggleReaction(emoji: String) {
         Task {
             if let existingEmoji = currentUserReactionEmoji, existingEmoji == emoji {
@@ -6784,6 +6905,7 @@ struct MessageBubbleView: View {
     }
 }
 
+// MARK: - Пикер реакций
 struct ReactionPickerView: View {
     let emojis: [String]
     let currentReaction: String?

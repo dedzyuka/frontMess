@@ -8,7 +8,9 @@ class ChatViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var usersCache: [UUID: User] = [:]
     @Published var chatTitle: String = ""
-    @Published var reactionsDict: [Int64: [Reaction]] = [:] // messageId -> [Reaction]
+    @Published var reactionsDict: [Int64: [Reaction]] = [:]
+    @Published var otherUser: User?
+    @Published var isOtherUserOnline: Bool = false
     private let database = LocalDatabase.shared
     
     let chat: Chat
@@ -23,6 +25,7 @@ class ChatViewModel: ObservableObject {
         setupNotifications()
         loadMessages()
         Task { await loadChatTitle() }
+        Task { await loadOtherUserIfNeeded() }   // ← добавить
     }
     
     private func setupNotifications() {
@@ -107,7 +110,43 @@ class ChatViewModel: ObservableObject {
                 self.updateStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
             .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool,
+                      userId == self.otherUser?.userId else { return }
+                DispatchQueue.main.async {
+                    self.isOtherUserOnline = isOnline
+                    self.otherUser?.isOnline = isOnline
+                }
+            }
+            .store(in: &cancellables)
     }
+    
+    func loadOtherUserIfNeeded() async {
+            guard chat.chatType == "PRIVATE" || chat.chatType.lowercased() == "private" else { return }
+            guard let currentUserId = AppState.shared.currentUser?.userId else { return }
+            
+            let memberIds = await getChatMemberIds()
+            let otherId = memberIds.first(where: { $0 != currentUserId })
+            guard let otherId = otherId else { return }
+            
+            do {
+                let user = try await UserService.shared.getUser(userId: otherId)
+                await MainActor.run {
+                    self.otherUser = user
+                    self.isOtherUserOnline = user.isOnline ?? false
+                    if self.chatTitle.isEmpty || self.chatTitle == "Чат" {
+                        self.chatTitle = user.nickName
+                    }
+                }
+            } catch {
+                print("Failed to load other user: \(error)")
+            }
+        }
     
     @MainActor
     func loadChatTitle() async {
@@ -160,15 +199,15 @@ class ChatViewModel: ObservableObject {
     private func getChatMemberIds() async -> [UUID] {
         let variables = ["chatId": chat.id.uuidString]
         do {
-            let response: ChatMembersIdResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMembers,
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
                 variables: variables,
-                responseType: ChatMembersIdResponse.self,
+                responseType: ChatMemberIdsResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.compactMap { UUID(uuidString: $0) }
+            return response.chat.members.map { $0.userId }
         } catch {
-            print("Failed to load chat members: \(error)")
+            print("Failed to load chat member ids: \(error)")
             return []
         }
     }

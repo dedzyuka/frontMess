@@ -6,38 +6,17 @@ class UserService {
     private init() {}
     
     func getUser(userId: UUID) async throws -> User {
-        let query = """
-        query GetUser($userId: String!) {
-            user {
-                get(id: $userId) {
-                    userId
-                    nickName
-                    firstName
-                    lastName
-                    middleName
-                    email
-                    phone
-                    avatarUrl
-                    bio
-                    lastSeen
-                    isOnline
-                    status
-                    emailVerified
-                    phoneVerified
-                    isAdmin
-                    createdAt
-                    updatedAt
-                }
-            }
-        }
-        """
+        let query = GraphQLQueries.getUser
+        let variables = ["userId": userId.uuidString]
+        
+        // Структура для декодирования ответа
         struct Response: Decodable {
             let user: UserWrapper
         }
         struct UserWrapper: Decodable {
             let get: User
         }
-        let variables = ["userId": userId.uuidString]
+        
         let response: Response = try await graphQL.perform(
             query: query,
             variables: variables,

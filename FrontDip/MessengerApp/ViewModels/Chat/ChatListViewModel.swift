@@ -135,7 +135,7 @@ class ChatListViewModel: ObservableObject {
             )
             let chats = response.chat.list
             for chat in chats where chat.chatType == "1" || chat.chatType.lowercased() == "private" {
-                let members = await getChatMembers(chatId: chat.id)
+                let members = await getChatMemberIds(for: chat.id)
                 if members.contains(currentUserId) && members.contains(userId) {
                     return chat
                 }
@@ -154,16 +154,16 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    private func getChatMembers(chatId: UUID) async -> [UUID] {
+    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
+        let variables = ["chatId": chatId.uuidString]
         do {
-            let variables = ["chatId": chatId.uuidString]
-            let response: ChatMembersIdResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMembers,
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
                 variables: variables,
-                responseType: ChatMembersIdResponse.self,
+                responseType: ChatMemberIdsResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.compactMap { UUID(uuidString: $0) }
+            return response.chat.members.map { $0.userId }
         } catch {
             return []
         }

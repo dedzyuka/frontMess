@@ -12,7 +12,8 @@ struct User: Identifiable, Codable {
     let avatarUrl: String?
     let bio: String?
     let lastSeen: Date?
-    let isOnline: Bool?
+    
+    var isOnline: Bool?
     let status: String?          // опционально
     let emailVerified: Bool?
     let phoneVerified: Bool?
@@ -86,10 +87,11 @@ struct Attachment: Codable {
 }
 
 // MARK: - ChatMember
-struct ChatMemberItem: Codable {
+struct ChatMemberItem: Decodable {
     let userId: UUID
-    let nickname: String
-    let joinedAt: Date
+    let nickName: String
+    let avatarUrl: String?
+    let isOnline: Bool
 }
 
 // MARK: - Contact

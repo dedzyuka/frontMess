@@ -97,13 +97,6 @@ struct GraphQLQueries {
     }
     """
     
-    static let getChatMembers = """
-    query GetChatMembers($chatId: String!) {
-        chat {
-            members(chatId: $chatId)
-        }
-    }
-    """
     static let addReaction = """
     mutation AddReaction($messageId: Int!, $chatId: String!, $emoji: String!) {
         message {
@@ -297,6 +290,55 @@ struct GraphQLQueries {
     }
     """
     
+    static let getUser = """
+    query GetUser($userId: String!) {
+        user {
+            get(id: $userId) {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
+        }
+    }
+    """
+    static let getChatMembers = """
+    query GetChatMembers($chatId: String!) {
+        chat {
+            members(chatId: $chatId) {
+                userId
+                nickName
+                avatarUrl
+                isOnline
+            }
+        }
+    }
+    """
+
+    // Для случаев, когда нужны только ID
+    static let getChatMemberIds = """
+    query GetChatMemberIds($chatId: String!) {
+        chat {
+            members(chatId: $chatId) {
+                userId
+            }
+        }
+    }
+    """
+    
 }
 
 struct UpdateMessageResponse: Decodable {
@@ -313,8 +355,14 @@ struct DeleteMessageWrapper: Decodable {
     let deleteMessage: Bool
 }
 
-struct ChatMembersIdResponse: Decodable {
-    let chat: MembersIdWrapper
+struct ChatMemberIdsResponse: Decodable {
+    let chat: ChatMemberIdsWrapper
+}
+struct ChatMemberIdsWrapper: Decodable {
+    let members: [ChatMemberIdItem]
+}
+struct ChatMemberIdItem: Decodable {
+    let userId: UUID
 }
 struct MembersIdWrapper: Decodable {
     let members: [String]
