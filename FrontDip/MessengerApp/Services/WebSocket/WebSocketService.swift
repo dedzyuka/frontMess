@@ -272,23 +272,24 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
-              let createdAtString = payload["created_at"] as? String else { return }
-        guard let userId = UUID(uuidString: userIdString) else { return }
-        let reaction = Reaction(
-            messageId: messageId,
-            userId: userId,
-            emoji: emoji,
-            createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
-        )
+              let createdAtString = payload["created_at"] as? String,
+              let userId = UUID(uuidString: userIdString) else { return }
+        let createdAt = isoDateFormatter.date(from: createdAtString) ?? Date()
+        let reaction = Reaction(messageId: messageId, userId: userId, emoji: emoji, createdAt: createdAt)
+        
+        _ = LocalDatabase.shared.saveReaction(reaction)
         NotificationCenter.default.post(name: .reactionAdded, object: reaction)
     }
-    
+
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
-              let emoji = payload["emoji"] as? String else { return }
-        guard let userId = UUID(uuidString: userIdString) else { return }
+              let emoji = payload["emoji"] as? String,
+              let userId = UUID(uuidString: userIdString) else { return }
+        
+        _ = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+        
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }

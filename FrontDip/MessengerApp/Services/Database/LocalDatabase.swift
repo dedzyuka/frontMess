@@ -501,6 +501,8 @@ class LocalDatabase {
         setupDatabase()
     }
     // MARK: - Reaction operations
+    // MARK: - Reaction operations
+
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
@@ -510,6 +512,7 @@ class LocalDatabase {
                 reactionEmoji == reaction.emoji
             )
             if try db.scalar(query.count) > 0 {
+                // Обновляем created_at, если нужно
                 try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
                 return true
             }
@@ -521,25 +524,9 @@ class LocalDatabase {
             ))
             return true
         } catch {
-            if let error = error as? NSError, error.code != 19 {
+            if (error as? NSError)?.code != 19 { // UNIQUE constraint
                 print("❌ saveReaction error: \(error)")
             }
-            return false
-        }
-    }
-
-    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
-        guard let db = db else { return false }
-        let query = reactionsTable.filter(
-            reactionMessageId == messageId &&
-            reactionUserId == userId &&
-            reactionEmoji == emoji
-        )
-        do {
-            try db.run(query.delete())
-            return true
-        } catch {
-            print("❌ removeReaction error: \(error)")
             return false
         }
     }
@@ -564,6 +551,39 @@ class LocalDatabase {
             return []
         }
     }
+
+    func deleteReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ deleteReaction error: \(error)")
+            return false
+        }
+    }
+
+    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ removeReaction error: \(error)")
+            return false
+        }
+    }
+
 
     func deleteAllReactions() {
         guard let db = db else { return }

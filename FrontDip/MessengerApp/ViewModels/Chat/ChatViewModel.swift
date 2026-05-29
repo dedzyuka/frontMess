@@ -225,47 +225,66 @@ class ChatViewModel: ObservableObject {
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 
-                // Загружаем локальные сообщения (с уже сохранёнными статусами)
-                let localMessages = database.getMessages(for: chat.id)
-                
-                // Сливаем: статусы из локальной БД
-                var mergedMessages = loadedMessages
-                for i in 0..<mergedMessages.count {
-                    if let local = localMessages.first(where: { $0.messageId == mergedMessages[i].messageId }) {
-                        mergedMessages[i].deliveredAt = local.deliveredAt
-                        mergedMessages[i].readAt = local.readAt
-                    } else {
-                        // Если локального сообщения нет, сохраняем текущее (без статусов)
-                        _ = database.saveMessage(mergedMessages[i])
+                // Сохраняем сообщения и их реакции в БД
+                for msg in loadedMessages {
+                    _ = database.saveMessage(msg)
+                    if let reactions = msg.reactions {
+                        for reaction in reactions {
+                            _ = database.saveReaction(reaction)
+                        }
                     }
                 }
                 
-                // Также добавляем сообщения, которые есть в локальной БД, но ещё не пришли с сервера
-                for local in localMessages {
-                    if !mergedMessages.contains(where: { $0.messageId == local.messageId }) {
-                        mergedMessages.append(local)
-                    }
+                // Загружаем все сообщения из БД (чтобы подтянуть реакции)
+                var dbMessages = database.getMessages(for: chat.id)
+                for i in 0..<dbMessages.count {
+                    let msgId = dbMessages[i].messageId
+                    let reactions = database.getReactions(for: msgId)
+                    dbMessages[i].reactions = reactions
                 }
-                mergedMessages.sort(by: { $0.createdAt < $1.createdAt })
+                dbMessages.sort(by: { $0.createdAt < $1.createdAt })
                 
                 await MainActor.run {
-                    self.messages = mergedMessages
+                    self.messages = dbMessages
+                    self.reactionsDict = [:]
+                    for msg in dbMessages {
+                        if let reactions = msg.reactions, !reactions.isEmpty {
+                            self.reactionsDict[msg.messageId] = reactions
+                        }
+                    }
                     self.isLoading = false
                 }
-                await loadUsersForMessages(loadedMessages)
             } catch {
                 print("Load messages error: \(error)")
                 await MainActor.run { isLoading = false }
             }
         }
     }
+    
     func addReaction(to messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
         
-        // Оптимистичное добавление
         await MainActor.run {
-            self.addReactionLocally(reaction)
+            _ = database.saveReaction(reaction)
+            if var list = reactionsDict[messageId] {
+                if !list.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                    list.append(reaction)
+                    reactionsDict[messageId] = list
+                }
+            } else {
+                reactionsDict[messageId] = [reaction]
+            }
+            if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                var updatedMsg = messages[index]
+                var newReactions = updatedMsg.reactions ?? []
+                if !newReactions.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                    newReactions.append(reaction)
+                    updatedMsg.reactions = newReactions
+                    messages[index] = updatedMsg
+                }
+            }
+            objectWillChange.send()
         }
         
         do {
@@ -281,9 +300,18 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
         } catch {
-            // Откат
             await MainActor.run {
-                self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+                _ = database.deleteReaction(messageId: messageId, userId: currentUserId, emoji: emoji)
+                if var list = reactionsDict[messageId] {
+                    list.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                    reactionsDict[messageId] = list
+                }
+                if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                    var msg = messages[index]
+                    msg.reactions?.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                    messages[index] = msg
+                }
+                objectWillChange.send()
             }
             print("Add reaction failed: \(error)")
         }
@@ -292,9 +320,18 @@ class ChatViewModel: ObservableObject {
     func removeReaction(from messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         
-        // Оптимистичное удаление
         await MainActor.run {
-            self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+            _ = database.deleteReaction(messageId: messageId, userId: currentUserId, emoji: emoji)
+            if var list = reactionsDict[messageId] {
+                list.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                reactionsDict[messageId] = list
+            }
+            if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                var msg = messages[index]
+                msg.reactions?.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                messages[index] = msg
+            }
+            objectWillChange.send()
         }
         
         do {
@@ -310,10 +347,25 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
         } catch {
-            // Восстановить реакцию при ошибке
             let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
             await MainActor.run {
-                self.addReactionLocally(reaction)
+                _ = database.saveReaction(reaction)
+                if var list = reactionsDict[messageId] {
+                    if !list.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                        list.append(reaction)
+                        reactionsDict[messageId] = list
+                    }
+                }
+                if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                    var msg = messages[index]
+                    var newReactions = msg.reactions ?? []
+                    if !newReactions.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                        newReactions.append(reaction)
+                        msg.reactions = newReactions
+                        messages[index] = msg
+                    }
+                }
+                objectWillChange.send()
             }
             print("Remove reaction failed: \(error)")
         }
