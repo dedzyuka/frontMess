@@ -291,8 +291,8 @@ class LocalDatabase {
                     updatedAt: row[msgUpdatedAt],
                     deletedAt: row[msgDeletedAt],
                     isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
+                    deliveredAt: row[msgDeliveredAt],   // ← должно быть
+                    readAt: row[msgReadAt]              // ← должно быть
                 )
                 messages.append(msg)
             }
@@ -302,7 +302,6 @@ class LocalDatabase {
             return []
         }
     }
-    
     
     
     func deleteMessages(for chatId: UUID) -> Bool {

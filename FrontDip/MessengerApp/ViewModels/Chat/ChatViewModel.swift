@@ -185,15 +185,32 @@ class ChatViewModel: ObservableObject {
                     authToken: TokenManager.shared.accessToken
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
+                
+                // Загружаем локальные сообщения (с уже сохранёнными статусами)
+                let localMessages = database.getMessages(for: chat.id)
+                
+                // Сливаем: статусы из локальной БД
+                var mergedMessages = loadedMessages
+                for i in 0..<mergedMessages.count {
+                    if let local = localMessages.first(where: { $0.messageId == mergedMessages[i].messageId }) {
+                        mergedMessages[i].deliveredAt = local.deliveredAt
+                        mergedMessages[i].readAt = local.readAt
+                    } else {
+                        // Если локального сообщения нет, сохраняем текущее (без статусов)
+                        _ = database.saveMessage(mergedMessages[i])
+                    }
+                }
+                
+                // Также добавляем сообщения, которые есть в локальной БД, но ещё не пришли с сервера
+                for local in localMessages {
+                    if !mergedMessages.contains(where: { $0.messageId == local.messageId }) {
+                        mergedMessages.append(local)
+                    }
+                }
+                mergedMessages.sort(by: { $0.createdAt < $1.createdAt })
+                
                 await MainActor.run {
-                    self.messages = loadedMessages
-                    // Заполняем словарь реакций
-                    for msg in loadedMessages {
-                                            let savedReactions = self.database.getReactions(for: msg.messageId)
-                                            if !savedReactions.isEmpty {
-                                                self.reactionsDict[msg.messageId] = savedReactions
-                                            }
-                                        }
+                    self.messages = mergedMessages
                     self.isLoading = false
                 }
                 await loadUsersForMessages(loadedMessages)

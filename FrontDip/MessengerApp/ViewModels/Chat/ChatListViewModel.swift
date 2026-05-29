@@ -15,19 +15,32 @@ class ChatListViewModel: ObservableObject {
     
     private func setupNotifications() {
             NotificationCenter.default.publisher(for: .newMessageReceived)
+                .receive(on: DispatchQueue.main)
                 .sink { [weak self] notification in
                     guard let message = notification.object as? Message else { return }
-                    // Обновляем lastMessage в соответствующем чате
                     if let index = self?.chats.firstIndex(where: { $0.id == message.chatId }) {
-                        var chat = self?.chats[index]
-                        chat?.lastMessage = message.content
-                        if let updatedChat = chat {
+                        // Создаём новый Chat с обновлённым lastMessage
+                        if let oldChat = self?.chats[index] {
+                            let updatedChat = Chat(
+                                chatId: oldChat.id,
+                                chatType: oldChat.chatType,
+                                name: oldChat.name,
+                                description: oldChat.description,
+                                avatarUrl: oldChat.avatarUrl,
+                                creatorId: oldChat.creatorId,
+                                isPublic: oldChat.isPublic,
+                                maxMembers: oldChat.maxMembers,
+                                createdAt: oldChat.createdAt,
+                                membersCount: oldChat.membersCount,
+                                lastMessage: message.content
+                            )
                             self?.chats[index] = updatedChat
                         }
                     }
                 }
                 .store(in: &cancellables)
         }
+        
     
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
