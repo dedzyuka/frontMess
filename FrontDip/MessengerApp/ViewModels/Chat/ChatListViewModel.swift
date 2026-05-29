@@ -3,14 +3,36 @@ import Combine
 
 class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
+        @Published var isLoading = false
+        @Published var errorMessage: String?
+        
+        private let graphQL = GraphQLClient.shared
+        private var cancellables = Set<AnyCancellable>()   // ← добавить
+        
+        init() {
+            setupNotifications()   // ← добавить
+        }
     
-    private let graphQL = GraphQLClient.shared
+    private func setupNotifications() {
+            NotificationCenter.default.publisher(for: .newMessageReceived)
+                .sink { [weak self] notification in
+                    guard let message = notification.object as? Message else { return }
+                    // Обновляем lastMessage в соответствующем чате
+                    if let index = self?.chats.firstIndex(where: { $0.id == message.chatId }) {
+                        var chat = self?.chats[index]
+                        chat?.lastMessage = message.content
+                        if let updatedChat = chat {
+                            self?.chats[index] = updatedChat
+                        }
+                    }
+                }
+                .store(in: &cancellables)
+        }
     
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
+        
         
         do {
             let response: ListChatsResponse = try await graphQL.perform(

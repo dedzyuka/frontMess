@@ -19,6 +19,7 @@ class ChatViewModel: ObservableObject {
     
     init(chat: Chat) {
         self.chat = chat
+        print("ChatViewModel initialized for chat: \(chat.id)")
         setupNotifications()
         loadMessages()
         Task { await loadChatTitle() }
@@ -26,32 +27,47 @@ class ChatViewModel: ObservableObject {
     
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
-                if let msg = notification.object as? Message, msg.chatId == self?.chat.id {
-                    self?.addMessage(msg)
-                    self?.sendDeliveredIfNeeded(for: msg)
+                print("📢 ChatViewModel received .newMessageReceived")
+                guard let self = self,
+                      let message = notification.object as? Message,
+                      message.chatId == self.chat.id else {
+                    print("❌ .newMessageReceived condition failed")
+                    return
                 }
+                self.addMessage(message)
+                self.sendDeliveredIfNeeded(for: message)
             }
             .store(in: &cancellables)
         
+        // Обновление сообщения
         NotificationCenter.default.publisher(for: .messageUpdated)
             .sink { [weak self] notification in
-                if let info = notification.object as? [String: Any],
-                   let messageId = info["messageId"] as? Int64,
-                   let chatId = info["chatId"] as? UUID,
-                   chatId == self?.chat.id {
-                    let content = info["content"] as? String ?? ""
-                    let isEdited = info["isEdited"] as? Bool ?? false
-                    self?.updateMessage(messageId: messageId, content: content, isEdited: isEdited)
+                print("📢 ChatViewModel received .messageUpdated notification")
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64,
+                      let chatId = info["chatId"] as? UUID,
+                      chatId == self.chat.id else {
+                    print("❌ .messageUpdated condition failed – wrong chat or missing data")
+                    return
                 }
+                let content = info["content"] as? String ?? ""
+                let isEdited = info["isEdited"] as? Bool ?? false
+                print("✅ .messageUpdated valid – messageId=\(messageId), new content='\(content)'")
+                self.updateMessageLocally(messageId: messageId, newContent: content, isEdited: isEdited)
             }
             .store(in: &cancellables)
         
+        // Удаление сообщения
         NotificationCenter.default.publisher(for: .messageDeleted)
             .sink { [weak self] notification in
-                if let (messageId, chatId) = notification.object as? (Int64, UUID), chatId == self?.chat.id {
-                    self?.deleteMessageLocally(messageId: messageId)
-                }
+                guard let self = self,
+                      let (messageId, chatId) = notification.object as? (Int64, UUID),
+                      chatId == self.chat.id else { return }
+                print("✅ ChatViewModel: message deleted, id=\(messageId)")
+                self.deleteMessageLocally(messageId: messageId)
             }
             .store(in: &cancellables)
         
@@ -76,12 +92,19 @@ class ChatViewModel: ObservableObject {
         
         NotificationCenter.default.publisher(for: .statusUpdated)
             .sink { [weak self] notification in
-                if let info = notification.object as? [String: Any],
-                   let messageId = info["messageId"] as? Int64,
-                   let userId = info["userId"] as? String,
-                   userId == AppState.shared.currentUser?.userId.uuidString {
-                    self?.updateStatus(messageId: messageId, deliveredAt: info["deliveredAt"] as? Date, readAt: info["readAt"] as? Date)
+                print("📢 ChatViewModel received .statusUpdated notification")
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64,
+                      let chatId = info["chatId"] as? UUID,
+                      chatId == self.chat.id else {
+                    print("❌ .statusUpdated ignored – wrong chat or missing data")
+                    return
                 }
+                let deliveredAt = info["deliveredAt"] as? Date
+                let readAt = info["readAt"] as? Date
+                print("✅ Updating status for message \(messageId): delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+                self.updateStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
             .store(in: &cancellables)
     }
@@ -276,20 +299,23 @@ class ChatViewModel: ObservableObject {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return }
         guard let currentUserId = AppState.shared.currentUser?.userId else { return }
-        
-        // Временное локальное сообщение для оптимистичного UI
-        let tempId = Int64(Date().timeIntervalSince1970 * -1000) // отрицательный временный ID
+
+        // Временное сообщение (оптимистичное обновление)
+        let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         let tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
             replyToId: nil, content: content, type: "text",
             createdAt: Date(), updatedAt: Date(), deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil
         )
+
         DispatchQueue.main.async {
             self.messages.append(tempMessage)
             self.newMessageText = ""
+            self.objectWillChange.send()
+            print("📤 sendMessage: temporary message \(tempId) added to UI")
         }
-        
+
         Task {
             do {
                 var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
@@ -304,29 +330,22 @@ class ChatViewModel: ObservableObject {
                 )
                 let newMsg = response.message.sendMessage
                 await MainActor.run {
-                    // Заменить временное сообщение
                     if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
                         self.messages[index] = newMsg
                     } else {
                         self.messages.append(newMsg)
                     }
                     self.messages.sort(by: { $0.createdAt < $1.createdAt })
+                    self.objectWillChange.send()
+                    print("✅ sendMessage: real message \(newMsg.messageId) replaced temp")
                 }
             } catch {
-                // Если ошибка, удалить временное сообщение и показать ошибку
                 await MainActor.run {
                     self.messages.removeAll(where: { $0.messageId == tempId })
                     NotificationService.shared.showError("Не удалось отправить сообщение")
+                    self.objectWillChange.send()
+                    print("❌ sendMessage: failed, removed temp message")
                 }
-            }
-        }
-    }
-    
-    private func addMessage(_ message: Message) {
-        DispatchQueue.main.async {
-            if !self.messages.contains(where: { $0.messageId == message.messageId }) {
-                self.messages.append(message)
-                self.messages.sort(by: { $0.createdAt < $1.createdAt })
             }
         }
     }
@@ -349,22 +368,18 @@ class ChatViewModel: ObservableObject {
         DispatchQueue.main.async {
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
-                if let deliveredAt = deliveredAt {
-                    msg.deliveredAt = deliveredAt
-                }
-                if let readAt = readAt {
-                    msg.readAt = readAt
-                }
+                if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
+                if let readAt = readAt { msg.readAt = readAt }
                 self.messages[index] = msg
+                _ = LocalDatabase.shared.updateMessageStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
+                self.objectWillChange.send()
+                print("🔄 Status updated for message \(messageId): delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+            } else {
+                _ = LocalDatabase.shared.updateMessageStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
         }
     }
     
-    private func deleteMessageLocally(messageId: Int64) {
-        DispatchQueue.main.async {
-            self.messages.removeAll(where: { $0.messageId == messageId })
-        }
-    }
     
     
     
@@ -400,6 +415,19 @@ class ChatViewModel: ObservableObject {
     }
     
     func editMessage(_ message: Message, newContent: String) async -> Bool {
+        // Оптимистичное обновление
+        await MainActor.run {
+            if let index = self.messages.firstIndex(where: { $0.messageId == message.messageId }) {
+                var updated = self.messages[index]
+                updated.content = newContent
+                updated.isEdited = true
+                updated.updatedAt = Date()
+                self.messages[index] = updated
+                self.objectWillChange.send()
+                print("✏️ editMessage: optimistic update for message \(message.messageId)")
+            }
+        }
+
         do {
             let variables: [String: Any] = [
                 "messageId": message.messageId,
@@ -412,15 +440,21 @@ class ChatViewModel: ObservableObject {
                 responseType: UpdateMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            let updated = response.message.updateMessage
+            let updatedMsg = response.message.updateMessage
             await MainActor.run {
-                if let index = self.messages.firstIndex(where: { $0.messageId == updated.messageId }) {
-                    self.messages[index] = updated
+                if let index = self.messages.firstIndex(where: { $0.messageId == updatedMsg.messageId }) {
+                    self.messages[index] = updatedMsg
+                    self.objectWillChange.send()
+                    print("✅ editMessage: server confirmed update for \(updatedMsg.messageId)")
                 }
             }
             return true
         } catch {
-            print("Edit error: \(error)")
+            await MainActor.run {
+                // Откат – перезагружаем список сообщений из сети
+                self.loadMessages()
+                self.objectWillChange.send()
+            }
             return false
         }
     }
@@ -448,7 +482,46 @@ class ChatViewModel: ObservableObject {
     }
     
    
-    
+    private func addMessage(_ message: Message) {
+        DispatchQueue.main.async {
+            if !self.messages.contains(where: { $0.messageId == message.messageId }) {
+                var newMessages = self.messages
+                newMessages.append(message)
+                newMessages.sort(by: { $0.createdAt < $1.createdAt })
+                self.messages = newMessages
+                self.objectWillChange.send()   // ← добавить
+                print("➕ WebSocket: message \(message.messageId) added, total: \(self.messages.count)")
+            } else {
+                print("⚠️ WebSocket: message \(message.messageId) already exists")
+            }
+        }
+    }
+
+
+    private func updateMessageLocally(messageId: Int64, newContent: String, isEdited: Bool) {
+        DispatchQueue.main.async {
+            if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
+                var updated = self.messages[index]
+                updated.content = newContent
+                updated.isEdited = isEdited
+                updated.updatedAt = Date()
+                self.messages[index] = updated
+                // Принудительно уведомляем SwiftUI об изменении
+                self.objectWillChange.send()
+                print("🔄 Message \(messageId) updated in UI, new content: \(newContent)")
+            } else {
+                print("⚠️ Message \(messageId) not found in local messages array")
+            }
+        }
+    }
+
+    private func deleteMessageLocally(messageId: Int64) {
+        DispatchQueue.main.async {
+            self.messages.removeAll(where: { $0.messageId == messageId })
+            self.objectWillChange.send()
+            print("🗑️ WebSocket deleteMessageLocally: message \(messageId) removed from UI")
+        }
+    }
     
     
     func reactionsForMessage(_ messageId: Int64) -> [Reaction] {

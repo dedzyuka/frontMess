@@ -63,7 +63,13 @@ struct ChatListView: View {
             }
             // Обновление списка при новых сообщениях
             .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
-                Task { await viewModel.loadChats() }
+                // Не перезагружать список, а только обновить lastMessage для соответствующего чата
+                // Вместо loadChats() вызываем updateLastMessage(for:)
+                if let currentChat = self.selectedChat {
+                    // ничего не делаем, сообщение уже добавится в текущий ChatViewModel
+                } else {
+                    Task { await viewModel.loadChats() } // только если не в чате
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
                 Task { await viewModel.loadChats() }

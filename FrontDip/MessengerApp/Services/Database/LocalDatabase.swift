@@ -44,6 +44,9 @@ class LocalDatabase {
     private let msgUpdatedAt = Expression<Date>("updated_at")
     private let msgDeletedAt = Expression<Date?>("deleted_at")
     private let msgIsEdited = Expression<Bool>("is_edited")
+    private let msgDeliveredAt = Expression<Date?>("delivered_at")
+    private let msgReadAt = Expression<Date?>("read_at")
+
     
     // === Contacts columns ===
     private let contactIdCol = Expression<UUID>("id")
@@ -103,6 +106,8 @@ class LocalDatabase {
                 t.column(msgUpdatedAt)
                 t.column(msgDeletedAt)
                 t.column(msgIsEdited)
+                t.column(msgDeliveredAt)
+                t.column(msgReadAt)
             })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
@@ -212,27 +217,7 @@ class LocalDatabase {
     }
     
     // MARK: - Message operations
-    func saveMessage(_ message: Message) -> Bool {
-        guard let db = db else { return false }
-        do {
-            try db.run(messagesTable.insert(
-                msgId <- message.messageId,
-                msgChatId <- message.chatId,
-                msgSenderId <- message.senderId,
-                msgReplyToId <- message.replyToId,
-                msgContent <- message.content,
-                msgType <- message.type,
-                msgCreatedAt <- message.createdAt,
-                msgUpdatedAt <- message.updatedAt,
-                msgDeletedAt <- message.deletedAt,
-                msgIsEdited <- message.isEdited
-            ))
-            return true
-        } catch {
-            print("❌ saveMessage error: \(error)")
-            return false
-        }
-    }
+    
     func updateMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
@@ -248,11 +233,51 @@ class LocalDatabase {
             return false
         }
     }
-    
+    func updateMessageStatus(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
+        guard let db = db else { return false }
+        let query = messagesTable.filter(msgId == messageId)
+        do {
+            try db.run(query.update(
+                msgDeliveredAt <- deliveredAt,
+                msgReadAt <- readAt
+            ))
+            return true
+        } catch {
+            print("❌ updateMessageStatus error: \(error)")
+            return false
+        }
+    }
+
+    // Обновить saveMessage, чтобы сохранял эти поля (если они уже есть в message)
+    func saveMessage(_ message: Message) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(messagesTable.insert(
+                msgId <- message.messageId,
+                msgChatId <- message.chatId,
+                msgSenderId <- message.senderId,
+                msgReplyToId <- message.replyToId,
+                msgContent <- message.content,
+                msgType <- message.type,
+                msgCreatedAt <- message.createdAt,
+                msgUpdatedAt <- message.updatedAt,
+                msgDeletedAt <- message.deletedAt,
+                msgIsEdited <- message.isEdited,
+                msgDeliveredAt <- message.deliveredAt,
+                msgReadAt <- message.readAt
+            ))
+            return true
+        } catch {
+            print("❌ saveMessage error: \(error)")
+            return false
+        }
+    }
+
+    // Обновить getMessages, чтобы загружал эти поля
     func getMessages(for chatId: UUID) -> [Message] {
         guard let db = db else { return [] }
+        let query = messagesTable.filter(msgChatId == chatId).order(msgCreatedAt.asc)
         do {
-            let query = messagesTable.filter(msgChatId == chatId).order(msgCreatedAt.asc)
             var messages: [Message] = []
             for row in try db.prepare(query) {
                 let msg = Message(
@@ -266,8 +291,8 @@ class LocalDatabase {
                     updatedAt: row[msgUpdatedAt],
                     deletedAt: row[msgDeletedAt],
                     isEdited: row[msgIsEdited],
-                    deliveredAt: nil,   // добавлено
-                    readAt: nil
+                    deliveredAt: row[msgDeliveredAt],
+                    readAt: row[msgReadAt]
                 )
                 messages.append(msg)
             }
@@ -277,6 +302,8 @@ class LocalDatabase {
             return []
         }
     }
+    
+    
     
     func deleteMessages(for chatId: UUID) -> Bool {
         guard let db = db else { return false }

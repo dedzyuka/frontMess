@@ -15,6 +15,94 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private var userId: UUID?
     private var accessToken: String?
     
+    // Добавить статический форматтер в класс WebSocketService (внутри класса, до методов)
+    private let isoDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    // Заменить handleStatusUpdate
+    private func handleStatusUpdate(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let userIdString = payload["user_id"] as? String,
+              let chatIdString = payload["chat_id"] as? String,
+              let chatId = UUID(uuidString: chatIdString),
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Failed to parse status.update payload")
+            return
+        }
+        
+        let deliveredAt = (payload["delivered_at"] as? String).flatMap { isoDateFormatter.date(from: $0) }
+        let readAt = (payload["read_at"] as? String).flatMap { isoDateFormatter.date(from: $0) }
+        
+        let update: [String: Any] = [
+            "messageId": messageId,
+            "chatId": chatId,
+            "userId": userId,
+            "deliveredAt": deliveredAt as Any,
+            "readAt": readAt as Any
+        ]
+        print("📢 Posting .statusUpdated for message \(messageId), delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+        NotificationCenter.default.post(name: .statusUpdated, object: update)
+    }
+
+    // Заменить handleNewMessage – добавить принудительный вызов в главном потоке и логирование
+    private func handleNewMessage(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let chatIdString = payload["chat_id"] as? String,
+              let senderIdString = payload["sender_id"] as? String,
+              let content = payload["content"] as? String,
+              let createdAtString = payload["created_at"] as? String,
+              let createdAt = isoDateFormatter.date(from: createdAtString) else {
+            print("❌ Failed to parse message.new payload")
+            return
+        }
+        guard let chatId = UUID(uuidString: chatIdString),
+              let senderId = UUID(uuidString: senderIdString) else {
+            print("❌ Invalid UUID in message.new")
+            return
+        }
+
+        let message = Message(
+            messageId: messageId, chatId: chatId, senderId: senderId,
+            replyToId: nil, content: content, type: "text",
+            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
+            isEdited: false, deliveredAt: nil, readAt: nil
+        )
+        
+        // Сохраняем в локальную БД
+        if !LocalDatabase.shared.messageExists(messageId) {
+            _ = LocalDatabase.shared.saveMessage(message)
+            print("💾 WebSocket: saved message \(messageId) to DB")
+        }
+        
+        DispatchQueue.main.async {
+            print("📢 Posting .newMessageReceived for message \(messageId) in chat \(chatId)")
+            NotificationCenter.default.post(name: .newMessageReceived, object: message)
+        }
+    }
+
+    // Улучшить handleMessage для обработки бинарных сообщений
+    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+        switch message {
+        case .string(let text):
+            print("📨 WebSocket string message: \(text.prefix(200))")
+            processJSON(text)
+        case .data(let data):
+            if let text = String(data: data, encoding: .utf8) {
+                print("📨 WebSocket data as string: \(text.prefix(200))")
+                processJSON(text)
+            } else {
+                print("📨 WebSocket binary message, length: \(data.count)")
+            }
+        @unknown default:
+            break
+        }
+    }
+    
     func connect(userId: UUID) {
         guard let token = TokenManager.shared.accessToken else {
             print("No access token for WebSocket")
@@ -77,18 +165,17 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
-        switch message {
-        case .string(let text):
-            processJSON(text)
-        default: break
-        }
-    }
+
     
     private func processJSON(_ text: String) {
+        print("📨 WebSocket raw message: \(text)")
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let event = json["event"] as? String else { return }
+              let event = json["event"] as? String else {
+            print("❌ Failed to parse WebSocket message")
+            return
+        }
+        print("✅ WebSocket event: \(event)")
         
         switch event {
         case "message.new":
@@ -116,39 +203,22 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    private func handleNewMessage(_ json: [String: Any]) {
-        guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
-              let chatIdString = payload["chat_id"] as? String,
-              let senderIdString = payload["sender_id"] as? String,
-              let content = payload["content"] as? String,
-              let createdAtString = payload["created_at"] as? String,
-              let createdAt = ISO8601DateFormatter().date(from: createdAtString) else { return }
-        guard let chatId = UUID(uuidString: chatIdString),
-              let senderId = UUID(uuidString: senderIdString) else { return }
-        let message = Message(
-            messageId: messageId, chatId: chatId, senderId: senderId,
-            replyToId: nil, content: content, type: "text",
-            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
-            isEdited: false, deliveredAt: nil, readAt: nil
-        )
-        NotificationCenter.default.post(name: .newMessageReceived, object: message)
-    }
+    // MARK: - Обработчики событий
+    
+    
     
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
               let chatIdString = payload["chat_id"] as? String,
               let content = payload["content"] as? String,
-              let updatedAtString = payload["updated_at"] as? String,
-              let updatedAt = ISO8601DateFormatter().date(from: updatedAtString),
               let isEdited = payload["is_edited"] as? Bool,
               let chatId = UUID(uuidString: chatIdString) else { return }
+        
         let updateInfo: [String: Any] = [
             "messageId": messageId,
             "chatId": chatId,
             "content": content,
-            "updatedAt": updatedAt,
             "isEdited": isEdited
         ]
         NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
@@ -189,12 +259,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private func handleReactionAdd(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
+              let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let createdAtString = payload["created_at"] as? String else { return }
+        guard let userId = UUID(uuidString: userIdString) else { return }
         let reaction = Reaction(
             messageId: messageId,
-            userId: UUID(uuidString: userId)!,
+            userId: userId,
             emoji: emoji,
             createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
         )
@@ -204,28 +275,17 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
+              let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String else { return }
+        guard let userId = UUID(uuidString: userIdString) else { return }
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
     
-    private func handleStatusUpdate(_ json: [String: Any]) {
-        guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
-              let deliveredAtStr = payload["delivered_at"] as? String?,
-              let readAtStr = payload["read_at"] as? String? else { return }
-        let update: [String: Any] = [
-            "messageId": messageId,
-            "userId": userId,
-            "deliveredAt": deliveredAtStr.flatMap { ISO8601DateFormatter().date(from: $0) },
-            "readAt": readAtStr.flatMap { ISO8601DateFormatter().date(from: $0) }
-        ]
-        NotificationCenter.default.post(name: .statusUpdated, object: update)
-    }
     
-    // Отправка сообщения
+    
+    // MARK: - Отправка сообщений
+    
     func sendMessage(chatId: UUID, content: String) {
         let envelope: [String: Any] = [
             "event": "message.send",

@@ -91,7 +91,6 @@ struct MessageBubbleView: View {
                     
                     if isCurrentUser {
                         if let readAt = message.readAt {
-                            // Прочитано → две синие галочки
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
                                 Image(systemName: "checkmark")
@@ -99,12 +98,10 @@ struct MessageBubbleView: View {
                             .font(.caption2)
                             .foregroundColor(.blue)
                         } else if let deliveredAt = message.deliveredAt {
-                            // Доставлено → одна серая галочка
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         } else {
-                            // Отправлено → одна серая галочка (как было)
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)

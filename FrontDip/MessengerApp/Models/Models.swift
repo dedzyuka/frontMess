@@ -40,7 +40,7 @@ struct Chat: Identifiable, Codable {
     let maxMembers: Int
     let createdAt: Date
     let membersCount: Int
-    let lastMessage: String?   // ← строковое поле
+    var lastMessage: String?   // ← строковое поле
 
     var id: UUID { chatId }
 }
