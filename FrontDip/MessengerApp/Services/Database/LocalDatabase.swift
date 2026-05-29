@@ -11,6 +11,7 @@ class LocalDatabase {
     private let messagesTable = Table("messages")
     private let contactsTable = Table("contacts")
     private let contactRequestsTable = Table("contact_requests")
+    private let reactionsTable = Table("reactions")
     
     // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
@@ -60,6 +61,11 @@ class LocalDatabase {
     private let reqFromAvatarUrl = Expression<String?>("from_avatar_url")
     private let reqStatus = Expression<String>("status")
     private let reqCreatedAt = Expression<Date>("created_at")
+    
+    private let reactionMessageId = Expression<Int64>("message_id")
+        private let reactionUserId = Expression<UUID>("user_id")
+        private let reactionEmoji = Expression<String>("emoji")
+        private let reactionCreatedAt = Expression<Date>("created_at")
     
     private init() {
         setupDatabase()
@@ -118,6 +124,13 @@ class LocalDatabase {
                 t.column(reqStatus)
                 t.column(reqCreatedAt)
             })
+            try db?.run(reactionsTable.create(ifNotExists: true) { t in
+                        t.column(reactionMessageId)
+                        t.column(reactionUserId)
+                        t.column(reactionEmoji)
+                        t.column(reactionCreatedAt)
+                        t.primaryKey(reactionMessageId, reactionUserId, reactionEmoji)
+                    })
             
             print("✅ Tables created")
         } catch {
@@ -217,6 +230,21 @@ class LocalDatabase {
             return true
         } catch {
             print("❌ saveMessage error: \(error)")
+            return false
+        }
+    }
+    func updateMessage(_ message: Message) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let query = messagesTable.filter(msgId == message.messageId)
+            try db.run(query.update(
+                msgContent <- message.content,
+                msgUpdatedAt <- message.updatedAt,
+                msgIsEdited <- message.isEdited
+            ))
+            return true
+        } catch {
+            print("❌ updateMessage error: \(error)")
             return false
         }
     }
@@ -424,6 +452,7 @@ class LocalDatabase {
             try db.run(messagesTable.delete())
             try db.run(contactsTable.delete())
             try db.run(contactRequestsTable.delete())
+            try db.run(reactionsTable.delete())
         } catch {
             print("❌ clearAllData error: \(error)")
         }
@@ -444,5 +473,66 @@ class LocalDatabase {
         let dbPath = "\(path)/messenger.sqlite3"
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
+    }
+    func saveReaction(_ reaction: Reaction) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(reactionsTable.insert(
+                reactionMessageId <- reaction.messageId,
+                reactionUserId <- reaction.userId,
+                reactionEmoji <- reaction.emoji,
+                reactionCreatedAt <- reaction.createdAt
+            ))
+            return true
+        } catch {
+            print("❌ saveReaction error: \(error)")
+            return false
+        }
+    }
+
+    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ removeReaction error: \(error)")
+            return false
+        }
+    }
+
+    func getReactions(for messageId: Int64) -> [Reaction] {
+        guard let db = db else { return [] }
+        let query = reactionsTable.filter(reactionMessageId == messageId)
+        do {
+            var reactions: [Reaction] = []
+            for row in try db.prepare(query) {
+                let reaction = Reaction(
+                    messageId: row[reactionMessageId],
+                    userId: row[reactionUserId],
+                    emoji: row[reactionEmoji],
+                    createdAt: row[reactionCreatedAt]
+                )
+                reactions.append(reaction)
+            }
+            return reactions
+        } catch {
+            print("❌ getReactions error: \(error)")
+            return []
+        }
+    }
+
+    func deleteAllReactions() {
+        guard let db = db else { return }
+        do {
+            try db.run(reactionsTable.delete())
+        } catch {
+            print("❌ deleteAllReactions error: \(error)")
+        }
     }
 }

@@ -71,6 +71,7 @@ struct Message: Identifiable, Codable {
     var isEdited: Bool             // теперь var
     var deliveredAt: Date?         // теперь var
     var readAt: Date?              // теперь var
+    var reactions: [Reaction]? = nil
     var attachments: [Attachment]? = nil
     
     var id: Int64 { messageId }

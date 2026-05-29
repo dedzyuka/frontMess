@@ -9,6 +9,7 @@ class ChatViewModel: ObservableObject {
     @Published var usersCache: [UUID: User] = [:]
     @Published var chatTitle: String = ""
     @Published var reactionsDict: [Int64: [Reaction]] = [:] // messageId -> [Reaction]
+    private let database = LocalDatabase.shared
     
     let chat: Chat
     private let graphQL = GraphQLClient.shared
@@ -39,7 +40,9 @@ class ChatViewModel: ObservableObject {
                    let messageId = info["messageId"] as? Int64,
                    let chatId = info["chatId"] as? UUID,
                    chatId == self?.chat.id {
-                    self?.updateMessage(messageId: messageId, content: info["content"] as? String ?? "", isEdited: info["isEdited"] as? Bool ?? false)
+                    let content = info["content"] as? String ?? ""
+                    let isEdited = info["isEdited"] as? Bool ?? false
+                    self?.updateMessage(messageId: messageId, content: content, isEdited: isEdited)
                 }
             }
             .store(in: &cancellables)
@@ -101,6 +104,35 @@ class ChatViewModel: ObservableObject {
             chatTitle = "Чат"
         }
     }
+    private func addReactionLocally(_ reaction: Reaction) {
+        DispatchQueue.main.async {
+            // Сохраняем в БД
+            _ = self.database.saveReaction(reaction)
+
+            if var list = self.reactionsDict[reaction.messageId] {
+                if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
+                    list.append(reaction)
+                    self.reactionsDict[reaction.messageId] = list
+                }
+            } else {
+                self.reactionsDict[reaction.messageId] = [reaction]
+            }
+        }
+    }
+
+    // При удалении реакции
+    private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
+        DispatchQueue.main.async {
+            // Удаляем из БД
+            _ = self.database.removeReaction(messageId: messageId, userId: userId, emoji: emoji)
+
+            if var list = self.reactionsDict[messageId] {
+                list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
+                self.reactionsDict[messageId] = list
+            }
+        }
+    }
+
     
     private func getChatMemberIds() async -> [UUID] {
         let variables = ["chatId": chat.id.uuidString]
@@ -132,14 +164,79 @@ class ChatViewModel: ObservableObject {
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 await MainActor.run {
                     self.messages = loadedMessages
+                    // Заполняем словарь реакций
+                    for msg in loadedMessages {
+                                            let savedReactions = self.database.getReactions(for: msg.messageId)
+                                            if !savedReactions.isEmpty {
+                                                self.reactionsDict[msg.messageId] = savedReactions
+                                            }
+                                        }
                     self.isLoading = false
                 }
                 await loadUsersForMessages(loadedMessages)
-                await loadReactionsForMessages(loadedMessages)
             } catch {
                 print("Load messages error: \(error)")
                 await MainActor.run { isLoading = false }
             }
+        }
+    }
+    func addReaction(to messageId: Int64, emoji: String) async {
+        let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
+        let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
+        
+        // Оптимистичное добавление
+        await MainActor.run {
+            self.addReactionLocally(reaction)
+        }
+        
+        do {
+            let variables: [String: Any] = [
+                "messageId": messageId,
+                "chatId": chat.id.uuidString,
+                "emoji": emoji
+            ]
+            let _: AddReactionResponse = try await graphQL.perform(
+                query: GraphQLQueries.addReaction,
+                variables: variables,
+                responseType: AddReactionResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+        } catch {
+            // Откат
+            await MainActor.run {
+                self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+            }
+            print("Add reaction failed: \(error)")
+        }
+    }
+
+    func removeReaction(from messageId: Int64, emoji: String) async {
+        let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
+        
+        // Оптимистичное удаление
+        await MainActor.run {
+            self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+        }
+        
+        do {
+            let variables: [String: Any] = [
+                "messageId": messageId,
+                "chatId": chat.id.uuidString,
+                "emoji": emoji
+            ]
+            let _: RemoveReactionResponse = try await graphQL.perform(
+                query: GraphQLQueries.removeReaction,
+                variables: variables,
+                responseType: RemoveReactionResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+        } catch {
+            // Восстановить реакцию при ошибке
+            let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
+            await MainActor.run {
+                self.addReactionLocally(reaction)
+            }
+            print("Remove reaction failed: \(error)")
         }
     }
     
@@ -242,6 +339,8 @@ class ChatViewModel: ObservableObject {
                 updated.isEdited = isEdited
                 updated.updatedAt = Date()
                 self.messages[index] = updated
+                self.objectWillChange.send()  // принудительное обновление SwiftUI
+                _ = LocalDatabase.shared.updateMessage(updated)
             }
         }
     }
@@ -267,27 +366,7 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    private func addReactionLocally(_ reaction: Reaction) {
-        DispatchQueue.main.async {
-            if var list = self.reactionsDict[reaction.messageId] {
-                if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
-                    list.append(reaction)
-                    self.reactionsDict[reaction.messageId] = list
-                }
-            } else {
-                self.reactionsDict[reaction.messageId] = [reaction]
-            }
-        }
-    }
     
-    private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
-        DispatchQueue.main.async {
-            if var list = self.reactionsDict[messageId] {
-                list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
-                self.reactionsDict[messageId] = list
-            }
-        }
-    }
     
     
     
@@ -311,7 +390,11 @@ class ChatViewModel: ObservableObject {
                     authToken: TokenManager.shared.accessToken
                 )
             } catch {
-                print("Failed to mark as read: \(error)")
+                if (error as? GraphQLError)?.localizedDescription.contains("Message status not found") == true {
+                    print("Status not found for old message \(messageId)")
+                } else {
+                    print("Failed to mark as read: \(error)")
+                }
             }
         }
     }
@@ -364,41 +447,9 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    func addReaction(to messageId: Int64, emoji: String) async {
-        do {
-            let variables: [String: Any] = [
-                "messageId": messageId,
-                "chatId": chat.id.uuidString,
-                "emoji": emoji
-            ]
-            let _: AddReactionResponse = try await graphQL.perform(
-                query: GraphQLQueries.addReaction,
-                variables: variables,
-                responseType: AddReactionResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-        } catch {
-            print("Add reaction error: \(error)")
-        }
-    }
+   
     
-    func removeReaction(from messageId: Int64, emoji: String) async {
-        do {
-            let variables: [String: Any] = [
-                "messageId": messageId,
-                "chatId": chat.id.uuidString,
-                "emoji": emoji
-            ]
-            let _: RemoveReactionResponse = try await graphQL.perform(
-                query: GraphQLQueries.removeReaction,
-                variables: variables,
-                responseType: RemoveReactionResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-        } catch {
-            print("Remove reaction error: \(error)")
-        }
-    }
+    
     
     func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
         return reactionsDict[messageId] ?? []

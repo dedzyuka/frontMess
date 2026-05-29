@@ -146,12 +146,7 @@ class UserProfileViewModel: ObservableObject {
         Task {
             if let chat = await chatVM.findOrCreatePrivateChat(with: userId) {
                 await MainActor.run {
-                    NotificationCenter.default.post(name: .chatCreated, object: chat)
-                    NotificationCenter.default.post(name: .openChat, object: chat.id)
-                }
-            } else {
-                await MainActor.run {
-                    self.errorMessage = "Не удалось создать чат"
+                    NotificationCenter.default.post(name: .openChat, object: chat)
                 }
             }
         }

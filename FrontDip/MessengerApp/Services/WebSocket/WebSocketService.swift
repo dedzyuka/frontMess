@@ -145,8 +145,11 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let isEdited = payload["is_edited"] as? Bool,
               let chatId = UUID(uuidString: chatIdString) else { return }
         let updateInfo: [String: Any] = [
-            "messageId": messageId, "chatId": chatId,
-            "content": content, "updatedAt": updatedAt, "isEdited": isEdited
+            "messageId": messageId,
+            "chatId": chatId,
+            "content": content,
+            "updatedAt": updatedAt,
+            "isEdited": isEdited
         ]
         NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
     }

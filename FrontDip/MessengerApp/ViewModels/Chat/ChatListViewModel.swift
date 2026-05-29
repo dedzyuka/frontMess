@@ -111,6 +111,13 @@ class ChatListViewModel: ObservableObject {
             return nil
         }
     }
+    func addChat(_ chat: Chat) {
+        DispatchQueue.main.async {
+            if !self.chats.contains(where: { $0.id == chat.id }) {
+                self.chats.insert(chat, at: 0)
+            }
+        }
+    }
 
     private func getChatMembers(chatId: UUID) async -> [UUID] {
         do {
@@ -163,12 +170,6 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    func addChat(_ chat: Chat) {
-        DispatchQueue.main.async {
-            if !self.chats.contains(where: { $0.id == chat.id }) {
-                self.chats.insert(chat, at: 0)
-            }
-        }
-    }
+    
     
 }

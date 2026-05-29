@@ -52,10 +52,13 @@ struct ChatListView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-                if let chatId = notification.object as? UUID,
-                   let chat = viewModel.chats.first(where: { $0.id == chatId }) {
+                if let chat = notification.object as? Chat {
                     selectedChat = chat
                     showChat = true
+                    // Опционально: если чата нет в списке viewModel.chats – добавить его
+                    if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+                        viewModel.addChat(chat)
+                    }
                 }
             }
             // Обновление списка при новых сообщениях
@@ -96,6 +99,7 @@ struct ChatListView: View {
             Text(viewModel.errorMessage ?? "")
         }
     }
+    
 
     @ViewBuilder
     private var mainContent: some View {

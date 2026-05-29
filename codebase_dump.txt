@@ -1,5 +1,21 @@
 ./FrontDip/MessengerApp/App/AppConfig.swift
 
+// App/AppConfig.swift
+import Foundation
+
+struct AppConfig {
+    static let baseURL = "http://localhost:8002"
+    static let graphqlPath = "/graphql"
+    static let websocketPath = "/ws/chat"
+    
+    static var graphqlURL: URL {
+        URL(string: baseURL + graphqlPath)!
+    }
+    
+    static var websocketURL: URL {
+        URL(string: "ws://localhost:8000" + websocketPath)!
+    }
+}
 
 ./FrontDip/MessengerApp/App/AppState.swift
 
@@ -36,6 +52,7 @@ class AppState: ObservableObject {
 
 ./FrontDip/MessengerApp/App/MessengerApp.swift
 
+// MessengerApp.swift
 import SwiftUI
 
 @main
@@ -52,7 +69,6 @@ struct MessengerApp: App {
         }
     }
 }
-
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -78,9 +94,7 @@ struct ContentView: View {
             let success = await AuthViewModel().restoreSession()
             await MainActor.run {
                 isChecking = false
-                if !success {
-                    // сессия не восстановлена, остаёмся на экране приветствия
-                }
+                // если success == false, остаёмся на WelcomeView
             }
         }
     }
@@ -440,14 +454,15 @@ struct Message: Identifiable, Codable {
     let chatId: UUID
     let senderId: UUID
     let replyToId: Int64?
-    let content: String?
+    var content: String?           // теперь var
     let type: String
     let createdAt: Date
-    let updatedAt: Date
+    var updatedAt: Date            // теперь var
     let deletedAt: Date?
-    let isEdited: Bool
-    let deliveredAt: Date?
-    let readAt: Date?
+    var isEdited: Bool             // теперь var
+    var deliveredAt: Date?         // теперь var
+    var readAt: Date?              // теперь var
+    var reactions: [Reaction]? = nil
     var attachments: [Attachment]? = nil
     
     var id: Int64 { messageId }
@@ -469,14 +484,28 @@ struct ChatMemberItem: Codable {
 }
 
 // MARK: - Contact
+// MARK: - Contact
 struct Contact: Identifiable, Codable {
-    let id = UUID()
     let userId: UUID
     let contactUserId: UUID
     let status: String
     let createdAt: Date
     let updatedAt: Date?
-    let contactUser: User?   // ← теперь UserPublic, а не User
+    let contactUser: User?
+    
+    // Вычисляемое свойство для Identifiable (не участвует в декодировании)
+    var id: String {
+        "\(userId.uuidString)-\(contactUserId.uuidString)"
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case userId
+        case contactUserId
+        case status
+        case createdAt
+        case updatedAt
+        case contactUser
+    }
 }
 
 // MARK: - ContactRequest (входящие)
@@ -579,6 +608,13 @@ struct GraphQLQueries {
       }
     }
     """
+    static let markAsRead = """
+    mutation MarkAsRead($messageId: Int!, $chatId: String!) {
+        message {
+            markAsRead(messageId: $messageId, chatId: $chatId)
+        }
+    }
+    """
     
     static let createChat = """
     mutation CreateChat($chatType: String!, $name: String, $memberIds: [String!]!, $isPublic: Boolean) {
@@ -646,6 +682,12 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                reactions {
+                    messageId
+                    userId
+                    emoji
+                    createdAt
+                }
             }
         }
     }
@@ -1127,14 +1169,15 @@ class LocalDatabase {
             })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
-                t.column(contactIdCol, primaryKey: true)
-                t.column(contactUserId)
-                t.column(contactContactUserId)
-                t.column(contactStatus)
-                t.column(contactCreatedAt)
-                t.column(contactUpdatedAt)
-                t.column(contactUserJSON)
-            })
+                        t.column(contactUserId)
+                        t.column(contactContactUserId)
+                        t.column(contactStatus)
+                        t.column(contactCreatedAt)
+                        t.column(contactUpdatedAt)
+                        t.column(contactUserJSON)
+                        t.primaryKey(contactUserId, contactContactUserId)
+                    })
+                    
             
             try db?.run(contactRequestsTable.create(ifNotExists: true) { t in
                 t.column(reqId, primaryKey: true)
@@ -1246,6 +1289,21 @@ class LocalDatabase {
             return false
         }
     }
+    func updateMessage(_ message: Message) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let query = messagesTable.filter(msgId == message.messageId)
+            try db.run(query.update(
+                msgContent <- message.content,
+                msgUpdatedAt <- message.updatedAt,
+                msgIsEdited <- message.isEdited
+            ))
+            return true
+        } catch {
+            print("❌ updateMessage error: \(error)")
+            return false
+        }
+    }
     
     func getMessages(for chatId: UUID) -> [Message] {
         guard let db = db else { return [] }
@@ -1307,14 +1365,24 @@ class LocalDatabase {
         guard let db = db else { return false }
         do {
             let userJSON = contact.contactUser.flatMap { try? JSONEncoder().encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-            try db.run(contactsTable.insert(
-                contactUserId <- contact.userId,
-                contactContactUserId <- contact.contactUserId,
-                contactStatus <- contact.status,
-                contactCreatedAt <- contact.createdAt,
-                contactUpdatedAt <- contact.updatedAt ?? Date(),
-                contactUserJSON <- userJSON
-            ))
+            let existing = contactsTable.filter(contactUserId == contact.userId && contactContactUserId == contact.contactUserId)
+            let count = try db.scalar(existing.count)
+            if count > 0 {
+                try db.run(existing.update(
+                    contactStatus <- contact.status,
+                    contactUpdatedAt <- contact.updatedAt ?? Date(),
+                    contactUserJSON <- userJSON
+                ))
+            } else {
+                try db.run(contactsTable.insert(
+                    contactUserId <- contact.userId,
+                    contactContactUserId <- contact.contactUserId,
+                    contactStatus <- contact.status,
+                    contactCreatedAt <- contact.createdAt,
+                    contactUpdatedAt <- contact.updatedAt ?? Date(),
+                    contactUserJSON <- userJSON
+                ))
+            }
             return true
         } catch {
             print("❌ saveContact error: \(error)")
@@ -1330,7 +1398,6 @@ class LocalDatabase {
                 var contactUser: User? = nil
                 if let jsonStr = row[contactUserJSON], let data = jsonStr.data(using: .utf8) {
                     contactUser = try? JSONDecoder().decode(User.self, from: data)
-                
                 }
                 let contact = Contact(
                     userId: row[contactUserId],
@@ -1494,7 +1561,13 @@ class ChatKeyManager {
 
 ./FrontDip/MessengerApp/Services/Message/MessageService.swift
 
-// MessageService.swift
+//
+//  MessageService.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 21.05.26.
+//
+
 import Foundation
 import Combine
 
@@ -1506,9 +1579,9 @@ class MessageService: ObservableObject {
     
     @Published var unreadMessagesCount: Int = 0
     
-    private var pendingMessages: [Int64: Message] = [:]      // ключ Int64
-    private var retryTimers: [Int64: Timer] = [:]           // ключ Int64
-    private var retryAttempts: [Int64: Int] = [:]           // ключ Int64
+    private var pendingMessages: [Int64: Message] = [:]
+    private var retryTimers: [Int64: Timer] = [:]
+    private var retryAttempts: [Int64: Int] = [:]
     private let maxRetryAttempts = 3
     
     private var cancellables = Set<AnyCancellable>()
@@ -1528,7 +1601,7 @@ class MessageService: ObservableObject {
     }
     
     func sendMessage(_ message: Message, to chatId: UUID) {
-        let messageId = message.messageId   // Int64
+        let messageId = message.messageId
         print("📤 Sending message to chat \(chatId)")
         
         if !database.messageExists(messageId) {
@@ -1540,7 +1613,6 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message) {
-        // Удаляем старый код с WebSocketMessage
         WebSocketService.shared.sendMessage(chatId: message.chatId, content: message.content ?? "")
     }
     
@@ -1577,17 +1649,10 @@ class MessageService: ObservableObject {
         }
     }
     
+    // ✅ ИСПРАВЛЕНО: используем sendAck вместо устаревшего WebSocketMessage
     private func sendMessageAck(for message: Message) {
-        guard let currentUser = AppState.shared.currentUser else { return }
-        let ackMessage = WebSocketMessage(
-            type: "message.ack",
-            chatId: message.chatId,   // сначала chatId
-            messageId: message.messageId,
-            timestamp: Date(),
-            originalSenderId: message.senderId,
-            ackSenderId: currentUser.id
-        )
-        webSocketService.sendMessage(ackMessage)
+        guard AppState.shared.currentUser != nil else { return }
+        webSocketService.sendAck(messageId: message.messageId, chatId: message.chatId)
     }
     
     func handleMessageAck(messageId: Int64, from recipientId: UUID) {
@@ -1664,14 +1729,29 @@ class ContactService: ObservableObject {
             throw NSError(domain: "ContactService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Cannot add yourself as contact"])
         }
         let variables: [String: Any] = ["contactUserId": userId]
-        let _: AddContactResponse = try await graphQL.perform(
+        
+        struct SimpleResponse: Decodable {
+            let contact: SimpleWrapper
+            struct SimpleWrapper: Decodable {
+                let add: SimpleContact
+                struct SimpleContact: Decodable {
+                    let userId: String
+                    let contactUserId: String
+                    let status: String
+                    let createdAt: String
+                }
+            }
+        }
+        
+        let _: SimpleResponse = try await graphQL.perform(
             query: GraphQLQueries.addContact,
             variables: variables,
-            responseType: AddContactResponse.self,
+            responseType: SimpleResponse.self,
             authToken: TokenManager.shared.accessToken
         )
         return true
     }
+
     
     func acceptContact(contactUserId: String) async throws -> Bool {
         let variables: [String: Any] = ["contactUserId": contactUserId]
@@ -1737,11 +1817,12 @@ class ContactService: ObservableObject {
                 let fetched = try await fetchContacts(status: "accepted")
                 await MainActor.run {
                     self.contacts = fetched
-                    // SQLite сохранение отключено
+                    for contact in fetched {
+                        _ = LocalDatabase.shared.saveContact(contact)
+                    }
                 }
             } catch {
                 print("Failed to load contacts: \(error)")
-                // Не подгружаем из SQLite, просто оставляем пустым
                 await MainActor.run { self.contacts = [] }
             }
         }
@@ -1755,7 +1836,9 @@ class ContactService: ObservableObject {
                 let pending = fetched.filter { $0.status.lowercased() == "pending" }
                 await MainActor.run {
                     self.pendingRequests = pending
-                    // SQLite сохранение отключено
+                    for request in pending {
+                        _ = LocalDatabase.shared.saveContact(request)
+                    }
                 }
             } catch {
                 print("Failed to load pending requests: \(error)")
@@ -1846,7 +1929,8 @@ class ContactService: ObservableObject {
     func acceptContactRequest(_ request: Contact) {
         Task {
             do {
-                _ = try await acceptContact(contactUserId: request.contactUserId.uuidString)
+                // Для входящего запроса отправитель – request.userId
+                _ = try await acceptContact(contactUserId: request.userId.uuidString)
                 await MainActor.run {
                     self.loadContacts()
                     self.loadPendingRequests()
@@ -1863,7 +1947,8 @@ class ContactService: ObservableObject {
     func declineContactRequest(_ request: Contact) {
         Task {
             do {
-                _ = try await removeContact(userId: request.contactUserId.uuidString)
+                // Для отклонения используем userId отправителя
+                _ = try await removeContact(userId: request.userId.uuidString)
                 await MainActor.run {
                     self.loadPendingRequests()
                     NotificationService.shared.showInfo("Запрос отклонён")
@@ -1985,8 +2070,12 @@ struct GraphQLErrorDetail: Decodable {
 
 class GraphQLClient {
     static let shared = GraphQLClient()
-    private let baseURL = "http://localhost:8002/graphql"
+    private let baseURL = AppConfig.graphqlURL
     private let session = URLSession.shared
+    
+    // Блокировка для предотвращения множественных refresh
+    private var isRefreshing = false
+    private var pendingRequests: [(String, Any?, Decodable.Type, String?) -> Void] = []
     
     private init() {}
     
@@ -1996,57 +2085,87 @@ class GraphQLClient {
         responseType: Response.Type,
         authToken: String? = nil
     ) async throws -> Response {
-        guard let url = URL(string: baseURL) else {
-            throw GraphQLError.invalidURL
+        // Попытка запроса с текущим токеном
+        do {
+            return try await performRequest(query: query, variables: variables, responseType: responseType, authToken: authToken)
+        } catch let error as GraphQLError {
+            // Если 401 и есть refresh token – обновляем и повторяем
+            if case .httpError(let code, _) = error, code == 401 {
+                let refreshed = await refreshTokenIfNeeded()
+                if refreshed, let newToken = TokenManager.shared.accessToken {
+                    return try await performRequest(query: query, variables: variables, responseType: responseType, authToken: newToken)
+                }
+            }
+            throw error
+        } catch {
+            throw error
         }
-        
-        var request = URLRequest(url: url)
+    }
+    
+    private func performRequest<Response: Decodable>(
+        query: String,
+        variables: [String: Any]?,
+        responseType: Response.Type,
+        authToken: String?
+    ) async throws -> Response {
+        var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        print("🔑 Auth token used: \(authToken?.prefix(20) ?? "nil")")
         if let token = authToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        
-        let body: [String: Any] = [
-            "query": query,
-            "variables": variables ?? [:]
-        ]
+        let body: [String: Any] = ["query": query, "variables": variables ?? [:]]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        print("📤 GraphQL Query: \(query)")
+        
         let (data, response) = try await session.data(for: request)
-        
-        // Логируем ответ для отладки
-        if let jsonString = String(data: data, encoding: .utf8) {
-            print("📦 Response JSON: \(jsonString.prefix(2000))")
-        }
-        
         guard let httpResponse = response as? HTTPURLResponse else {
             throw GraphQLError.networkError(URLError(.badServerResponse))
         }
-        
         guard (200...299).contains(httpResponse.statusCode) else {
-            let errorMessage = String(data: data, encoding: .utf8)
-            throw GraphQLError.httpError(httpResponse.statusCode, errorMessage)
+            throw GraphQLError.httpError(httpResponse.statusCode, String(data: data, encoding: .utf8))
         }
-        
-        
+        if let jsonString = String(data: data, encoding: .utf8) {
+            print("📦 Raw response: \(jsonString)")
+        }
         let decoder = JSONDecoder.snakeCaseDecoder
-        
         let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
-        
         if let errors = graphQLResponse.errors, !errors.isEmpty {
             throw GraphQLError.graphQLErrors(errors.map { $0.message })
         }
-        
         guard let data = graphQLResponse.data else {
             throw GraphQLError.noData
         }
-        
         return data
     }
+    
+    private func refreshTokenIfNeeded() async -> Bool {
+        // Блокировка параллельных вызовов
+        if isRefreshing {
+            // Ждём завершения текущего refresh
+            return await withCheckedContinuation { continuation in
+                pendingRequests.append { _, _, _, _ in
+                    continuation.resume(returning: TokenManager.shared.accessToken != nil)
+                }
+            }
+        }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        
+        guard let refreshToken = TokenManager.shared.refreshToken else { return false }
+        let success = await AuthViewModel().restoreSession()
+        
+        // Выполнить все ожидающие запросы
+        for pending in pendingRequests {
+            pending("", nil, EmptyResponse.self, nil)
+        }
+        pendingRequests.removeAll()
+        
+        return success
+    }
 }
+
+// Пустой тип для заглушки
+private struct EmptyResponse: Decodable {}
 
 ./FrontDip/MessengerApp/Services/Network/NetworkManager.swift
 
@@ -2128,6 +2247,9 @@ extension Notification.Name {
     static let reactionAdded = Notification.Name("reactionAdded")
     static let reactionRemoved = Notification.Name("reactionRemoved")
     static let statusUpdated = Notification.Name("statusUpdated")
+
+    static let messageUpdated = Notification.Name("messageUpdated")
+    static let messageDeleted = Notification.Name("messageDeleted")
 }
 
 class NotificationService {
@@ -2626,6 +2748,7 @@ class KeychainService {
 
 ./FrontDip/MessengerApp/Services/WebSocket/WebSocketService.swift
 
+// WebSocketService.swift (полностью переработан)
 import Foundation
 import Combine
 
@@ -2635,19 +2758,28 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     @Published var isConnected = false
     private var webSocketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
+    private var reconnectTimer: Timer?
+    private var reconnectAttempts = 0
+    private let maxReconnectAttempts = 10
+    
+    private var userId: UUID?
+    private var accessToken: String?
     
     func connect(userId: UUID) {
         guard let token = TokenManager.shared.accessToken else {
-                print("No access token for WebSocket")
-                return
-            }
-            let urlString = "ws://localhost:8000/ws/chat?access_token=\(token)"
-        connect(accessToken: token, userId: userId)
+            print("No access token for WebSocket")
+            return
+        }
+        self.userId = userId
+        self.accessToken = token
+        connectInternal()
     }
     
-    func connect(accessToken: String, userId: UUID) {
-        let urlString = "ws://localhost:8000/ws/chat?access_token=\(accessToken)"
+    private func connectInternal() {
+        guard let token = accessToken, let userId = userId else { return }
+        let urlString = "\(AppConfig.websocketURL.absoluteString)?access_token=\(token)"
         guard let url = URL(string: urlString) else { return }
+        
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -2657,11 +2789,26 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     }
     
     func disconnect() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         pingTimer?.invalidate()
         pingTimer = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         isConnected = false
+        reconnectAttempts = 0
+    }
+    
+    private func scheduleReconnect() {
+        guard reconnectAttempts < maxReconnectAttempts else {
+            print("Max reconnect attempts reached")
+            return
+        }
+        let delay = min(10, Double(reconnectAttempts + 1) * 2)
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            self?.reconnectAttempts += 1
+            self?.connectInternal()
+        }
     }
     
     private func listenForMessages() {
@@ -2674,6 +2821,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                 print("WebSocket receive error: \(error)")
                 DispatchQueue.main.async {
                     self?.isConnected = false
+                    self?.scheduleReconnect()
                 }
             }
         }
@@ -2687,7 +2835,6 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    // WebSocketService.swift
     private func processJSON(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -2695,87 +2842,23 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         
         switch event {
         case "message.new":
-            if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int64,
-               let chatIdString = payload["chat_id"] as? String,
-               let senderIdString = payload["sender_id"] as? String,
-               let content = payload["content"] as? String,
-               let createdAtString = payload["created_at"] as? String,
-               let createdAt = ISO8601DateFormatter().date(from: createdAtString) {
-                
-                guard let chatId = UUID(uuidString: chatIdString),
-                      let senderId = UUID(uuidString: senderIdString) else { return }
-                
-                let message = Message(
-                    messageId: messageId,
-                    chatId: chatId,
-                    senderId: senderId,
-                    replyToId: nil,
-                    content: content,
-                    type: "text",
-                    createdAt: createdAt,
-                    updatedAt: createdAt,
-                    deletedAt: nil,
-                    isEdited: false,
-                    deliveredAt: nil,   // добавлено
-                    readAt: nil
-                )
-                NotificationCenter.default.post(name: .newMessageReceived, object: message)
-            }
+            handleNewMessage(json)
+        case "message.update":
+            handleMessageUpdate(json)
+        case "message.delete":
+            handleMessageDelete(json)
+        case "chat.created":
+            handleChatCreated(json)
         case "typing.start", "typing.stop":
-            // Можно отправить уведомление для ChatView
-            if let payload = json["payload"] as? [String: Any],
-               let chatIdString = payload["chat_id"] as? String,
-               let userIdString = payload["user_id"] as? String,
-               let chatId = UUID(uuidString: chatIdString),
-               let userId = UUID(uuidString: userIdString) {
-                NotificationCenter.default.post(
-                    name: event == "typing.start" ? .typingStarted : .typingStopped,
-                    object: nil,
-                    userInfo: ["chatId": chatId, "userId": userId]
-                )
-            }
-
+            handleTyping(json, event: event)
         case "message.ack":
-            if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int64 {
-                NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
-            }
+            handleAck(json)
         case "reaction.add":
-            if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int64,
-               let userId = payload["user_id"] as? String,
-               let emoji = payload["emoji"] as? String,
-               let createdAtString = payload["created_at"] as? String {
-                let reaction = Reaction(
-                    messageId: messageId,
-                    userId: UUID(uuidString: userId)!,
-                    emoji: emoji,
-                    createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
-                )
-                NotificationCenter.default.post(name: .reactionAdded, object: reaction)
-            }
+            handleReactionAdd(json)
         case "reaction.remove":
-            if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int64,
-               let userId = payload["user_id"] as? String,
-               let emoji = payload["emoji"] as? String {
-                NotificationCenter.default.post(name: .reactionRemoved, object: (messageId, userId, emoji))
-            }
+            handleReactionRemove(json)
         case "status.update":
-            if let payload = json["payload"] as? [String: Any],
-               let messageId = payload["message_id"] as? Int64,
-               let userId = payload["user_id"] as? String,
-               let deliveredAt = payload["delivered_at"] as? String?,
-               let readAt = payload["read_at"] as? String? {
-                let statusUpdate: [String: Any] = [
-                    "messageId": messageId,
-                    "userId": userId,
-                    "deliveredAt": deliveredAt,
-                    "readAt": readAt
-                ]
-                NotificationCenter.default.post(name: .statusUpdated, object: statusUpdate)
-            }
+            handleStatusUpdate(json)
         case "pong":
             print("Pong received")
         default:
@@ -2783,11 +2866,116 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    func sendMessage(_ message: WebSocketMessage) {
-        guard let chatId = message.chatId, let content = message.content else { return }
-        sendMessage(chatId: chatId, content: content)
+    private func handleNewMessage(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let chatIdString = payload["chat_id"] as? String,
+              let senderIdString = payload["sender_id"] as? String,
+              let content = payload["content"] as? String,
+              let createdAtString = payload["created_at"] as? String,
+              let createdAt = ISO8601DateFormatter().date(from: createdAtString) else { return }
+        guard let chatId = UUID(uuidString: chatIdString),
+              let senderId = UUID(uuidString: senderIdString) else { return }
+        let message = Message(
+            messageId: messageId, chatId: chatId, senderId: senderId,
+            replyToId: nil, content: content, type: "text",
+            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
+            isEdited: false, deliveredAt: nil, readAt: nil
+        )
+        NotificationCenter.default.post(name: .newMessageReceived, object: message)
     }
     
+    private func handleMessageUpdate(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let chatIdString = payload["chat_id"] as? String,
+              let content = payload["content"] as? String,
+              let updatedAtString = payload["updated_at"] as? String,
+              let updatedAt = ISO8601DateFormatter().date(from: updatedAtString),
+              let isEdited = payload["is_edited"] as? Bool,
+              let chatId = UUID(uuidString: chatIdString) else { return }
+        let updateInfo: [String: Any] = [
+            "messageId": messageId,
+            "chatId": chatId,
+            "content": content,
+            "updatedAt": updatedAt,
+            "isEdited": isEdited
+        ]
+        NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
+    }
+    
+    private func handleMessageDelete(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let chatIdString = payload["chat_id"] as? String,
+              let chatId = UUID(uuidString: chatIdString) else { return }
+        NotificationCenter.default.post(name: .messageDeleted, object: (messageId, chatId))
+    }
+    
+    private func handleChatCreated(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let chatJSON = payload["chat"] as? [String: Any],
+              let chatData = try? JSONSerialization.data(withJSONObject: chatJSON),
+              let chat = try? JSONDecoder.snakeCaseDecoder.decode(Chat.self, from: chatData) else { return }
+        NotificationCenter.default.post(name: .chatCreated, object: chat)
+    }
+    
+    private func handleTyping(_ json: [String: Any], event: String) {
+        guard let payload = json["payload"] as? [String: Any],
+              let chatIdString = payload["chat_id"] as? String,
+              let userIdString = payload["user_id"] as? String,
+              let chatId = UUID(uuidString: chatIdString),
+              let userId = UUID(uuidString: userIdString) else { return }
+        let name = event == "typing.start" ? Notification.Name.typingStarted : .typingStopped
+        NotificationCenter.default.post(name: name, object: nil, userInfo: ["chatId": chatId, "userId": userId])
+    }
+    
+    private func handleAck(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64 else { return }
+        NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
+    }
+    
+    private func handleReactionAdd(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let userId = payload["user_id"] as? String,
+              let emoji = payload["emoji"] as? String,
+              let createdAtString = payload["created_at"] as? String else { return }
+        let reaction = Reaction(
+            messageId: messageId,
+            userId: UUID(uuidString: userId)!,
+            emoji: emoji,
+            createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
+        )
+        NotificationCenter.default.post(name: .reactionAdded, object: reaction)
+    }
+    
+    private func handleReactionRemove(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let userId = payload["user_id"] as? String,
+              let emoji = payload["emoji"] as? String else { return }
+        let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
+        NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
+    }
+    
+    private func handleStatusUpdate(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let userId = payload["user_id"] as? String,
+              let deliveredAtStr = payload["delivered_at"] as? String?,
+              let readAtStr = payload["read_at"] as? String? else { return }
+        let update: [String: Any] = [
+            "messageId": messageId,
+            "userId": userId,
+            "deliveredAt": deliveredAtStr.flatMap { ISO8601DateFormatter().date(from: $0) },
+            "readAt": readAtStr.flatMap { ISO8601DateFormatter().date(from: $0) }
+        ]
+        NotificationCenter.default.post(name: .statusUpdated, object: update)
+    }
+    
+    // Отправка сообщения
     func sendMessage(chatId: UUID, content: String) {
         let envelope: [String: Any] = [
             "event": "message.send",
@@ -2802,7 +2990,16 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         send(envelope)
     }
     
+    func sendAck(messageId: Int64, chatId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "message.ack",
+            "payload": ["message_id": messageId, "chat_id": chatId.uuidString]
+        ]
+        send(envelope)
+    }
+    
     private func startPing() {
+        pingTimer?.invalidate()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.send(["event": "ping"])
         }
@@ -2820,6 +3017,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         DispatchQueue.main.async {
             self.isConnected = true
+            self.reconnectAttempts = 0
+            self.reconnectTimer?.invalidate()
             NotificationCenter.default.post(name: .websocketConnected, object: nil)
             print("WebSocket connected")
         }
@@ -2830,14 +3029,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             self.isConnected = false
             NotificationCenter.default.post(name: .websocketDisconnected, object: nil)
             print("WebSocket disconnected")
+            self.scheduleReconnect()
         }
-    }
-    func sendContactRequest(to userId: String) {
-        let envelope: [String: Any] = [
-            "event": "contact.request",
-            "payload": ["contact_user_id": userId]
-        ]
-        send(envelope)
     }
 }
 
@@ -3455,6 +3648,13 @@ class ChatListViewModel: ObservableObject {
             return nil
         }
     }
+    func addChat(_ chat: Chat) {
+        DispatchQueue.main.async {
+            if !self.chats.contains(where: { $0.id == chat.id }) {
+                self.chats.insert(chat, at: 0)
+            }
+        }
+    }
 
     private func getChatMembers(chatId: UUID) async -> [UUID] {
         do {
@@ -3507,13 +3707,7 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    func addChat(_ chat: Chat) {
-        DispatchQueue.main.async {
-            if !self.chats.contains(where: { $0.id == chat.id }) {
-                self.chats.insert(chat, at: 0)
-            }
-        }
-    }
+    
     
 }
 
@@ -3698,68 +3892,131 @@ class ChatSidebarViewModel: ObservableObject {
 
 ./FrontDip/MessengerApp/ViewModels/Chat/ChatViewModel.swift
 
-//
-//  ChatViewModel.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 21.05.26.
-//
-
+// ChatViewModel.swift
 import Foundation
 import Combine
 
 class ChatViewModel: ObservableObject {
-    // MARK: - Published Properties
     @Published var messages: [Message] = []
     @Published var newMessageText = ""
     @Published var isLoading = false
     @Published var usersCache: [UUID: User] = [:]
     @Published var chatTitle: String = ""
+    @Published var reactionsDict: [Int64: [Reaction]] = [:] // messageId -> [Reaction]
     
-    // MARK: - Dependencies
     let chat: Chat
     private let graphQL = GraphQLClient.shared
     private var cancellables = Set<AnyCancellable>()
+    private var deliveredMessageIds = Set<Int64>()
+    private var visibleMessageIds = Set<Int64>()
     
-    // MARK: - Init
     init(chat: Chat) {
         self.chat = chat
         setupNotifications()
         loadMessages()
-        Task {
-            await loadChatTitle()
-        }
+        Task { await loadChatTitle() }
     }
     
-    // MARK: - Notifications
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .sink { [weak self] notification in
                 if let msg = notification.object as? Message, msg.chatId == self?.chat.id {
                     self?.addMessage(msg)
+                    self?.sendDeliveredIfNeeded(for: msg)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .messageUpdated)
+            .sink { [weak self] notification in
+                if let info = notification.object as? [String: Any],
+                   let messageId = info["messageId"] as? Int64,
+                   let chatId = info["chatId"] as? UUID,
+                   chatId == self?.chat.id {
+                    let content = info["content"] as? String ?? ""
+                    let isEdited = info["isEdited"] as? Bool ?? false
+                    self?.updateMessage(messageId: messageId, content: content, isEdited: isEdited)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .messageDeleted)
+            .sink { [weak self] notification in
+                if let (messageId, chatId) = notification.object as? (Int64, UUID), chatId == self?.chat.id {
+                    self?.deleteMessageLocally(messageId: messageId)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .reactionAdded)
+            .sink { [weak self] notification in
+                if let reaction = notification.object as? Reaction {
+                    self?.addReactionLocally(reaction)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .reactionRemoved)
+            .sink { [weak self] notification in
+                if let info = notification.object as? [String: Any],
+                   let messageId = info["messageId"] as? Int64,
+                   let userId = info["userId"] as? String,
+                   let emoji = info["emoji"] as? String {
+                    self?.removeReactionLocally(messageId: messageId, userId: UUID(uuidString: userId)!, emoji: emoji)
+                }
+            }
+            .store(in: &cancellables)
+        
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .sink { [weak self] notification in
+                if let info = notification.object as? [String: Any],
+                   let messageId = info["messageId"] as? Int64,
+                   let userId = info["userId"] as? String,
+                   userId == AppState.shared.currentUser?.userId.uuidString {
+                    self?.updateStatus(messageId: messageId, deliveredAt: info["deliveredAt"] as? Date, readAt: info["readAt"] as? Date)
                 }
             }
             .store(in: &cancellables)
     }
     
-    // MARK: - Chat Title
     @MainActor
     func loadChatTitle() async {
         if let name = chat.name, !name.isEmpty {
-            self.chatTitle = name
+            chatTitle = name
             return
         }
-        // Private chat – show other participant's nickname
         guard let currentUserId = AppState.shared.currentUser?.userId else {
-            self.chatTitle = "Чат"
+            chatTitle = "Чат"
             return
         }
         let memberIds = await getChatMemberIds()
         let otherId = memberIds.first(where: { $0 != currentUserId })
         if let otherId = otherId, let user = try? await UserService.shared.getUser(userId: otherId) {
-            self.chatTitle = user.nickName
+            chatTitle = user.nickName
         } else {
-            self.chatTitle = "Чат"
+            chatTitle = "Чат"
+        }
+    }
+    private func addReactionLocally(_ reaction: Reaction) {
+        DispatchQueue.main.async {
+            if var list = self.reactionsDict[reaction.messageId] {
+                // Проверяем, нет ли уже такой реакции от этого пользователя
+                if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
+                    list.append(reaction)
+                    self.reactionsDict[reaction.messageId] = list
+                }
+            } else {
+                self.reactionsDict[reaction.messageId] = [reaction]
+            }
+        }
+    }
+
+    private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
+        DispatchQueue.main.async {
+            if var list = self.reactionsDict[messageId] {
+                list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
+                self.reactionsDict[messageId] = list
+            }
         }
     }
     
@@ -3779,7 +4036,6 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Messages
     func loadMessages() {
         Task {
             await MainActor.run { isLoading = true }
@@ -3794,12 +4050,89 @@ class ChatViewModel: ObservableObject {
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 await MainActor.run {
                     self.messages = loadedMessages
+                    // Заполняем словарь реакций
+                    for msg in loadedMessages {
+                        if let reactions = msg.reactions, !reactions.isEmpty {
+                            self.reactionsDict[msg.messageId] = reactions
+                        }
+                    }
                     self.isLoading = false
                 }
                 await loadUsersForMessages(loadedMessages)
             } catch {
                 print("Load messages error: \(error)")
                 await MainActor.run { isLoading = false }
+            }
+        }
+    }
+    func addReaction(to messageId: Int64, emoji: String) async {
+        let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
+        let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
+        
+        // Оптимистичное добавление
+        await MainActor.run {
+            self.addReactionLocally(reaction)
+        }
+        
+        do {
+            let variables: [String: Any] = [
+                "messageId": messageId,
+                "chatId": chat.id.uuidString,
+                "emoji": emoji
+            ]
+            let _: AddReactionResponse = try await graphQL.perform(
+                query: GraphQLQueries.addReaction,
+                variables: variables,
+                responseType: AddReactionResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+        } catch {
+            // Откат
+            await MainActor.run {
+                self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+            }
+            print("Add reaction failed: \(error)")
+        }
+    }
+
+    func removeReaction(from messageId: Int64, emoji: String) async {
+        let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
+        
+        // Оптимистичное удаление
+        await MainActor.run {
+            self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+        }
+        
+        do {
+            let variables: [String: Any] = [
+                "messageId": messageId,
+                "chatId": chat.id.uuidString,
+                "emoji": emoji
+            ]
+            let _: RemoveReactionResponse = try await graphQL.perform(
+                query: GraphQLQueries.removeReaction,
+                variables: variables,
+                responseType: RemoveReactionResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+        } catch {
+            // Восстановить реакцию при ошибке
+            let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
+            await MainActor.run {
+                self.addReactionLocally(reaction)
+            }
+            print("Remove reaction failed: \(error)")
+        }
+    }
+    
+    private func loadReactionsForMessages(_ messages: [Message]) async {
+        // Тут можно запросить реакции для каждого сообщения, но проще ожидать WebSocket
+        // Пока просто инициализируем пустые словари
+        await MainActor.run {
+            for msg in messages {
+                if reactionsDict[msg.messageId] == nil {
+                    reactionsDict[msg.messageId] = []
+                }
             }
         }
     }
@@ -3825,21 +4158,29 @@ class ChatViewModel: ObservableObject {
     }
     
     func sendMessage(attachmentId: UUID? = nil) {
-        
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return }
         guard let currentUserId = AppState.shared.currentUser?.userId else { return }
-
+        
+        // Временное локальное сообщение для оптимистичного UI
+        let tempId = Int64(Date().timeIntervalSince1970 * -1000) // отрицательный временный ID
+        let tempMessage = Message(
+            messageId: tempId, chatId: chat.id, senderId: currentUserId,
+            replyToId: nil, content: content, type: "text",
+            createdAt: Date(), updatedAt: Date(), deletedAt: nil,
+            isEdited: false, deliveredAt: nil, readAt: nil
+        )
+        DispatchQueue.main.async {
+            self.messages.append(tempMessage)
+            self.newMessageText = ""
+        }
+        
         Task {
             do {
-                var variables: [String: Any] = [
-                        "chatId": chat.id.uuidString,
-                        "content": content
-                    ]
-                    if let aid = attachmentId {
-                        variables["attachmentId"] = aid.uuidString
-                    }
-                
+                var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
+                if let aid = attachmentId {
+                    variables["attachmentId"] = aid.uuidString
+                }
                 let response: SendMessageResponse = try await graphQL.perform(
                     query: GraphQLQueries.sendMessage,
                     variables: variables,
@@ -3848,26 +4189,99 @@ class ChatViewModel: ObservableObject {
                 )
                 let newMsg = response.message.sendMessage
                 await MainActor.run {
-                    self.messages.append(newMsg)
-                    self.newMessageText = ""
+                    // Заменить временное сообщение
+                    if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
+                        self.messages[index] = newMsg
+                    } else {
+                        self.messages.append(newMsg)
+                    }
+                    self.messages.sort(by: { $0.createdAt < $1.createdAt })
                 }
             } catch {
-                print("Send error: \(error)")
+                // Если ошибка, удалить временное сообщение и показать ошибку
+                await MainActor.run {
+                    self.messages.removeAll(where: { $0.messageId == tempId })
+                    NotificationService.shared.showError("Не удалось отправить сообщение")
+                }
             }
         }
     }
     
     private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
-            if !self.messages.contains(where: { $0.id == message.id }) {
+            if !self.messages.contains(where: { $0.messageId == message.messageId }) {
                 self.messages.append(message)
                 self.messages.sort(by: { $0.createdAt < $1.createdAt })
             }
         }
     }
     
-    func isCurrentUser(senderId: UUID) -> Bool {
-        return senderId == AppState.shared.currentUser?.userId
+    private func updateMessage(messageId: Int64, content: String, isEdited: Bool) {
+        DispatchQueue.main.async {
+            if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
+                var updated = self.messages[index]
+                updated.content = content
+                updated.isEdited = isEdited
+                updated.updatedAt = Date()
+                self.messages[index] = updated
+                self.objectWillChange.send()  // принудительное обновление SwiftUI
+                _ = LocalDatabase.shared.updateMessage(updated)
+            }
+        }
+    }
+
+    private func updateStatus(messageId: Int64, deliveredAt: Date?, readAt: Date?) {
+        DispatchQueue.main.async {
+            if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
+                var msg = self.messages[index]
+                if let deliveredAt = deliveredAt {
+                    msg.deliveredAt = deliveredAt
+                }
+                if let readAt = readAt {
+                    msg.readAt = readAt
+                }
+                self.messages[index] = msg
+            }
+        }
+    }
+    
+    private func deleteMessageLocally(messageId: Int64) {
+        DispatchQueue.main.async {
+            self.messages.removeAll(where: { $0.messageId == messageId })
+        }
+    }
+    
+    
+    
+    
+    
+    private func sendDeliveredIfNeeded(for message: Message) {
+        guard message.senderId != AppState.shared.currentUser?.userId else { return }
+        if !deliveredMessageIds.contains(message.messageId) {
+            deliveredMessageIds.insert(message.messageId)
+            WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
+        }
+    }
+    
+    func markAsRead(messageId: Int64) {
+        guard !visibleMessageIds.contains(messageId) else { return }
+        visibleMessageIds.insert(messageId)
+        Task {
+            do {
+                let _: EmptyResponse = try await graphQL.perform(
+                    query: GraphQLQueries.markAsRead,
+                    variables: ["messageId": messageId, "chatId": chat.id.uuidString],
+                    responseType: EmptyResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+            } catch {
+                if (error as? GraphQLError)?.localizedDescription.contains("Message status not found") == true {
+                    print("Status not found for old message \(messageId)")
+                } else {
+                    print("Failed to mark as read: \(error)")
+                }
+            }
+        }
     }
     
     func editMessage(_ message: Message, newContent: String) async -> Bool {
@@ -3885,7 +4299,7 @@ class ChatViewModel: ObservableObject {
             )
             let updated = response.message.updateMessage
             await MainActor.run {
-                if let index = self.messages.firstIndex(where: { $0.id == updated.id }) {
+                if let index = self.messages.firstIndex(where: { $0.messageId == updated.messageId }) {
                     self.messages[index] = updated
                 }
             }
@@ -3909,7 +4323,7 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             await MainActor.run {
-                self.messages.removeAll { $0.id == message.id }
+                self.messages.removeAll { $0.messageId == message.messageId }
             }
             return true
         } catch {
@@ -3918,44 +4332,21 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    func addReaction(to messageId: Int64, emoji: String) async {
-        do {
-            let variables: [String: Any] = [
-                "messageId": messageId,
-                "chatId": chat.id.uuidString,
-                "emoji": emoji
-            ]
-            let _: AddReactionResponse = try await graphQL.perform(
-                query: GraphQLQueries.addReaction,
-                variables: variables,
-                responseType: AddReactionResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            // Обновление будет через WebSocket
-        } catch {
-            print("Add reaction error: \(error)")
-        }
+   
+    
+    
+    
+    func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
+        return reactionsDict[messageId] ?? []
     }
     
-    func removeReaction(from messageId: Int64, emoji: String) async {
-        do {
-            let variables: [String: Any] = [
-                "messageId": messageId,
-                "chatId": chat.id.uuidString,
-                "emoji": emoji
-            ]
-            let _: RemoveReactionResponse = try await graphQL.perform(
-                query: GraphQLQueries.removeReaction,
-                variables: variables,
-                responseType: RemoveReactionResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            // Обновление будет через WebSocket
-        } catch {
-            print("Remove reaction error: \(error)")
-        }
+    func isCurrentUser(senderId: UUID) -> Bool {
+        return senderId == AppState.shared.currentUser?.userId
     }
 }
+
+// Пустой тип для ответа без данных
+private struct EmptyResponse: Decodable {}
 
 ./FrontDip/MessengerApp/ViewModels/Chat/CreateChatViewModel.swift
 
@@ -4227,12 +4618,7 @@ class UserProfileViewModel: ObservableObject {
         Task {
             if let chat = await chatVM.findOrCreatePrivateChat(with: userId) {
                 await MainActor.run {
-                    NotificationCenter.default.post(name: .chatCreated, object: chat)
-                    NotificationCenter.default.post(name: .openChat, object: chat.id)
-                }
-            } else {
-                await MainActor.run {
-                    self.errorMessage = "Не удалось создать чат"
+                    NotificationCenter.default.post(name: .openChat, object: chat)
                 }
             }
         }
@@ -4615,6 +5001,11 @@ struct WelcomeView: View {
 
 ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 
+//
+//  AddContactToChatView.swift
+//  FrontDip
+//
+
 import SwiftUI
 
 struct AddContactToChatView: View {
@@ -4623,7 +5014,7 @@ struct AddContactToChatView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var contactService: ContactService
     
-    @State private var selectedContacts: Set<UUID> = []
+    @State private var selectedContacts: Set<String> = []  // ← изменено на Set<String>
     @State private var isLoading = false
     
     var body: some View {
@@ -4676,23 +5067,26 @@ struct AddContactToChatView: View {
         }
     }
     
-    private func toggleContactSelection(_ userId: UUID) {
-        if selectedContacts.contains(userId) {
-            selectedContacts.remove(userId)
+    private func toggleContactSelection(_ contactId: String) {
+        if selectedContacts.contains(contactId) {
+            selectedContacts.remove(contactId)
         } else {
-            selectedContacts.insert(userId)
+            selectedContacts.insert(contactId)
         }
     }
     
     private func addSelectedContacts() {
         isLoading = true
         
+        // Найти выбранные контакты по их строковому id
+        let selectedContactItems = contactService.contacts.filter { selectedContacts.contains($0.id) }
+        
         Task {
             var addedCount = 0
             var failedCount = 0
             
-            for userId in selectedContacts {
-                let success = await viewModel.addUserToChat(userId)
+            for contact in selectedContactItems {
+                let success = await viewModel.addUserToChat(contact.contactUserId)
                 if success { addedCount += 1 } else { failedCount += 1 }
             }
             
@@ -4758,6 +5152,13 @@ struct ContactSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 
+//
+//  ChatListView.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 21.05.26.
+//
+
 import SwiftUI
 
 struct ChatListView: View {
@@ -4805,11 +5206,21 @@ struct ChatListView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-                if let chatId = notification.object as? UUID,
-                   let chat = viewModel.chats.first(where: { $0.id == chatId }) {
+                if let chat = notification.object as? Chat {
                     selectedChat = chat
                     showChat = true
+                    // Опционально: если чата нет в списке viewModel.chats – добавить его
+                    if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+                        viewModel.addChat(chat)
+                    }
                 }
+            }
+            // Обновление списка при новых сообщениях
+            .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
+                Task { await viewModel.loadChats() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
+                Task { await viewModel.loadChats() }
             }
 
             SideMenuView(isShowing: $showMenu)
@@ -4842,6 +5253,7 @@ struct ChatListView: View {
             Text(viewModel.errorMessage ?? "")
         }
     }
+    
 
     @ViewBuilder
     private var mainContent: some View {
@@ -5143,6 +5555,7 @@ struct ChatView: View {
                                 message: message,
                                 isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
                                 senderUser: viewModel.getUser(for: message.senderId),
+                                viewModel: viewModel,
                                 onEdit: {
                                     selectedMessage = message
                                     editText = message.content ?? ""
@@ -5151,11 +5564,6 @@ struct ChatView: View {
                                 onDelete: {
                                     selectedMessage = message
                                     showDeleteConfirmation = true
-                                },
-                                onAddReaction: { emoji in
-                                    Task {
-                                        await viewModel.addReaction(to: message.messageId, emoji: emoji)
-                                    }
                                 }
                             )
                             .id(message.id)
@@ -5919,6 +6327,7 @@ struct ContactRow: View {
 //  MessageBubbleView.swift
 //  FrontDip
 //
+//  Created by Bogdan Sakhno on 21.05.26.
 //
 
 import SwiftUI
@@ -5927,14 +6336,19 @@ struct MessageBubbleView: View {
     let message: Message
     let isCurrentUser: Bool
     let senderUser: User?
+    let viewModel: ChatViewModel
     let onEdit: (() -> Void)?
     let onDelete: (() -> Void)?
-    let onAddReaction: ((String) -> Void)?
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
     
     private let emojis = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+    
+    private var currentUserReactionEmoji: String? {
+        viewModel.reactionsForMessage(message.messageId)
+            .first(where: { $0.userId == AppState.shared.currentUser?.userId })?.emoji
+    }
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -5948,7 +6362,6 @@ struct MessageBubbleView: View {
             }
             
             VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
-                // Имя отправителя (для групп)
                 if !isCurrentUser && senderUser != nil {
                     Text(senderUser?.nickName ?? "")
                         .font(.caption)
@@ -5966,10 +6379,40 @@ struct MessageBubbleView: View {
                         showMenu = true
                     }
                 
+                // Реакции
+                if !viewModel.reactionsForMessage(message.messageId).isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
+                            let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
+                            let isCurrentUserReaction = currentUserReactionEmoji == emoji
+                            HStack(spacing: 2) {
+                                Text(emoji)
+                                    .font(.caption)
+                                Text("\(count)")
+                                    .font(.caption2)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(isCurrentUserReaction ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                            .cornerRadius(12)
+                            .onTapGesture {
+                                toggleReaction(emoji: emoji)
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                
                 HStack(spacing: 4) {
                     Text(formatTime(message.createdAt))
                         .font(.caption2)
                         .foregroundColor(.secondary)
+                    
+                    if message.isEdited {
+                        Text("(ред.)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                     
                     if isCurrentUser {
                         if let readAt = message.readAt {
@@ -5997,6 +6440,11 @@ struct MessageBubbleView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
+        .onAppear {
+            if !isCurrentUser {
+                viewModel.markAsRead(messageId: message.messageId)
+            }
+        }
         .confirmationDialog("Действия с сообщением", isPresented: $showMenu, titleVisibility: .visible) {
             if isCurrentUser {
                 Button("Редактировать") { onEdit?() }
@@ -6006,9 +6454,21 @@ struct MessageBubbleView: View {
             Button("Отмена", role: .cancel) { }
         }
         .sheet(isPresented: $showReactionPicker) {
-            ReactionPickerView(emojis: emojis) { emoji in
-                onAddReaction?(emoji)
-                showReactionPicker = false
+            ReactionPickerView(emojis: emojis, currentReaction: currentUserReactionEmoji) { emoji in
+                toggleReaction(emoji: emoji)
+            }
+        }
+    }
+    
+    private func toggleReaction(emoji: String) {
+        Task {
+            if let existingEmoji = currentUserReactionEmoji, existingEmoji == emoji {
+                await viewModel.removeReaction(from: message.messageId, emoji: emoji)
+            } else {
+                if let existingEmoji = currentUserReactionEmoji {
+                    await viewModel.removeReaction(from: message.messageId, emoji: existingEmoji)
+                }
+                await viewModel.addReaction(to: message.messageId, emoji: emoji)
             }
         }
     }
@@ -6022,6 +6482,7 @@ struct MessageBubbleView: View {
 
 struct ReactionPickerView: View {
     let emojis: [String]
+    let currentReaction: String?
     let onSelect: (String) -> Void
     @Environment(\.dismiss) var dismiss
     
@@ -6037,8 +6498,12 @@ struct ReactionPickerView: View {
                             Text(emoji)
                                 .font(.system(size: 40))
                                 .padding()
-                                .background(Color(.systemGray6))
+                                .background(currentReaction == emoji ? Color.blue.opacity(0.2) : Color(.systemGray6))
                                 .cornerRadius(30)
+                                .overlay(
+                                    Circle()
+                                        .stroke(currentReaction == emoji ? Color.blue : Color.clear, lineWidth: 2)
+                                )
                         }
                     }
                 }
@@ -6064,7 +6529,10 @@ struct ReactionPickerView: View {
 
 ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
 
-// ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
+//
+//  NotificationsView.swift
+//  FrontDip
+//
 
 import SwiftUI
 
@@ -6111,13 +6579,16 @@ struct NotificationsView: View {
                                     ContactRequestRow(request: request, isOutgoing: false)
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
-                                                contactService.declineContactRequest(request)
+                                                // Отклонить – используем userId отправителя
+                                                Task {
+                                                    await declineRequest(request)
+                                                }
                                             } label: {
                                                 Label("Отклонить", systemImage: "xmark.circle")
                                             }
                                             
                                             Button {
-                                                contactService.acceptContactRequest(request)
+                                                Task { await acceptRequest(request) }
                                             } label: {
                                                 Label("Принять", systemImage: "checkmark.circle")
                                                     .tint(.green)
@@ -6157,6 +6628,36 @@ struct NotificationsView: View {
         }
     }
     
+    private func acceptRequest(_ request: Contact) async {
+        do {
+            _ = try await contactService.acceptContact(contactUserId: request.userId.uuidString)
+            await MainActor.run {
+                contactService.loadContacts()
+                contactService.loadPendingRequests()
+                NotificationService.shared.showSuccess("Контакт добавлен")
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func declineRequest(_ request: Contact) async {
+        do {
+            // Для отклонения используем userId отправителя
+            _ = try await contactService.removeContact(userId: request.userId.uuidString)
+            await MainActor.run {
+                contactService.loadPendingRequests()
+                NotificationService.shared.showInfo("Запрос отклонён")
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     private func refreshRequests() async {
         isLoading = true
         await contactService.syncPendingRequests()
@@ -6171,7 +6672,8 @@ struct ContactRequestRow: View {
     @State private var showingActionSheet = false
     
     var body: some View {
-        NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
+        // ✅ Исправлено: для входящего запроса открываем профиль отправителя (request.userId)
+        NavigationLink(destination: UserProfileView(userId: isOutgoing ? request.contactUserId : request.userId)) {
             HStack {
                 Circle()
                     .fill(isOutgoing ? Color.blue.opacity(0.3) : Color.orange.opacity(0.3))
