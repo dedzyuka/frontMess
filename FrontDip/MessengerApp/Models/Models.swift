@@ -22,7 +22,13 @@ struct User: Identifiable, Codable {
     
     var id: UUID { userId }
 }
-
+struct Reaction: Identifiable, Codable {
+    let id = UUID()
+    let messageId: Int64
+    let userId: UUID
+    let emoji: String
+    let createdAt: Date
+}
 struct Chat: Identifiable, Codable {
     let chatId: UUID
     let chatType: String
@@ -32,11 +38,11 @@ struct Chat: Identifiable, Codable {
     let creatorId: UUID?
     let isPublic: Bool
     let maxMembers: Int
-    let createdAt: Date      // снова Date
+    let createdAt: Date
     let membersCount: Int
-    let lastMessage: String?
-    
-    var id: UUID { chatId } 
+    let lastMessage: String?   // ← строковое поле
+
+    var id: UUID { chatId }
 }
 
 // MARK: - MessagePreview
@@ -57,14 +63,25 @@ struct Message: Identifiable, Codable {
     let chatId: UUID
     let senderId: UUID
     let replyToId: Int64?
-    let content: String?
+    var content: String?           // теперь var
     let type: String
     let createdAt: Date
-    let updatedAt: Date
+    var updatedAt: Date            // теперь var
     let deletedAt: Date?
-    let isEdited: Bool
+    var isEdited: Bool             // теперь var
+    var deliveredAt: Date?         // теперь var
+    var readAt: Date?              // теперь var
+    var attachments: [Attachment]? = nil
     
     var id: Int64 { messageId }
+}
+
+struct Attachment: Codable {
+    let attachmentId: UUID
+    let fileName: String
+    let fileSize: Int?
+    let mimeType: String?
+    let storagePath: String
 }
 
 // MARK: - ChatMember
@@ -75,14 +92,28 @@ struct ChatMemberItem: Codable {
 }
 
 // MARK: - Contact
+// MARK: - Contact
 struct Contact: Identifiable, Codable {
-    let id = UUID()
     let userId: UUID
     let contactUserId: UUID
     let status: String
     let createdAt: Date
     let updatedAt: Date?
-    let contactUser: User?   // ← теперь UserPublic, а не User
+    let contactUser: User?
+    
+    // Вычисляемое свойство для Identifiable (не участвует в декодировании)
+    var id: String {
+        "\(userId.uuidString)-\(contactUserId.uuidString)"
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case userId
+        case contactUserId
+        case status
+        case createdAt
+        case updatedAt
+        case contactUser
+    }
 }
 
 // MARK: - ContactRequest (входящие)

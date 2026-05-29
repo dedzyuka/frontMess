@@ -27,11 +27,11 @@ class AuthViewModel: ObservableObject {
         await MainActor.run { isLoading = true; errorMessage = nil }
 
         let variables: [String: Any] = [
-            "nickName": nickname.trimmingCharacters(in: .whitespaces),
-            "email": email.trimmingCharacters(in: .whitespaces),
-            "password": password,
-            "phone": phone.trimmingCharacters(in: .whitespaces)
-        ]
+                "nickName": nickname.trimmingCharacters(in: .whitespaces),
+                "email": email.trimmingCharacters(in: .whitespaces),
+                "password": password,
+                "phone": phone.trimmingCharacters(in: .whitespaces)  // всегда строка
+            ]
 
         do {
             // Ожидаем правильный тип ответа

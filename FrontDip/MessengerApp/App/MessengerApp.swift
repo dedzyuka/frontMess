@@ -1,3 +1,4 @@
+// MessengerApp.swift
 import SwiftUI
 
 @main
@@ -14,7 +15,6 @@ struct MessengerApp: App {
         }
     }
 }
-
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -40,9 +40,7 @@ struct ContentView: View {
             let success = await AuthViewModel().restoreSession()
             await MainActor.run {
                 isChecking = false
-                if !success {
-                    // сессия не восстановлена, остаёмся на экране приветствия
-                }
+                // если success == false, остаёмся на WelcomeView
             }
         }
     }

@@ -1,3 +1,9 @@
+//
+//  SideMenuView.swift
+//  FrontDip
+//
+//
+
 import SwiftUI
 
 struct SideMenuView: View {
@@ -20,7 +26,38 @@ struct SideMenuView: View {
                 HStack {
                     Spacer()
                     VStack(alignment: .leading, spacing: 24) {
-                        // ... профиль ...
+                        // MARK: - User Profile Section
+                        if let currentUser = AppState.shared.currentUser {
+                            HStack(spacing: 16) {
+                                AvatarView(urlString: currentUser.avatarUrl, size: 60)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(currentUser.nickName)
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                    Text(currentUser.email ?? "")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(.bottom, 20)
+                        } else {
+                            HStack(spacing: 16) {
+                                Circle()
+                                    .fill(Color.gray.opacity(0.3))
+                                    .frame(width: 60, height: 60)
+                                    .overlay(ProgressView())
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Загрузка...")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                    Text("")
+                                        .font(.caption)
+                                }
+                                Spacer()
+                            }
+                            .padding(.bottom, 20)
+                        }
                         
                         MenuItem(icon: "person.2.fill", title: "Контакты") {
                             showContacts = true
@@ -66,6 +103,33 @@ struct SideMenuView: View {
             }
         } message: {
             Text("Вы уверены, что хотите выйти?")
+        }
+    }
+}
+
+// MARK: - AvatarView (вынесена для переиспользования)
+struct AvatarView: View {
+    let urlString: String?
+    let size: CGFloat
+    
+    var body: some View {
+        if let urlString, let url = URL(string: urlString), !urlString.isEmpty {
+            AsyncImage(url: url) { image in
+                image.resizable()
+            } placeholder: {
+                Circle().fill(Color.gray.opacity(0.3))
+                    .overlay(ProgressView())
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: size, height: size)
+                .overlay(
+                    Image(systemName: "person")
+                        .foregroundColor(.gray)
+                )
         }
     }
 }

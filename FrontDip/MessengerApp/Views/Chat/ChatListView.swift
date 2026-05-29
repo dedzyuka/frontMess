@@ -1,3 +1,10 @@
+//
+//  ChatListView.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 21.05.26.
+//
+
 import SwiftUI
 
 struct ChatListView: View {
@@ -50,6 +57,13 @@ struct ChatListView: View {
                     selectedChat = chat
                     showChat = true
                 }
+            }
+            // Обновление списка при новых сообщениях
+            .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
+                Task { await viewModel.loadChats() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
+                Task { await viewModel.loadChats() }
             }
 
             SideMenuView(isShowing: $showMenu)

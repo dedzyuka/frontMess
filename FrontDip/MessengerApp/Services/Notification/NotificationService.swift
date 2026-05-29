@@ -18,6 +18,12 @@ extension Notification.Name {
     static let chatCreated = Notification.Name("chatCreated")
     static let openChat = Notification.Name("openChat")
     static let openProfile = Notification.Name("openProfile")
+    static let reactionAdded = Notification.Name("reactionAdded")
+    static let reactionRemoved = Notification.Name("reactionRemoved")
+    static let statusUpdated = Notification.Name("statusUpdated")
+
+    static let messageUpdated = Notification.Name("messageUpdated")
+    static let messageDeleted = Notification.Name("messageDeleted")
 }
 
 class NotificationService {

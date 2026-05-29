@@ -1,4 +1,10 @@
-// MessageService.swift
+//
+//  MessageService.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 21.05.26.
+//
+
 import Foundation
 import Combine
 
@@ -10,9 +16,9 @@ class MessageService: ObservableObject {
     
     @Published var unreadMessagesCount: Int = 0
     
-    private var pendingMessages: [Int64: Message] = [:]      // ключ Int64
-    private var retryTimers: [Int64: Timer] = [:]           // ключ Int64
-    private var retryAttempts: [Int64: Int] = [:]           // ключ Int64
+    private var pendingMessages: [Int64: Message] = [:]
+    private var retryTimers: [Int64: Timer] = [:]
+    private var retryAttempts: [Int64: Int] = [:]
     private let maxRetryAttempts = 3
     
     private var cancellables = Set<AnyCancellable>()
@@ -32,7 +38,7 @@ class MessageService: ObservableObject {
     }
     
     func sendMessage(_ message: Message, to chatId: UUID) {
-        let messageId = message.messageId   // Int64
+        let messageId = message.messageId
         print("📤 Sending message to chat \(chatId)")
         
         if !database.messageExists(messageId) {
@@ -44,15 +50,7 @@ class MessageService: ObservableObject {
     }
     
     private func sendViaWebSocket(message: Message) {
-        let messageId = message.messageId
-        let wsMessage = WebSocketMessage(
-            type: "chat_message",
-            chatId: message.chatId,
-            content: message.content,
-            messageId: messageId,
-            timestamp: message.createdAt
-        )
-        webSocketService.sendMessage(wsMessage)
+        WebSocketService.shared.sendMessage(chatId: message.chatId, content: message.content ?? "")
     }
     
     private func startRetryTimer(for messageId: Int64) {
@@ -88,16 +86,10 @@ class MessageService: ObservableObject {
         }
     }
     
+    // ✅ ИСПРАВЛЕНО: используем sendAck вместо устаревшего WebSocketMessage
     private func sendMessageAck(for message: Message) {
-        guard let currentUser = AppState.shared.currentUser else { return }
-        let ackMessage = WebSocketMessage(
-            type: "message_ack",
-            messageId: message.messageId,
-            timestamp: Date(),
-            originalSenderId: message.senderId,
-            ackSenderId: currentUser.id
-        )
-        webSocketService.sendMessage(ackMessage)
+        guard AppState.shared.currentUser != nil else { return }
+        webSocketService.sendAck(messageId: message.messageId, chatId: message.chatId)
     }
     
     func handleMessageAck(messageId: Int64, from recipientId: UUID) {

@@ -44,7 +44,7 @@ struct GraphQLQueries {
     """
     
     static let createUser = """
-    mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String) {
+    mutation CreateUser($nickName: String!, $email: String!, $password: String!, $phone: String!) {
         user {
             create(nickName: $nickName, email: $email, password: $password, phone: $phone) {
                 userId
@@ -75,6 +75,13 @@ struct GraphQLQueries {
       }
     }
     """
+    static let markAsRead = """
+    mutation MarkAsRead($messageId: Int!, $chatId: String!) {
+        message {
+            markAsRead(messageId: $messageId, chatId: $chatId)
+        }
+    }
+    """
     
     static let createChat = """
     mutation CreateChat($chatType: String!, $name: String, $memberIds: [String!]!, $isPublic: Boolean) {
@@ -94,6 +101,26 @@ struct GraphQLQueries {
     query GetChatMembers($chatId: String!) {
         chat {
             members(chatId: $chatId)
+        }
+    }
+    """
+    static let addReaction = """
+    mutation AddReaction($messageId: Int!, $chatId: String!, $emoji: String!) {
+        message {
+            addReaction(messageId: $messageId, chatId: $chatId, emoji: $emoji) {
+                messageId
+                userId
+                emoji
+                createdAt
+            }
+        }
+    }
+    """
+
+    static let removeReaction = """
+    mutation RemoveReaction($messageId: Int!, $chatId: String!, $emoji: String!) {
+        message {
+            removeReaction(messageId: $messageId, chatId: $chatId, emoji: $emoji)
         }
     }
     """
@@ -122,15 +149,21 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                reactions {
+                    messageId
+                    userId
+                    emoji
+                    createdAt
+                }
             }
         }
     }
     """
     
     static let sendMessage = """
-    mutation SendMessage($chatId: String!, $content: String!) {
+    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String) {
         message {
-            sendMessage(chatId: $chatId, content: $content) {
+            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId) {
                 messageId
                 chatId
                 senderId
@@ -139,6 +172,13 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
             }
         }
     }
@@ -256,6 +296,7 @@ struct GraphQLQueries {
         }
     }
     """
+    
 }
 
 struct UpdateMessageResponse: Decodable {

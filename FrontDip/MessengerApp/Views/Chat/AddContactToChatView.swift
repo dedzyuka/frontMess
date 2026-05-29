@@ -1,3 +1,8 @@
+//
+//  AddContactToChatView.swift
+//  FrontDip
+//
+
 import SwiftUI
 
 struct AddContactToChatView: View {
@@ -6,7 +11,7 @@ struct AddContactToChatView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var contactService: ContactService
     
-    @State private var selectedContacts: Set<UUID> = []
+    @State private var selectedContacts: Set<String> = []  // ← изменено на Set<String>
     @State private var isLoading = false
     
     var body: some View {
@@ -59,23 +64,26 @@ struct AddContactToChatView: View {
         }
     }
     
-    private func toggleContactSelection(_ userId: UUID) {
-        if selectedContacts.contains(userId) {
-            selectedContacts.remove(userId)
+    private func toggleContactSelection(_ contactId: String) {
+        if selectedContacts.contains(contactId) {
+            selectedContacts.remove(contactId)
         } else {
-            selectedContacts.insert(userId)
+            selectedContacts.insert(contactId)
         }
     }
     
     private func addSelectedContacts() {
         isLoading = true
         
+        // Найти выбранные контакты по их строковому id
+        let selectedContactItems = contactService.contacts.filter { selectedContacts.contains($0.id) }
+        
         Task {
             var addedCount = 0
             var failedCount = 0
             
-            for userId in selectedContacts {
-                let success = await viewModel.addUserToChat(userId)
+            for contact in selectedContactItems {
+                let success = await viewModel.addUserToChat(contact.contactUserId)
                 if success { addedCount += 1 } else { failedCount += 1 }
             }
             

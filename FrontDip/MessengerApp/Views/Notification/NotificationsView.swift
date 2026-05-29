@@ -1,4 +1,7 @@
-// ./FrontDip/MessengerApp/Views/Notification/NotificationsView.swift
+//
+//  NotificationsView.swift
+//  FrontDip
+//
 
 import SwiftUI
 
@@ -45,13 +48,16 @@ struct NotificationsView: View {
                                     ContactRequestRow(request: request, isOutgoing: false)
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
-                                                contactService.declineContactRequest(request)
+                                                // Отклонить – используем userId отправителя
+                                                Task {
+                                                    await declineRequest(request)
+                                                }
                                             } label: {
                                                 Label("Отклонить", systemImage: "xmark.circle")
                                             }
                                             
                                             Button {
-                                                contactService.acceptContactRequest(request)
+                                                Task { await acceptRequest(request) }
                                             } label: {
                                                 Label("Принять", systemImage: "checkmark.circle")
                                                     .tint(.green)
@@ -91,6 +97,36 @@ struct NotificationsView: View {
         }
     }
     
+    private func acceptRequest(_ request: Contact) async {
+        do {
+            _ = try await contactService.acceptContact(contactUserId: request.userId.uuidString)
+            await MainActor.run {
+                contactService.loadContacts()
+                contactService.loadPendingRequests()
+                NotificationService.shared.showSuccess("Контакт добавлен")
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func declineRequest(_ request: Contact) async {
+        do {
+            // Для отклонения используем userId отправителя
+            _ = try await contactService.removeContact(userId: request.userId.uuidString)
+            await MainActor.run {
+                contactService.loadPendingRequests()
+                NotificationService.shared.showInfo("Запрос отклонён")
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка: \(error.localizedDescription)")
+            }
+        }
+    }
+    
     private func refreshRequests() async {
         isLoading = true
         await contactService.syncPendingRequests()
@@ -105,7 +141,8 @@ struct ContactRequestRow: View {
     @State private var showingActionSheet = false
     
     var body: some View {
-        NavigationLink(destination: UserProfileView(userId: request.contactUserId)) {
+        // ✅ Исправлено: для входящего запроса открываем профиль отправителя (request.userId)
+        NavigationLink(destination: UserProfileView(userId: isOutgoing ? request.contactUserId : request.userId)) {
             HStack {
                 Circle()
                     .fill(isOutgoing ? Color.blue.opacity(0.3) : Color.orange.opacity(0.3))

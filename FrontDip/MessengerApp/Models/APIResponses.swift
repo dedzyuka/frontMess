@@ -90,7 +90,19 @@ struct AddChatMemberWrapper: Decodable {
 struct AddMemberResult: Decodable {
     let userId: UUID
 }
+struct AddReactionResponse: Decodable {
+    let message: AddReactionWrapper
+}
+struct AddReactionWrapper: Decodable {
+    let addReaction: Reaction
+}
 
+struct RemoveReactionResponse: Decodable {
+    let message: RemoveReactionWrapper
+}
+struct RemoveReactionWrapper: Decodable {
+    let removeReaction: Bool
+}
 // MARK: - Messages Response
 struct ListMessagesResponse: Decodable {
     let message: MessageListWrapper
