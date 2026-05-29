@@ -431,7 +431,7 @@ struct Chat: Identifiable, Codable {
     let maxMembers: Int
     let createdAt: Date
     let membersCount: Int
-    let lastMessage: String?   // ← строковое поле
+    var lastMessage: String?   // ← строковое поле
 
     var id: UUID { chatId }
 }
@@ -1360,8 +1360,8 @@ class LocalDatabase {
                     updatedAt: row[msgUpdatedAt],
                     deletedAt: row[msgDeletedAt],
                     isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
+                    deliveredAt: row[msgDeliveredAt],   // ← должно быть
+                    readAt: row[msgReadAt]              // ← должно быть
                 )
                 messages.append(msg)
             }
@@ -1371,7 +1371,6 @@ class LocalDatabase {
             return []
         }
     }
-    
     
     
     func deleteMessages(for chatId: UUID) -> Bool {
@@ -2867,6 +2866,94 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private var userId: UUID?
     private var accessToken: String?
     
+    // Добавить статический форматтер в класс WebSocketService (внутри класса, до методов)
+    private let isoDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    // Заменить handleStatusUpdate
+    private func handleStatusUpdate(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let userIdString = payload["user_id"] as? String,
+              let chatIdString = payload["chat_id"] as? String,
+              let chatId = UUID(uuidString: chatIdString),
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Failed to parse status.update payload")
+            return
+        }
+        
+        let deliveredAt = (payload["delivered_at"] as? String).flatMap { isoDateFormatter.date(from: $0) }
+        let readAt = (payload["read_at"] as? String).flatMap { isoDateFormatter.date(from: $0) }
+        
+        let update: [String: Any] = [
+            "messageId": messageId,
+            "chatId": chatId,
+            "userId": userId,
+            "deliveredAt": deliveredAt as Any,
+            "readAt": readAt as Any
+        ]
+        print("📢 Posting .statusUpdated for message \(messageId), delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+        NotificationCenter.default.post(name: .statusUpdated, object: update)
+    }
+
+    // Заменить handleNewMessage – добавить принудительный вызов в главном потоке и логирование
+    private func handleNewMessage(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let messageId = payload["message_id"] as? Int64,
+              let chatIdString = payload["chat_id"] as? String,
+              let senderIdString = payload["sender_id"] as? String,
+              let content = payload["content"] as? String,
+              let createdAtString = payload["created_at"] as? String,
+              let createdAt = isoDateFormatter.date(from: createdAtString) else {
+            print("❌ Failed to parse message.new payload")
+            return
+        }
+        guard let chatId = UUID(uuidString: chatIdString),
+              let senderId = UUID(uuidString: senderIdString) else {
+            print("❌ Invalid UUID in message.new")
+            return
+        }
+
+        let message = Message(
+            messageId: messageId, chatId: chatId, senderId: senderId,
+            replyToId: nil, content: content, type: "text",
+            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
+            isEdited: false, deliveredAt: nil, readAt: nil
+        )
+        
+        // Сохраняем в локальную БД
+        if !LocalDatabase.shared.messageExists(messageId) {
+            _ = LocalDatabase.shared.saveMessage(message)
+            print("💾 WebSocket: saved message \(messageId) to DB")
+        }
+        
+        DispatchQueue.main.async {
+            print("📢 Posting .newMessageReceived for message \(messageId) in chat \(chatId)")
+            NotificationCenter.default.post(name: .newMessageReceived, object: message)
+        }
+    }
+
+    // Улучшить handleMessage для обработки бинарных сообщений
+    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+        switch message {
+        case .string(let text):
+            print("📨 WebSocket string message: \(text.prefix(200))")
+            processJSON(text)
+        case .data(let data):
+            if let text = String(data: data, encoding: .utf8) {
+                print("📨 WebSocket data as string: \(text.prefix(200))")
+                processJSON(text)
+            } else {
+                print("📨 WebSocket binary message, length: \(data.count)")
+            }
+        @unknown default:
+            break
+        }
+    }
+    
     func connect(userId: UUID) {
         guard let token = TokenManager.shared.accessToken else {
             print("No access token for WebSocket")
@@ -2929,13 +3016,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
-        switch message {
-        case .string(let text):
-            processJSON(text)
-        default: break
-        }
-    }
+
     
     private func processJSON(_ text: String) {
         print("📨 WebSocket raw message: \(text)")
@@ -2973,33 +3054,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
     
-    private func handleNewMessage(_ json: [String: Any]) {
-        guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
-              let chatIdString = payload["chat_id"] as? String,
-              let senderIdString = payload["sender_id"] as? String,
-              let content = payload["content"] as? String,
-              let createdAtString = payload["created_at"] as? String,
-              let createdAt = ISO8601DateFormatter().date(from: createdAtString) else { return }
-        guard let chatId = UUID(uuidString: chatIdString),
-              let senderId = UUID(uuidString: senderIdString) else { return }
-
-        let message = Message(
-            messageId: messageId, chatId: chatId, senderId: senderId,
-            replyToId: nil, content: content, type: "text",
-            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
-            isEdited: false, deliveredAt: nil, readAt: nil
-        )
-        
-        // ✅ Сохраняем в локальную БД, если ещё нет
-        if !LocalDatabase.shared.messageExists(messageId) {
-            _ = LocalDatabase.shared.saveMessage(message)
-            print("💾 WebSocket: saved message \(messageId) to DB")
-        }
-        
-        // ✅ Постим уведомление для уже открытых чатов
-        NotificationCenter.default.post(name: .newMessageReceived, object: message)
-    }
+    // MARK: - Обработчики событий
+    
+    
     
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
@@ -3015,7 +3072,6 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             "content": content,
             "isEdited": isEdited
         ]
-        print("📨 POSTING .messageUpdated for message \(messageId)")
         NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
     }
     
@@ -3024,7 +3080,6 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let chatIdString = payload["chat_id"] as? String,
               let chatId = UUID(uuidString: chatIdString) else { return }
-        print("📨 POSTING .messageDeleted for message \(messageId)")
         NotificationCenter.default.post(name: .messageDeleted, object: (messageId, chatId))
     }
     
@@ -3055,12 +3110,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private func handleReactionAdd(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
+              let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let createdAtString = payload["created_at"] as? String else { return }
+        guard let userId = UUID(uuidString: userIdString) else { return }
         let reaction = Reaction(
             messageId: messageId,
-            userId: UUID(uuidString: userId)!,
+            userId: userId,
             emoji: emoji,
             createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
         )
@@ -3070,28 +3126,17 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
+              let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String else { return }
+        guard let userId = UUID(uuidString: userIdString) else { return }
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
     
-    private func handleStatusUpdate(_ json: [String: Any]) {
-        guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
-              let userId = payload["user_id"] as? String,
-              let deliveredAtStr = payload["delivered_at"] as? String?,
-              let readAtStr = payload["read_at"] as? String? else { return }
-        let update: [String: Any] = [
-            "messageId": messageId,
-            "userId": userId,
-            "deliveredAt": deliveredAtStr.flatMap { ISO8601DateFormatter().date(from: $0) },
-            "readAt": readAtStr.flatMap { ISO8601DateFormatter().date(from: $0) }
-        ]
-        NotificationCenter.default.post(name: .statusUpdated, object: update)
-    }
     
-    // Отправка сообщения
+    
+    // MARK: - Отправка сообщений
+    
     func sendMessage(chatId: UUID, content: String) {
         let envelope: [String: Any] = [
             "event": "message.send",
@@ -3656,14 +3701,49 @@ import Combine
 
 class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
+        @Published var isLoading = false
+        @Published var errorMessage: String?
+        
+        private let graphQL = GraphQLClient.shared
+        private var cancellables = Set<AnyCancellable>()   // ← добавить
+        
+        init() {
+            setupNotifications()   // ← добавить
+        }
     
-    private let graphQL = GraphQLClient.shared
+    private func setupNotifications() {
+            NotificationCenter.default.publisher(for: .newMessageReceived)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] notification in
+                    guard let message = notification.object as? Message else { return }
+                    if let index = self?.chats.firstIndex(where: { $0.id == message.chatId }) {
+                        // Создаём новый Chat с обновлённым lastMessage
+                        if let oldChat = self?.chats[index] {
+                            let updatedChat = Chat(
+                                chatId: oldChat.id,
+                                chatType: oldChat.chatType,
+                                name: oldChat.name,
+                                description: oldChat.description,
+                                avatarUrl: oldChat.avatarUrl,
+                                creatorId: oldChat.creatorId,
+                                isPublic: oldChat.isPublic,
+                                maxMembers: oldChat.maxMembers,
+                                createdAt: oldChat.createdAt,
+                                membersCount: oldChat.membersCount,
+                                lastMessage: message.content
+                            )
+                            self?.chats[index] = updatedChat
+                        }
+                    }
+                }
+                .store(in: &cancellables)
+        }
+        
     
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
+        
         
         do {
             let response: ListChatsResponse = try await graphQL.perform(
@@ -4037,6 +4117,7 @@ class ChatViewModel: ObservableObject {
     
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 print("📢 ChatViewModel received .newMessageReceived")
                 guard let self = self,
@@ -4101,14 +4182,19 @@ class ChatViewModel: ObservableObject {
         
         NotificationCenter.default.publisher(for: .statusUpdated)
             .sink { [weak self] notification in
-                if let info = notification.object as? [String: Any],
-                   let messageId = info["messageId"] as? Int64,
-                   let chatId = info["chatId"] as? UUID,
-                   chatId == self?.chat.id {
-                    let deliveredAt = info["deliveredAt"] as? Date
-                    let readAt = info["readAt"] as? Date
-                    self?.updateStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
+                print("📢 ChatViewModel received .statusUpdated notification")
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64,
+                      let chatId = info["chatId"] as? UUID,
+                      chatId == self.chat.id else {
+                    print("❌ .statusUpdated ignored – wrong chat or missing data")
+                    return
                 }
+                let deliveredAt = info["deliveredAt"] as? Date
+                let readAt = info["readAt"] as? Date
+                print("✅ Updating status for message \(messageId): delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+                self.updateStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
             .store(in: &cancellables)
     }
@@ -4189,15 +4275,32 @@ class ChatViewModel: ObservableObject {
                     authToken: TokenManager.shared.accessToken
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
+                
+                // Загружаем локальные сообщения (с уже сохранёнными статусами)
+                let localMessages = database.getMessages(for: chat.id)
+                
+                // Сливаем: статусы из локальной БД
+                var mergedMessages = loadedMessages
+                for i in 0..<mergedMessages.count {
+                    if let local = localMessages.first(where: { $0.messageId == mergedMessages[i].messageId }) {
+                        mergedMessages[i].deliveredAt = local.deliveredAt
+                        mergedMessages[i].readAt = local.readAt
+                    } else {
+                        // Если локального сообщения нет, сохраняем текущее (без статусов)
+                        _ = database.saveMessage(mergedMessages[i])
+                    }
+                }
+                
+                // Также добавляем сообщения, которые есть в локальной БД, но ещё не пришли с сервера
+                for local in localMessages {
+                    if !mergedMessages.contains(where: { $0.messageId == local.messageId }) {
+                        mergedMessages.append(local)
+                    }
+                }
+                mergedMessages.sort(by: { $0.createdAt < $1.createdAt })
+                
                 await MainActor.run {
-                    self.messages = loadedMessages
-                    // Заполняем словарь реакций
-                    for msg in loadedMessages {
-                                            let savedReactions = self.database.getReactions(for: msg.messageId)
-                                            if !savedReactions.isEmpty {
-                                                self.reactionsDict[msg.messageId] = savedReactions
-                                            }
-                                        }
+                    self.messages = mergedMessages
                     self.isLoading = false
                 }
                 await loadUsersForMessages(loadedMessages)
@@ -4375,13 +4478,12 @@ class ChatViewModel: ObservableObject {
                 if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
                 if let readAt = readAt { msg.readAt = readAt }
                 self.messages[index] = msg
-                // Сохраняем в локальную БД
                 _ = LocalDatabase.shared.updateMessageStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
+                self.objectWillChange.send()
+                print("🔄 Status updated for message \(messageId): delivered=\(deliveredAt != nil), read=\(readAt != nil)")
             } else {
-                // Если сообщение ещё не загружено, обновляем напрямую в БД
                 _ = LocalDatabase.shared.updateMessageStatus(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
-            self.objectWillChange.send()
         }
     }
     
@@ -4489,13 +4591,12 @@ class ChatViewModel: ObservableObject {
    
     private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
-            // Проверяем, нет ли уже такого сообщения (на случай дубля)
             if !self.messages.contains(where: { $0.messageId == message.messageId }) {
-                // Принудительно создаём новый массив, чтобы SwiftUI точно увидел изменение
                 var newMessages = self.messages
                 newMessages.append(message)
                 newMessages.sort(by: { $0.createdAt < $1.createdAt })
                 self.messages = newMessages
+                self.objectWillChange.send()   // ← добавить
                 print("➕ WebSocket: message \(message.messageId) added, total: \(self.messages.count)")
             } else {
                 print("⚠️ WebSocket: message \(message.messageId) already exists")
@@ -5411,7 +5512,13 @@ struct ChatListView: View {
             }
             // Обновление списка при новых сообщениях
             .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
-                Task { await viewModel.loadChats() }
+                // Не перезагружать список, а только обновить lastMessage для соответствующего чата
+                // Вместо loadChats() вызываем updateLastMessage(for:)
+                if let currentChat = self.selectedChat {
+                    // ничего не делаем, сообщение уже добавится в текущий ChatViewModel
+                } else {
+                    Task { await viewModel.loadChats() } // только если не в чате
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
                 Task { await viewModel.loadChats() }

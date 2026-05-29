@@ -28,69 +28,84 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
+                // Аватар отправителя (только для чужих сообщений)
                 NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                     AvatarView(urlString: senderUser?.avatarUrl, size: 32)
                 }
                 .buttonStyle(PlainButtonStyle())
-            } else {
-                Spacer().frame(width: 32)
-            }
-            
-            VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 4) {
-                if !isCurrentUser && senderUser != nil {
-                    Text(senderUser?.nickName ?? "")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 12)
-                }
                 
-                Text(message.content ?? "")
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
-                    .foregroundColor(isCurrentUser ? .white : .primary)
-                    .cornerRadius(18)
-                    .onLongPressGesture(minimumDuration: 0.5) {
-                        showMenu = true
+                VStack(alignment: .leading, spacing: 4) {
+                    if let nickname = senderUser?.nickName, !nickname.isEmpty {
+                        Text(nickname)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 12)
                     }
-                
-                // Реакции
-                if !viewModel.reactionsForMessage(message.messageId).isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
-                            let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
-                            let isCurrentUserReaction = currentUserReactionEmoji == emoji
-                            HStack(spacing: 2) {
-                                Text(emoji)
-                                    .font(.caption)
-                                Text("\(count)")
-                                    .font(.caption2)
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(isCurrentUserReaction ? Color.blue.opacity(0.2) : Color(.systemGray5))
-                            .cornerRadius(12)
-                            .onTapGesture {
-                                toggleReaction(emoji: emoji)
-                            }
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-                
-                HStack(spacing: 4) {
-                    Text(formatTime(message.createdAt))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                     
-                    if message.isEdited {
-                        Text("(ред.)")
+                    Text(message.content ?? "")
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemGray5))
+                        .foregroundColor(.primary)
+                        .cornerRadius(18)
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            showMenu = true
+                        }
+                    
+                    // Реакции
+                    if !viewModel.reactionsForMessage(message.messageId).isEmpty {
+                        reactionRow
+                    }
+                    
+                    // Время и статус (только время для чужих)
+                    HStack(spacing: 4) {
+                        Text(formatTime(message.createdAt))
                             .font(.caption2)
                             .foregroundColor(.secondary)
+                        
+                        if message.isEdited {
+                            Text("(ред.)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                Spacer() // Прижимает блок к левому краю
+            } else {
+                // Свои сообщения – справа
+                Spacer() // Прижимает блок к правому краю
+                
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(message.content ?? "")
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(18)
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            showMenu = true
+                        }
+                    
+                    // Реакции (если есть)
+                    if !viewModel.reactionsForMessage(message.messageId).isEmpty {
+                        reactionRow
                     }
                     
-                    if isCurrentUser {
+                    // Время и статусы доставки/прочтения
+                    HStack(spacing: 4) {
+                        Text(formatTime(message.createdAt))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        if message.isEdited {
+                            Text("(ред.)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        
                         if let readAt = message.readAt {
+                            // Две галочки синие – прочитано
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
                                 Image(systemName: "checkmark")
@@ -98,22 +113,19 @@ struct MessageBubbleView: View {
                             .font(.caption2)
                             .foregroundColor(.blue)
                         } else if let deliveredAt = message.deliveredAt {
+                            // Одна галочка серая – доставлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         } else {
+                            // Одна галочка – отправлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         }
                     }
                 }
-            }
-            
-            if isCurrentUser {
-                Spacer().frame(width: 32)
-            } else {
-                Spacer().frame(width: 32)
+                // Аватар для своих не показываем (можно добавить иконку статуса при желании)
             }
         }
         .padding(.horizontal, 8)
@@ -138,6 +150,30 @@ struct MessageBubbleView: View {
         }
     }
     
+    // MARK: - Реакции (общий вид для своих и чужих)
+    private var reactionRow: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
+                let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
+                let isCurrentUserReaction = currentUserReactionEmoji == emoji
+                HStack(spacing: 2) {
+                    Text(emoji)
+                        .font(.caption)
+                    Text("\(count)")
+                        .font(.caption2)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(isCurrentUserReaction ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                .cornerRadius(12)
+                .onTapGesture {
+                    toggleReaction(emoji: emoji)
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+    
     private func toggleReaction(emoji: String) {
         Task {
             if let existingEmoji = currentUserReactionEmoji, existingEmoji == emoji {
@@ -158,6 +194,7 @@ struct MessageBubbleView: View {
     }
 }
 
+// MARK: - Пикер реакций
 struct ReactionPickerView: View {
     let emojis: [String]
     let currentReaction: String?
