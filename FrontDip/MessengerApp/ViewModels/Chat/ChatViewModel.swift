@@ -225,29 +225,16 @@ class ChatViewModel: ObservableObject {
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 
-                // Сохраняем сообщения и их реакции в БД
+                // Сохраняем в БД для офлайн-доступа (без attachments, но можно позже расширить)
                 for msg in loadedMessages {
                     _ = database.saveMessage(msg)
-                    if let reactions = msg.reactions {
-                        for reaction in reactions {
-                            _ = database.saveReaction(reaction)
-                        }
-                    }
                 }
                 
-                // Загружаем все сообщения из БД (чтобы подтянуть реакции)
-                var dbMessages = database.getMessages(for: chat.id)
-                for i in 0..<dbMessages.count {
-                    let msgId = dbMessages[i].messageId
-                    let reactions = database.getReactions(for: msgId)
-                    dbMessages[i].reactions = reactions
-                }
-                dbMessages.sort(by: { $0.createdAt < $1.createdAt })
-                
+                // НЕ перезагружаем из БД, используем свежие данные
                 await MainActor.run {
-                    self.messages = dbMessages
+                    self.messages = loadedMessages
                     self.reactionsDict = [:]
-                    for msg in dbMessages {
+                    for msg in loadedMessages {
                         if let reactions = msg.reactions, !reactions.isEmpty {
                             self.reactionsDict[msg.messageId] = reactions
                         }
@@ -405,15 +392,10 @@ class ChatViewModel: ObservableObject {
     
     func sendMessage(attachmentId: UUID? = nil) {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty || attachmentId != nil else {
-            print("❌ sendMessage: no content and no attachment")
-            return
-        }
-        guard let currentUserId = AppState.shared.currentUser?.userId else {
-            print("❌ sendMessage: no current user")
-            return
-        }
+        guard !content.isEmpty || attachmentId != nil else { return }
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return }
 
+        // Временное сообщение (оптимистичное обновление)
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         let tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
@@ -433,13 +415,8 @@ class ChatViewModel: ObservableObject {
             do {
                 var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
                 if let aid = attachmentId {
-                    variables["attachmentId"] = aid.uuidString
-                    print("📎 sendMessage: attachmentId = \(aid.uuidString)")
-                } else {
-                    print("📎 sendMessage: no attachmentId")
+                    variables["attachmentId"] = attachmentId?.uuidString
                 }
-                print("📤 sendMessage: calling GraphQL with variables: \(variables)")
-                
                 let response: SendMessageResponse = try await graphQL.perform(
                     query: GraphQLQueries.sendMessage,
                     variables: variables,
@@ -462,7 +439,7 @@ class ChatViewModel: ObservableObject {
                     self.messages.removeAll(where: { $0.messageId == tempId })
                     NotificationService.shared.showError("Не удалось отправить сообщение")
                     self.objectWillChange.send()
-                    print("❌ sendMessage: failed with error: \(error)")
+                    print("❌ sendMessage: failed, removed temp message")
                 }
             }
         }

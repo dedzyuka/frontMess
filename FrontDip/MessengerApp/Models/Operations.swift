@@ -142,6 +142,13 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
                 reactions {
                     messageId
                     userId
