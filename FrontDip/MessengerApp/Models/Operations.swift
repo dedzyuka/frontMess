@@ -381,3 +381,10 @@ struct Tokens: Decodable {
 }
 
 
+struct Attachment: Codable {
+    let attachmentId: UUID
+    let fileName: String
+    let fileSize: Int?
+    let mimeType: String?
+    let storagePath: String
+}

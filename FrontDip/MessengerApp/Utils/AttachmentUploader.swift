@@ -10,7 +10,7 @@ enum UploadError: Error {
 
 class AttachmentUploader {
     static let shared = AttachmentUploader()
-    private let baseURL = "http://localhost:8000" // Заменить на реальный URL
+    private let baseURL = AppConfig.baseURL
 
     func uploadImage(_ image: UIImage) async throws -> UUID {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
@@ -28,11 +28,14 @@ class AttachmentUploader {
 
     private func upload(data: Data, mimeType: String, fileName: String) async throws -> UUID {
         guard let token = TokenManager.shared.accessToken else {
+            print("❌ Upload: no access token")
             throw UploadError.notAuthenticated
         }
+        print("✅ Upload: using token: \(token.prefix(20))...")
+        
 
         let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string: "\(baseURL)/upload")!)
+        var request = URLRequest(url: URL(string: "\(baseURL)/upload/")!)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

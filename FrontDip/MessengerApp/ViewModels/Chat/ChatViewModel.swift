@@ -405,10 +405,15 @@ class ChatViewModel: ObservableObject {
     
     func sendMessage(attachmentId: UUID? = nil) {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty || attachmentId != nil else { return }
-        guard let currentUserId = AppState.shared.currentUser?.userId else { return }
+        guard !content.isEmpty || attachmentId != nil else {
+            print("❌ sendMessage: no content and no attachment")
+            return
+        }
+        guard let currentUserId = AppState.shared.currentUser?.userId else {
+            print("❌ sendMessage: no current user")
+            return
+        }
 
-        // Временное сообщение (оптимистичное обновление)
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         let tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
@@ -429,7 +434,12 @@ class ChatViewModel: ObservableObject {
                 var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
                 if let aid = attachmentId {
                     variables["attachmentId"] = aid.uuidString
+                    print("📎 sendMessage: attachmentId = \(aid.uuidString)")
+                } else {
+                    print("📎 sendMessage: no attachmentId")
                 }
+                print("📤 sendMessage: calling GraphQL with variables: \(variables)")
+                
                 let response: SendMessageResponse = try await graphQL.perform(
                     query: GraphQLQueries.sendMessage,
                     variables: variables,
@@ -452,7 +462,7 @@ class ChatViewModel: ObservableObject {
                     self.messages.removeAll(where: { $0.messageId == tempId })
                     NotificationService.shared.showError("Не удалось отправить сообщение")
                     self.objectWillChange.send()
-                    print("❌ sendMessage: failed, removed temp message")
+                    print("❌ sendMessage: failed with error: \(error)")
                 }
             }
         }

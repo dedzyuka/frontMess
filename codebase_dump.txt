@@ -478,10 +478,11 @@ struct Attachment: Codable {
 }
 
 // MARK: - ChatMember
-struct ChatMemberItem: Codable {
+struct ChatMemberItem: Decodable {
     let userId: UUID
-    let nickname: String
-    let joinedAt: Date
+    let nickName: String
+    let avatarUrl: String?
+    let isOnline: Bool
 }
 
 // MARK: - Contact
@@ -631,13 +632,6 @@ struct GraphQLQueries {
     }
     """
     
-    static let getChatMembers = """
-    query GetChatMembers($chatId: String!) {
-        chat {
-            members(chatId: $chatId)
-        }
-    }
-    """
     static let addReaction = """
     mutation AddReaction($messageId: Int!, $chatId: String!, $emoji: String!) {
         message {
@@ -856,6 +850,29 @@ struct GraphQLQueries {
         }
     }
     """
+    static let getChatMembers = """
+    query GetChatMembers($chatId: String!) {
+        chat {
+            members(chatId: $chatId) {
+                userId
+                nickName
+                avatarUrl
+                isOnline
+            }
+        }
+    }
+    """
+
+    // Для случаев, когда нужны только ID
+    static let getChatMemberIds = """
+    query GetChatMemberIds($chatId: String!) {
+        chat {
+            members(chatId: $chatId) {
+                userId
+            }
+        }
+    }
+    """
     
 }
 
@@ -873,8 +890,14 @@ struct DeleteMessageWrapper: Decodable {
     let deleteMessage: Bool
 }
 
-struct ChatMembersIdResponse: Decodable {
-    let chat: MembersIdWrapper
+struct ChatMemberIdsResponse: Decodable {
+    let chat: ChatMemberIdsWrapper
+}
+struct ChatMemberIdsWrapper: Decodable {
+    let members: [ChatMemberIdItem]
+}
+struct ChatMemberIdItem: Decodable {
+    let userId: UUID
 }
 struct MembersIdWrapper: Decodable {
     let members: [String]
@@ -1596,9 +1619,22 @@ class LocalDatabase {
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
     }
+    // MARK: - Reaction operations
+    // MARK: - Reaction operations
+
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
+            let query = reactionsTable.filter(
+                reactionMessageId == reaction.messageId &&
+                reactionUserId == reaction.userId &&
+                reactionEmoji == reaction.emoji
+            )
+            if try db.scalar(query.count) > 0 {
+                // Обновляем created_at, если нужно
+                try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
+                return true
+            }
             try db.run(reactionsTable.insert(
                 reactionMessageId <- reaction.messageId,
                 reactionUserId <- reaction.userId,
@@ -1607,23 +1643,9 @@ class LocalDatabase {
             ))
             return true
         } catch {
-            print("❌ saveReaction error: \(error)")
-            return false
-        }
-    }
-
-    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
-        guard let db = db else { return false }
-        let query = reactionsTable.filter(
-            reactionMessageId == messageId &&
-            reactionUserId == userId &&
-            reactionEmoji == emoji
-        )
-        do {
-            try db.run(query.delete())
-            return true
-        } catch {
-            print("❌ removeReaction error: \(error)")
+            if (error as? NSError)?.code != 19 { // UNIQUE constraint
+                print("❌ saveReaction error: \(error)")
+            }
             return false
         }
     }
@@ -1648,6 +1670,39 @@ class LocalDatabase {
             return []
         }
     }
+
+    func deleteReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ deleteReaction error: \(error)")
+            return false
+        }
+    }
+
+    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ removeReaction error: \(error)")
+            return false
+        }
+    }
+
 
     func deleteAllReactions() {
         guard let db = db else { return }
@@ -3129,23 +3184,24 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
-              let createdAtString = payload["created_at"] as? String else { return }
-        guard let userId = UUID(uuidString: userIdString) else { return }
-        let reaction = Reaction(
-            messageId: messageId,
-            userId: userId,
-            emoji: emoji,
-            createdAt: ISO8601DateFormatter().date(from: createdAtString) ?? Date()
-        )
+              let createdAtString = payload["created_at"] as? String,
+              let userId = UUID(uuidString: userIdString) else { return }
+        let createdAt = isoDateFormatter.date(from: createdAtString) ?? Date()
+        let reaction = Reaction(messageId: messageId, userId: userId, emoji: emoji, createdAt: createdAt)
+        
+        _ = LocalDatabase.shared.saveReaction(reaction)
         NotificationCenter.default.post(name: .reactionAdded, object: reaction)
     }
-    
+
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
-              let emoji = payload["emoji"] as? String else { return }
-        guard let userId = UUID(uuidString: userIdString) else { return }
+              let emoji = payload["emoji"] as? String,
+              let userId = UUID(uuidString: userIdString) else { return }
+        
+        _ = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+        
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
@@ -3850,7 +3906,7 @@ class ChatListViewModel: ObservableObject {
             )
             let chats = response.chat.list
             for chat in chats where chat.chatType == "1" || chat.chatType.lowercased() == "private" {
-                let members = await getChatMembers(chatId: chat.id)
+                let members = await getChatMemberIds(for: chat.id)
                 if members.contains(currentUserId) && members.contains(userId) {
                     return chat
                 }
@@ -3869,16 +3925,16 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    private func getChatMembers(chatId: UUID) async -> [UUID] {
+    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
+        let variables = ["chatId": chatId.uuidString]
         do {
-            let variables = ["chatId": chatId.uuidString]
-            let response: ChatMembersIdResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMembers,
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
                 variables: variables,
-                responseType: ChatMembersIdResponse.self,
+                responseType: ChatMemberIdsResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.compactMap { UUID(uuidString: $0) }
+            return response.chat.members.map { $0.userId }
         } catch {
             return []
         }
@@ -4020,30 +4076,15 @@ class ChatSidebarViewModel: ObservableObject {
         Task {
             await MainActor.run { isLoading = true }
             do {
-                // 1. Получить список ID участников
-                let variables: [String: Any] = ["chatId": chat.id.uuidString]
-                let response: ChatMembersIdResponse = try await graphQL.perform(
+                let variables = ["chatId": chat.id.uuidString]
+                let response: ChatMembersResponse = try await graphQL.perform(
                     query: GraphQLQueries.getChatMembers,
                     variables: variables,
-                    responseType: ChatMembersIdResponse.self,
+                    responseType: ChatMembersResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
-                let memberIds = response.chat.members.compactMap { UUID(uuidString: $0) }
-                
-                // 2. Для каждого ID получить пользователя (используем существующий UserService или ContactService)
-                var items: [ChatMemberItem] = []
-                for userId in memberIds {
-                    if let user = try? await fetchUser(by: userId) {
-                        items.append(ChatMemberItem(
-                            userId: userId,
-                            nickname: user.nickName,
-                            joinedAt: Date() // бэк не отдаёт joinedAt, ставим текущую дату
-                        ))
-                    }
-                }
-                
                 await MainActor.run {
-                    self.members = items
+                    self.members = response.chat.members
                     self.isLoading = false
                 }
             } catch {
@@ -4053,30 +4094,6 @@ class ChatSidebarViewModel: ObservableObject {
                 }
             }
         }
-    }
-    private func fetchUser(by userId: UUID) async throws -> User {
-        let query = """
-        query GetUser($userId: String!) {
-            user {
-                get(id: $userId) {
-                    userId
-                    nickName
-                    avatarUrl
-                    isOnline
-                }
-            }
-        }
-        """
-        struct Wrapper: Decodable { let user: UserGetWrapper }
-        struct UserGetWrapper: Decodable { let get: User }
-        let variables = ["userId": userId.uuidString]
-        let response: Wrapper = try await graphQL.perform(
-            query: query,
-            variables: variables,
-            responseType: Wrapper.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        return response.user.get
     }
     
     func addUserToChat(_ userId: UUID) async -> Bool {
@@ -4306,15 +4323,15 @@ class ChatViewModel: ObservableObject {
     private func getChatMemberIds() async -> [UUID] {
         let variables = ["chatId": chat.id.uuidString]
         do {
-            let response: ChatMembersIdResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMembers,
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
                 variables: variables,
-                responseType: ChatMembersIdResponse.self,
+                responseType: ChatMemberIdsResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.compactMap { UUID(uuidString: $0) }
+            return response.chat.members.map { $0.userId }
         } catch {
-            print("Failed to load chat members: \(error)")
+            print("Failed to load chat member ids: \(error)")
             return []
         }
     }
@@ -4332,47 +4349,66 @@ class ChatViewModel: ObservableObject {
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 
-                // Загружаем локальные сообщения (с уже сохранёнными статусами)
-                let localMessages = database.getMessages(for: chat.id)
-                
-                // Сливаем: статусы из локальной БД
-                var mergedMessages = loadedMessages
-                for i in 0..<mergedMessages.count {
-                    if let local = localMessages.first(where: { $0.messageId == mergedMessages[i].messageId }) {
-                        mergedMessages[i].deliveredAt = local.deliveredAt
-                        mergedMessages[i].readAt = local.readAt
-                    } else {
-                        // Если локального сообщения нет, сохраняем текущее (без статусов)
-                        _ = database.saveMessage(mergedMessages[i])
+                // Сохраняем сообщения и их реакции в БД
+                for msg in loadedMessages {
+                    _ = database.saveMessage(msg)
+                    if let reactions = msg.reactions {
+                        for reaction in reactions {
+                            _ = database.saveReaction(reaction)
+                        }
                     }
                 }
                 
-                // Также добавляем сообщения, которые есть в локальной БД, но ещё не пришли с сервера
-                for local in localMessages {
-                    if !mergedMessages.contains(where: { $0.messageId == local.messageId }) {
-                        mergedMessages.append(local)
-                    }
+                // Загружаем все сообщения из БД (чтобы подтянуть реакции)
+                var dbMessages = database.getMessages(for: chat.id)
+                for i in 0..<dbMessages.count {
+                    let msgId = dbMessages[i].messageId
+                    let reactions = database.getReactions(for: msgId)
+                    dbMessages[i].reactions = reactions
                 }
-                mergedMessages.sort(by: { $0.createdAt < $1.createdAt })
+                dbMessages.sort(by: { $0.createdAt < $1.createdAt })
                 
                 await MainActor.run {
-                    self.messages = mergedMessages
+                    self.messages = dbMessages
+                    self.reactionsDict = [:]
+                    for msg in dbMessages {
+                        if let reactions = msg.reactions, !reactions.isEmpty {
+                            self.reactionsDict[msg.messageId] = reactions
+                        }
+                    }
                     self.isLoading = false
                 }
-                await loadUsersForMessages(loadedMessages)
             } catch {
                 print("Load messages error: \(error)")
                 await MainActor.run { isLoading = false }
             }
         }
     }
+    
     func addReaction(to messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
         
-        // Оптимистичное добавление
         await MainActor.run {
-            self.addReactionLocally(reaction)
+            _ = database.saveReaction(reaction)
+            if var list = reactionsDict[messageId] {
+                if !list.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                    list.append(reaction)
+                    reactionsDict[messageId] = list
+                }
+            } else {
+                reactionsDict[messageId] = [reaction]
+            }
+            if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                var updatedMsg = messages[index]
+                var newReactions = updatedMsg.reactions ?? []
+                if !newReactions.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                    newReactions.append(reaction)
+                    updatedMsg.reactions = newReactions
+                    messages[index] = updatedMsg
+                }
+            }
+            objectWillChange.send()
         }
         
         do {
@@ -4388,9 +4424,18 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
         } catch {
-            // Откат
             await MainActor.run {
-                self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+                _ = database.deleteReaction(messageId: messageId, userId: currentUserId, emoji: emoji)
+                if var list = reactionsDict[messageId] {
+                    list.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                    reactionsDict[messageId] = list
+                }
+                if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                    var msg = messages[index]
+                    msg.reactions?.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                    messages[index] = msg
+                }
+                objectWillChange.send()
             }
             print("Add reaction failed: \(error)")
         }
@@ -4399,9 +4444,18 @@ class ChatViewModel: ObservableObject {
     func removeReaction(from messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         
-        // Оптимистичное удаление
         await MainActor.run {
-            self.removeReactionLocally(messageId: messageId, userId: currentUserId, emoji: emoji)
+            _ = database.deleteReaction(messageId: messageId, userId: currentUserId, emoji: emoji)
+            if var list = reactionsDict[messageId] {
+                list.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                reactionsDict[messageId] = list
+            }
+            if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                var msg = messages[index]
+                msg.reactions?.removeAll(where: { $0.userId == currentUserId && $0.emoji == emoji })
+                messages[index] = msg
+            }
+            objectWillChange.send()
         }
         
         do {
@@ -4417,10 +4471,25 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
         } catch {
-            // Восстановить реакцию при ошибке
             let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
             await MainActor.run {
-                self.addReactionLocally(reaction)
+                _ = database.saveReaction(reaction)
+                if var list = reactionsDict[messageId] {
+                    if !list.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                        list.append(reaction)
+                        reactionsDict[messageId] = list
+                    }
+                }
+                if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
+                    var msg = messages[index]
+                    var newReactions = msg.reactions ?? []
+                    if !newReactions.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
+                        newReactions.append(reaction)
+                        msg.reactions = newReactions
+                        messages[index] = msg
+                    }
+                }
+                objectWillChange.send()
             }
             print("Remove reaction failed: \(error)")
         }
@@ -5792,7 +5861,6 @@ struct ChatSidebarView: View {
 
 struct ChatMemberRow: View {
     let member: ChatMemberItem
-    // используем ChatMemberItem, а не ChatMemberDetailed
     
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: member.userId)) {
@@ -5801,38 +5869,27 @@ struct ChatMemberRow: View {
                     .fill(Color.blue.opacity(0.3))
                     .frame(width: 40, height: 40)
                     .overlay(
-                        Text(member.nickname.prefix(1).uppercased())
+                        Text(member.nickName.prefix(1).uppercased())
                             .font(.headline)
                             .foregroundColor(.blue)
                     )
                 
                 VStack(alignment: .leading) {
-                    Text(member.nickname)
+                    Text(member.nickName)
                         .font(.headline)
                     HStack {
-                        Text("ID: \(member.userId.uuidString.prefix(8))...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("Присоединился: \(formatDate(member.joinedAt))")
+                        Circle()
+                            .fill(member.isOnline ? Color.green : Color.gray)
+                            .frame(width: 8, height: 8)
+                        Text(member.isOnline ? "онлайн" : "офлайн")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
                 Spacer()
             }
-            .buttonStyle(PlainButtonStyle())
+            .padding(.vertical, 8)
         }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
     }
 }
 

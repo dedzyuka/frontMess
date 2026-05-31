@@ -42,14 +42,12 @@ struct MessageBubbleView: View {
                             .padding(.horizontal, 12)
                     }
                     
-                    Text(message.content ?? "")
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(.systemGray5))
-                        .foregroundColor(.primary)
-                        .cornerRadius(18)
+                    // Блок содержимого сообщения (вложения + текст)
+                    messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
                             showMenu = true
+                        }.onAppear {
+                            print("🔍 Message \(message.messageId): attachments count = \(message.attachments?.count ?? 0)")
                         }
                     
                     // Реакции
@@ -70,24 +68,17 @@ struct MessageBubbleView: View {
                         }
                     }
                 }
-                
-                Spacer() // Прижимает блок к левому краю
+                Spacer()
             } else {
                 // Свои сообщения – справа
-                Spacer() // Прижимает блок к правому краю
+                Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(message.content ?? "")
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(18)
+                    messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
                             showMenu = true
                         }
                     
-                    // Реакции (если есть)
                     if !viewModel.reactionsForMessage(message.messageId).isEmpty {
                         reactionRow
                     }
@@ -105,7 +96,6 @@ struct MessageBubbleView: View {
                         }
                         
                         if let readAt = message.readAt {
-                            // Две галочки синие – прочитано
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
                                 Image(systemName: "checkmark")
@@ -113,19 +103,16 @@ struct MessageBubbleView: View {
                             .font(.caption2)
                             .foregroundColor(.blue)
                         } else if let deliveredAt = message.deliveredAt {
-                            // Одна галочка серая – доставлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         } else {
-                            // Одна галочка – отправлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         }
                     }
                 }
-                // Аватар для своих не показываем (можно добавить иконку статуса при желании)
             }
         }
         .padding(.horizontal, 8)
@@ -150,7 +137,30 @@ struct MessageBubbleView: View {
         }
     }
     
-    // MARK: - Реакции (общий вид для своих и чужих)
+    // MARK: - Отображение содержимого сообщения (вложения + текст)
+    @ViewBuilder
+    private var messageContentView: some View {
+        VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
+            // Вложения
+            if let attachments = message.attachments, !attachments.isEmpty {
+                ForEach(attachments, id: \.attachmentId) { attachment in
+                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                }
+            }
+            
+            // Текст сообщения
+            if let content = message.content, !content.isEmpty {
+                Text(content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(18)
+            }
+        }
+    }
+    
+    // MARK: - Реакции (без изменений)
     private var reactionRow: some View {
         HStack(spacing: 4) {
             ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
@@ -194,7 +204,9 @@ struct MessageBubbleView: View {
     }
 }
 
-// MARK: - Пикер реакций
+
+
+// MARK: - ReactionPickerView (остаётся без изменений)
 struct ReactionPickerView: View {
     let emojis: [String]
     let currentReaction: String?

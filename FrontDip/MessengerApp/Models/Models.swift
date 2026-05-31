@@ -78,13 +78,6 @@ struct Message: Identifiable, Codable {
     var id: Int64 { messageId }
 }
 
-struct Attachment: Codable {
-    let attachmentId: UUID
-    let fileName: String
-    let fileSize: Int?
-    let mimeType: String?
-    let storagePath: String
-}
 
 // MARK: - ChatMember
 struct ChatMemberItem: Decodable {
