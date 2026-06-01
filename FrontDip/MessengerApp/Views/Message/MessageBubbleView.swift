@@ -1,10 +1,3 @@
-//
-//  MessageBubbleView.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 21.05.26.
-//
-
 import SwiftUI
 
 struct MessageBubbleView: View {
@@ -28,7 +21,6 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
-                // Аватар отправителя (только для чужих сообщений)
                 NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                     AvatarView(urlString: senderUser?.avatarUrl, size: 32)
                 }
@@ -42,20 +34,15 @@ struct MessageBubbleView: View {
                             .padding(.horizontal, 12)
                     }
                     
-                    // Блок содержимого сообщения (вложения + текст)
                     messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
                             showMenu = true
-                        }.onAppear {
-                            print("🔍 Message \(message.messageId): attachments count = \(message.attachments?.count ?? 0)")
                         }
                     
-                    // Реакции
                     if !viewModel.reactionsForMessage(message.messageId).isEmpty {
                         reactionRow
                     }
                     
-                    // Время и статус (только время для чужих)
                     HStack(spacing: 4) {
                         Text(formatTime(message.createdAt))
                             .font(.caption2)
@@ -70,7 +57,6 @@ struct MessageBubbleView: View {
                 }
                 Spacer()
             } else {
-                // Свои сообщения – справа
                 Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
@@ -83,7 +69,6 @@ struct MessageBubbleView: View {
                         reactionRow
                     }
                     
-                    // Время и статусы доставки/прочтения
                     HStack(spacing: 4) {
                         Text(formatTime(message.createdAt))
                             .font(.caption2)
@@ -119,7 +104,7 @@ struct MessageBubbleView: View {
         .padding(.vertical, 2)
         .onAppear {
             if !isCurrentUser {
-                viewModel.markAsRead(messageId: message.messageId)
+                viewModel.markMessageAsReadIfNeeded(messageId: message.messageId)
             }
         }
         .confirmationDialog("Действия с сообщением", isPresented: $showMenu, titleVisibility: .visible) {
@@ -137,18 +122,15 @@ struct MessageBubbleView: View {
         }
     }
     
-    // MARK: - Отображение содержимого сообщения (вложения + текст)
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            // Вложения
             if let attachments = message.attachments, !attachments.isEmpty {
                 ForEach(attachments, id: \.attachmentId) { attachment in
                     AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
                 }
             }
             
-            // Текст сообщения
             if let content = message.content, !content.isEmpty {
                 Text(content)
                     .padding(.horizontal, 12)
@@ -160,7 +142,6 @@ struct MessageBubbleView: View {
         }
     }
     
-    // MARK: - Реакции (без изменений)
     private var reactionRow: some View {
         HStack(spacing: 4) {
             ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
@@ -204,9 +185,6 @@ struct MessageBubbleView: View {
     }
 }
 
-
-
-// MARK: - ReactionPickerView (остаётся без изменений)
 struct ReactionPickerView: View {
     let emojis: [String]
     let currentReaction: String?

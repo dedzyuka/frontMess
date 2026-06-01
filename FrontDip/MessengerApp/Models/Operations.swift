@@ -394,4 +394,5 @@ struct Attachment: Codable {
     let fileSize: Int?
     let mimeType: String?
     let storagePath: String
+    let uploadedAt: Date?   // добавьте это поле
 }

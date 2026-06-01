@@ -1,9 +1,3 @@
-//
-//  ContactService.swift
-//  FrontDip
-//
-//
-
 import Foundation
 import Combine
 
@@ -11,8 +5,8 @@ class ContactService: ObservableObject {
     static let shared = ContactService()
     
     @Published var contacts: [Contact] = []
-    @Published var pendingRequests: [Contact] = []   // входящие pending
-    @Published var outgoingRequests: [Contact] = [] // исходящие pending
+    @Published var pendingRequests: [Contact] = []
+    @Published var outgoingRequests: [Contact] = []
     @Published var isLoading = false
     
     private let graphQL = GraphQLClient.shared
@@ -65,7 +59,6 @@ class ContactService: ObservableObject {
         )
         return true
     }
-
     
     func acceptContact(contactUserId: String) async throws -> Bool {
         let variables: [String: Any] = ["contactUserId": contactUserId]
@@ -122,7 +115,7 @@ class ContactService: ObservableObject {
         return response.user.search
     }
     
-    // MARK: - Local Data Management (SQLite временно отключён)
+    // MARK: - Local Data Management
     
     func loadContacts() {
         guard TokenManager.shared.accessToken != nil else { return }
@@ -243,7 +236,6 @@ class ContactService: ObservableObject {
     func acceptContactRequest(_ request: Contact) {
         Task {
             do {
-                // Для входящего запроса отправитель – request.userId
                 _ = try await acceptContact(contactUserId: request.userId.uuidString)
                 await MainActor.run {
                     self.loadContacts()
@@ -261,7 +253,6 @@ class ContactService: ObservableObject {
     func declineContactRequest(_ request: Contact) {
         Task {
             do {
-                // Для отклонения используем userId отправителя
                 _ = try await removeContact(userId: request.userId.uuidString)
                 await MainActor.run {
                     self.loadPendingRequests()

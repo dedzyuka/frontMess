@@ -1,10 +1,3 @@
-//
-//  MessageService.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 21.05.26.
-//
-
 import Foundation
 import Combine
 
@@ -81,12 +74,15 @@ class MessageService: ObservableObject {
             let messageId = message.messageId
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
+            // Сохраняем вложения, если есть
+            if let attachments = message.attachments, !attachments.isEmpty {
+                _ = database.saveAttachments(attachments, for: messageId)
+            }
             sendMessageAck(for: message)
             NotificationCenter.default.post(name: .newMessageReceived, object: message)
         }
     }
     
-    // ✅ ИСПРАВЛЕНО: используем sendAck вместо устаревшего WebSocketMessage
     private func sendMessageAck(for message: Message) {
         guard AppState.shared.currentUser != nil else { return }
         webSocketService.sendAck(messageId: message.messageId, chatId: message.chatId)
@@ -96,7 +92,8 @@ class MessageService: ObservableObject {
         guard pendingMessages[messageId] != nil else { return }
         pendingMessages.removeValue(forKey: messageId)
         stopRetryTimer(for: messageId)
-        _ = database.updateMessageStatus(messageId: messageId, isSent: true, isDelivered: true)
+        // Обновляем статус доставки в БД (можно использовать updateMessageStatusLocally)
+        _ = database.updateMessageStatusLocally(messageId: messageId, deliveredAt: Date(), readAt: nil)
     }
     
     func getMessages(for chatId: UUID) -> [Message] {

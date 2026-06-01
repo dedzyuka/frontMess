@@ -469,13 +469,6 @@ struct Message: Identifiable, Codable {
     var id: Int64 { messageId }
 }
 
-struct Attachment: Codable {
-    let attachmentId: UUID
-    let fileName: String
-    let fileSize: Int?
-    let mimeType: String?
-    let storagePath: String
-}
 
 // MARK: - ChatMember
 struct ChatMemberItem: Decodable {
@@ -677,6 +670,13 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
                 reactions {
                     messageId
                     userId
@@ -916,6 +916,13 @@ struct Tokens: Decodable {
 }
 
 
+struct Attachment: Codable {
+    let attachmentId: UUID
+    let fileName: String
+    let fileSize: Int?
+    let mimeType: String?
+    let storagePath: String
+}
 
 ./FrontDip/MessengerApp/Models/User/User.swift
 
@@ -2966,7 +2973,6 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let chatIdString = payload["chat_id"] as? String,
               let senderIdString = payload["sender_id"] as? String,
-              let content = payload["content"] as? String,
               let createdAtString = payload["created_at"] as? String,
               let createdAt = isoDateFormatter.date(from: createdAtString) else {
             print("❌ Failed to parse message.new payload")
@@ -2977,22 +2983,45 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             print("❌ Invalid UUID in message.new")
             return
         }
-
+        
+        let content = payload["content"] as? String
+        
+        // Парсим attachments, если есть
+        var attachments: [Attachment] = []
+        if let attachmentsArray = payload["attachments"] as? [[String: Any]] {
+            for attDict in attachmentsArray {
+                if let attachmentIdString = attDict["attachment_id"] as? String,
+                   let attachmentId = UUID(uuidString: attachmentIdString),
+                   let fileName = attDict["file_name"] as? String,
+                   let storagePath = attDict["storage_path"] as? String {
+                    let attachment = Attachment(
+                        attachmentId: attachmentId,
+                        fileName: fileName,
+                        fileSize: attDict["file_size"] as? Int,
+                        mimeType: attDict["mime_type"] as? String,
+                        storagePath: storagePath
+                    )
+                    attachments.append(attachment)
+                }
+            }
+        }
+        
         let message = Message(
             messageId: messageId, chatId: chatId, senderId: senderId,
             replyToId: nil, content: content, type: "text",
             createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
-            isEdited: false, deliveredAt: nil, readAt: nil
+            isEdited: false, deliveredAt: nil, readAt: nil,
+            reactions: nil, attachments: attachments.isEmpty ? nil : attachments
         )
         
-        // Сохраняем в локальную БД
+        // Сохраняем в локальную БД (обновим метод saveMessage позже, если нужно)
         if !LocalDatabase.shared.messageExists(messageId) {
             _ = LocalDatabase.shared.saveMessage(message)
             print("💾 WebSocket: saved message \(messageId) to DB")
         }
         
         DispatchQueue.main.async {
-            print("📢 Posting .newMessageReceived for message \(messageId) in chat \(chatId)")
+            print("📢 Posting .newMessageReceived with attachments count \(attachments.count)")
             NotificationCenter.default.post(name: .newMessageReceived, object: message)
         }
     }
@@ -3282,7 +3311,7 @@ enum UploadError: Error {
 
 class AttachmentUploader {
     static let shared = AttachmentUploader()
-    private let baseURL = "http://localhost:8000" // Заменить на реальный URL
+    private let baseURL = AppConfig.baseURL
 
     func uploadImage(_ image: UIImage) async throws -> UUID {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
@@ -3300,11 +3329,14 @@ class AttachmentUploader {
 
     private func upload(data: Data, mimeType: String, fileName: String) async throws -> UUID {
         guard let token = TokenManager.shared.accessToken else {
+            print("❌ Upload: no access token")
             throw UploadError.notAuthenticated
         }
+        print("✅ Upload: using token: \(token.prefix(20))...")
+        
 
         let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string: "\(baseURL)/upload")!)
+        var request = URLRequest(url: URL(string: "\(baseURL)/upload/")!)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -4349,29 +4381,16 @@ class ChatViewModel: ObservableObject {
                 )
                 let loadedMessages = response.message.listMessages.sorted(by: { $0.createdAt < $1.createdAt })
                 
-                // Сохраняем сообщения и их реакции в БД
+                // Сохраняем в БД для офлайн-доступа (без attachments, но можно позже расширить)
                 for msg in loadedMessages {
                     _ = database.saveMessage(msg)
-                    if let reactions = msg.reactions {
-                        for reaction in reactions {
-                            _ = database.saveReaction(reaction)
-                        }
-                    }
                 }
                 
-                // Загружаем все сообщения из БД (чтобы подтянуть реакции)
-                var dbMessages = database.getMessages(for: chat.id)
-                for i in 0..<dbMessages.count {
-                    let msgId = dbMessages[i].messageId
-                    let reactions = database.getReactions(for: msgId)
-                    dbMessages[i].reactions = reactions
-                }
-                dbMessages.sort(by: { $0.createdAt < $1.createdAt })
-                
+                // НЕ перезагружаем из БД, используем свежие данные
                 await MainActor.run {
-                    self.messages = dbMessages
+                    self.messages = loadedMessages
                     self.reactionsDict = [:]
-                    for msg in dbMessages {
+                    for msg in loadedMessages {
                         if let reactions = msg.reactions, !reactions.isEmpty {
                             self.reactionsDict[msg.messageId] = reactions
                         }
@@ -4552,7 +4571,7 @@ class ChatViewModel: ObservableObject {
             do {
                 var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
                 if let aid = attachmentId {
-                    variables["attachmentId"] = aid.uuidString
+                    variables["attachmentId"] = attachmentId?.uuidString
                 }
                 let response: SendMessageResponse = try await graphQL.perform(
                     query: GraphQLQueries.sendMessage,
@@ -6099,11 +6118,17 @@ struct ChatView: View {
             isUploading = true
             var attachmentId: UUID? = nil
             if let image = selectedImage {
-                attachmentId = try? await AttachmentUploader.shared.uploadImage(image)
+                do {
+                    attachmentId = try await AttachmentUploader.shared.uploadImage(image)
+                    print("✅ Image uploaded, attachmentId: \(attachmentId?.uuidString ?? "nil")")
+                } catch {
+                    print("❌ Upload failed: \(error)")
+                    isUploading = false
+                    return
+                }
                 await MainActor.run { selectedImage = nil }
             } else if let url = selectedDocumentURL {
-                attachmentId = try? await AttachmentUploader.shared.uploadFile(url: url)
-                await MainActor.run { selectedDocumentURL = nil }
+                // аналогично
             }
             await MainActor.run {
                 viewModel.sendMessage(attachmentId: attachmentId)
@@ -6193,6 +6218,125 @@ struct InviteShareView: View {
            let rootVC = windowScene.windows.first?.rootViewController {
             rootVC.present(activityVC, animated: true)
         }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/AttachmentView.swift
+
+// MARK: - Компонент для отображения вложения
+
+import Foundation
+import SwiftUI
+struct AttachmentView: View {
+    let attachment: Attachment
+    let isCurrentUser: Bool
+    
+    @State private var imageURL: URL?
+    @State private var isLoading = true
+    
+    var body: some View {
+        Group {
+            if attachment.mimeType?.hasPrefix("image/") == true {
+                // Изображение
+                if let url = imageURL {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .empty:
+                            ProgressView()
+                                .frame(width: 200, height: 200)
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 200, maxHeight: 200)
+                                .cornerRadius(12)
+                        case .failure:
+                            // fallback иконка при ошибке загрузки
+                            fallbackIcon(systemName: "photo")
+                        @unknown default:
+                            EmptyView()
+                        }
+                    }
+                    .onTapGesture {
+                        // TODO: открыть полноэкранный просмотр
+                        print("Open image: \(attachment.storagePath)")
+                    }
+                } else {
+                    ProgressView()
+                        .frame(width: 200, height: 200)
+                        .onAppear {
+                            loadImageURL()
+                        }
+                }
+            } else {
+                // Файл (документ, аудио, видео и т.д.)
+                HStack {
+                    Image(systemName: iconForMimeType(attachment.mimeType))
+                        .font(.title2)
+                        .foregroundColor(isCurrentUser ? .white : .blue)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(attachment.fileName)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                        Text(formattedFileSize(attachment.fileSize))
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    Image(systemName: "arrow.down.circle")
+                        .foregroundColor(isCurrentUser ? .white : .blue)
+                }
+                .padding(10)
+                .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                .cornerRadius(12)
+                .onTapGesture {
+                    // TODO: скачать файл или открыть
+                    print("Download file: \(attachment.storagePath)")
+                }
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func fallbackIcon(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 50, height: 50)
+            .padding()
+            .foregroundColor(.gray)
+            .background(Color(.systemGray6))
+            .cornerRadius(12)
+    }
+    
+    private func loadImageURL() {
+        // Прямой URL к MinIO (для локальной разработки)
+        // В production нужно получать подписанный URL от сервера
+        let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
+        if let url = URL(string: urlString) {
+            self.imageURL = url
+        }
+        isLoading = false
+    }
+    
+    private func iconForMimeType(_ mime: String?) -> String {
+        guard let mime = mime else { return "doc" }
+        if mime.hasPrefix("image") { return "photo" }
+        if mime.hasPrefix("video") { return "video" }
+        if mime.hasPrefix("audio") { return "music.note" }
+        if mime == "application/pdf" { return "doc" }
+        if mime.hasPrefix("text") { return "doc.text" }
+        return "doc"
+    }
+    
+    private func formattedFileSize(_ size: Int?) -> String {
+        guard let size = size else { return "" }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(size))
     }
 }
 
@@ -6810,14 +6954,12 @@ struct MessageBubbleView: View {
                             .padding(.horizontal, 12)
                     }
                     
-                    Text(message.content ?? "")
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(.systemGray5))
-                        .foregroundColor(.primary)
-                        .cornerRadius(18)
+                    // Блок содержимого сообщения (вложения + текст)
+                    messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
                             showMenu = true
+                        }.onAppear {
+                            print("🔍 Message \(message.messageId): attachments count = \(message.attachments?.count ?? 0)")
                         }
                     
                     // Реакции
@@ -6838,24 +6980,17 @@ struct MessageBubbleView: View {
                         }
                     }
                 }
-                
-                Spacer() // Прижимает блок к левому краю
+                Spacer()
             } else {
                 // Свои сообщения – справа
-                Spacer() // Прижимает блок к правому краю
+                Spacer()
                 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(message.content ?? "")
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(18)
+                    messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
                             showMenu = true
                         }
                     
-                    // Реакции (если есть)
                     if !viewModel.reactionsForMessage(message.messageId).isEmpty {
                         reactionRow
                     }
@@ -6873,7 +7008,6 @@ struct MessageBubbleView: View {
                         }
                         
                         if let readAt = message.readAt {
-                            // Две галочки синие – прочитано
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
                                 Image(systemName: "checkmark")
@@ -6881,19 +7015,16 @@ struct MessageBubbleView: View {
                             .font(.caption2)
                             .foregroundColor(.blue)
                         } else if let deliveredAt = message.deliveredAt {
-                            // Одна галочка серая – доставлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         } else {
-                            // Одна галочка – отправлено
                             Image(systemName: "checkmark")
                                 .font(.caption2)
                                 .foregroundColor(.gray)
                         }
                     }
                 }
-                // Аватар для своих не показываем (можно добавить иконку статуса при желании)
             }
         }
         .padding(.horizontal, 8)
@@ -6918,7 +7049,30 @@ struct MessageBubbleView: View {
         }
     }
     
-    // MARK: - Реакции (общий вид для своих и чужих)
+    // MARK: - Отображение содержимого сообщения (вложения + текст)
+    @ViewBuilder
+    private var messageContentView: some View {
+        VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
+            // Вложения
+            if let attachments = message.attachments, !attachments.isEmpty {
+                ForEach(attachments, id: \.attachmentId) { attachment in
+                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                }
+            }
+            
+            // Текст сообщения
+            if let content = message.content, !content.isEmpty {
+                Text(content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(18)
+            }
+        }
+    }
+    
+    // MARK: - Реакции (без изменений)
     private var reactionRow: some View {
         HStack(spacing: 4) {
             ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
@@ -6962,7 +7116,9 @@ struct MessageBubbleView: View {
     }
 }
 
-// MARK: - Пикер реакций
+
+
+// MARK: - ReactionPickerView (остаётся без изменений)
 struct ReactionPickerView: View {
     let emojis: [String]
     let currentReaction: String?

@@ -12,6 +12,7 @@ class LocalDatabase {
     private let contactsTable = Table("contacts")
     private let contactRequestsTable = Table("contact_requests")
     private let reactionsTable = Table("reactions")
+    private let attachmentsTable = Table("attachments")  // новая
     
     // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
@@ -23,15 +24,8 @@ class LocalDatabase {
     private let chatIsPublic = Expression<Bool>("is_public")
     private let chatMaxMembers = Expression<Int>("max_members")
     private let chatCreatedAt = Expression<Date>("created_at")
-//    private let chatUpdatedAt = Expression<Date?>("updated_at")
-//    private let chatLastActivityAt = Expression<Date?>("last_activity_at")
-//    private let chatVisibility = Expression<String>("visibility")
-//    private let chatJoinPolicy = Expression<String>("join_policy")
     private let chatLastMessage = Expression<String?>("last_message")
     private let chatMembersCount = Expression<Int>("members_count")
-    
-    // Для last_message_preview храним JSON
-    private let chatLastMessagePreviewJSON = Expression<String?>("last_message_preview_json")
     
     // === Messages columns ===
     private let msgId = Expression<Int64>("message_id")
@@ -46,16 +40,14 @@ class LocalDatabase {
     private let msgIsEdited = Expression<Bool>("is_edited")
     private let msgDeliveredAt = Expression<Date?>("delivered_at")
     private let msgReadAt = Expression<Date?>("read_at")
-
     
     // === Contacts columns ===
-    private let contactIdCol = Expression<UUID>("id")
     private let contactUserId = Expression<UUID>("user_id")
     private let contactContactUserId = Expression<UUID>("contact_user_id")
     private let contactStatus = Expression<String>("status")
     private let contactCreatedAt = Expression<Date>("created_at")
     private let contactUpdatedAt = Expression<Date>("updated_at")
-    private let contactUserJSON = Expression<String?>("contact_user_json") // запасной
+    private let contactUserJSON = Expression<String?>("contact_user_json")
     
     // === Contact Requests columns ===
     private let reqId = Expression<UUID>("id")
@@ -65,10 +57,20 @@ class LocalDatabase {
     private let reqStatus = Expression<String>("status")
     private let reqCreatedAt = Expression<Date>("created_at")
     
+    // === Reactions columns ===
     private let reactionMessageId = Expression<Int64>("message_id")
-        private let reactionUserId = Expression<UUID>("user_id")
-        private let reactionEmoji = Expression<String>("emoji")
-        private let reactionCreatedAt = Expression<Date>("created_at")
+    private let reactionUserId = Expression<UUID>("user_id")
+    private let reactionEmoji = Expression<String>("emoji")
+    private let reactionCreatedAt = Expression<Date>("created_at")
+    
+    // === Attachments columns ===
+    private let attId = Expression<UUID>("attachment_id")
+    private let attMessageId = Expression<Int64>("message_id")
+    private let attFileName = Expression<String>("file_name")
+    private let attFileSize = Expression<Int?>("file_size")
+    private let attMimeType = Expression<String?>("mime_type")
+    private let attStoragePath = Expression<String>("storage_path")
+    private let attUploadedAt = Expression<Date?>("uploaded_at")
     
     private init() {
         setupDatabase()
@@ -91,8 +93,7 @@ class LocalDatabase {
                 t.column(chatMaxMembers)
                 t.column(chatCreatedAt)
                 t.column(chatMembersCount)
-                t.column(chatLastMessage)  // новая колонка
-                // остальные (updatedAt, lastActivityAt, visibility, joinPolicy) удалить
+                t.column(chatLastMessage)
             })
             
             try db?.run(messagesTable.create(ifNotExists: true) { t in
@@ -111,15 +112,14 @@ class LocalDatabase {
             })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
-                        t.column(contactUserId)
-                        t.column(contactContactUserId)
-                        t.column(contactStatus)
-                        t.column(contactCreatedAt)
-                        t.column(contactUpdatedAt)
-                        t.column(contactUserJSON)
-                        t.primaryKey(contactUserId, contactContactUserId)
-                    })
-                    
+                t.column(contactUserId)
+                t.column(contactContactUserId)
+                t.column(contactStatus)
+                t.column(contactCreatedAt)
+                t.column(contactUpdatedAt)
+                t.column(contactUserJSON)
+                t.primaryKey(contactUserId, contactContactUserId)
+            })
             
             try db?.run(contactRequestsTable.create(ifNotExists: true) { t in
                 t.column(reqId, primaryKey: true)
@@ -129,15 +129,27 @@ class LocalDatabase {
                 t.column(reqStatus)
                 t.column(reqCreatedAt)
             })
-            try db?.run(reactionsTable.create(ifNotExists: true) { t in
-                        t.column(reactionMessageId)
-                        t.column(reactionUserId)
-                        t.column(reactionEmoji)
-                        t.column(reactionCreatedAt)
-                        t.primaryKey(reactionMessageId, reactionUserId, reactionEmoji)
-                    })
             
-            print("✅ Tables created")
+            try db?.run(reactionsTable.create(ifNotExists: true) { t in
+                t.column(reactionMessageId)
+                t.column(reactionUserId)
+                t.column(reactionEmoji)
+                t.column(reactionCreatedAt)
+                t.primaryKey(reactionMessageId, reactionUserId, reactionEmoji)
+            })
+            
+            try db?.run(attachmentsTable.create(ifNotExists: true) { t in
+                t.column(attId, primaryKey: true)
+                t.column(attMessageId)
+                t.column(attFileName)
+                t.column(attFileSize)
+                t.column(attMimeType)
+                t.column(attStoragePath)
+                t.column(attUploadedAt)
+                t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
+            })
+            
+            print("✅ All tables created")
         } catch {
             print("❌ DB setup error: \(error)")
         }
@@ -217,15 +229,21 @@ class LocalDatabase {
     }
     
     // MARK: - Message operations
-    
     func updateMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
             let query = messagesTable.filter(msgId == message.messageId)
+            let count = try db.scalar(query.count)
+            guard count > 0 else {
+                print("⚠️ updateMessage: message with id \(message.messageId) not found, skipping")
+                return false
+            }
             try db.run(query.update(
                 msgContent <- message.content,
                 msgUpdatedAt <- message.updatedAt,
-                msgIsEdited <- message.isEdited
+                msgIsEdited <- message.isEdited,
+                msgDeliveredAt <- message.deliveredAt,
+                msgReadAt <- message.readAt
             ))
             return true
         } catch {
@@ -233,25 +251,14 @@ class LocalDatabase {
             return false
         }
     }
-    func updateMessageStatus(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
-        guard let db = db else { return false }
-        let query = messagesTable.filter(msgId == messageId)
-        do {
-            try db.run(query.update(
-                msgDeliveredAt <- deliveredAt,
-                msgReadAt <- readAt
-            ))
-            return true
-        } catch {
-            print("❌ updateMessageStatus error: \(error)")
-            return false
-        }
-    }
 
-    // Обновить saveMessage, чтобы сохранял эти поля (если они уже есть в message)
     func saveMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
+            let existing = messagesTable.filter(msgId == message.messageId)
+            if try db.scalar(existing.count) > 0 {
+                return updateMessage(message)
+            }
             try db.run(messagesTable.insert(
                 msgId <- message.messageId,
                 msgChatId <- message.chatId,
@@ -272,8 +279,22 @@ class LocalDatabase {
             return false
         }
     }
-
-    // Обновить getMessages, чтобы загружал эти поля
+    
+    func updateMessageStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
+        guard let db = db else { return false }
+        let query = messagesTable.filter(msgId == messageId)
+        do {
+            try db.run(query.update(
+                msgDeliveredAt <- deliveredAt,
+                msgReadAt <- readAt
+            ))
+            return true
+        } catch {
+            print("❌ updateMessageStatusLocally error: \(error)")
+            return false
+        }
+    }
+    
     func getMessages(for chatId: UUID) -> [Message] {
         guard let db = db else { return [] }
         let query = messagesTable.filter(msgChatId == chatId).order(msgCreatedAt.asc)
@@ -291,8 +312,8 @@ class LocalDatabase {
                     updatedAt: row[msgUpdatedAt],
                     deletedAt: row[msgDeletedAt],
                     isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],   // ← должно быть
-                    readAt: row[msgReadAt]              // ← должно быть
+                    deliveredAt: row[msgDeliveredAt],
+                    readAt: row[msgReadAt]
                 )
                 messages.append(msg)
             }
@@ -302,7 +323,6 @@ class LocalDatabase {
             return []
         }
     }
-    
     
     func deleteMessages(for chatId: UUID) -> Bool {
         guard let db = db else { return false }
@@ -325,9 +345,61 @@ class LocalDatabase {
         }
     }
     
-    func updateMessageStatus(messageId: Int64, isSent: Bool, isDelivered: Bool) -> Bool {
-        // не храним статусы в локальной БД – можно игнорировать
-        return true
+    // MARK: - Attachments
+    func saveAttachments(_ attachments: [Attachment], for messageId: Int64) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
+            for att in attachments {
+                try db.run(attachmentsTable.insert(
+                    attId <- att.attachmentId,
+                    attMessageId <- messageId,
+                    attFileName <- att.fileName,
+                    attFileSize <- att.fileSize,
+                    attMimeType <- att.mimeType,
+                    attStoragePath <- att.storagePath,
+                    attUploadedAt <- att.uploadedAt
+                ))
+            }
+            return true
+        } catch {
+            print("❌ saveAttachments error: \(error)")
+            return false
+        }
+    }
+    
+    func getAttachments(for messageId: Int64) -> [Attachment] {
+        guard let db = db else { return [] }
+        let query = attachmentsTable.filter(attMessageId == messageId)
+        do {
+            var attachments: [Attachment] = []
+            for row in try db.prepare(query) {
+                let att = Attachment(
+                    attachmentId: row[attId],
+                    fileName: row[attFileName],
+                    fileSize: row[attFileSize],
+                    mimeType: row[attMimeType],
+                    storagePath: row[attStoragePath],
+                    uploadedAt: row[attUploadedAt]
+                )
+                attachments.append(att)
+            }
+            return attachments
+        } catch {
+            print("❌ getAttachments error: \(error)")
+            return []
+        }
+    }
+    
+    func deleteAttachments(for messageId: Int64) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
+            return true
+        } catch {
+            print("❌ deleteAttachments error: \(error)")
+            return false
+        }
     }
     
     // MARK: - Contacts
@@ -470,39 +542,7 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Clear
-    func clearAllData() {
-        guard let db = db else { return }
-        do {
-            try db.run(chatsTable.delete())
-            try db.run(messagesTable.delete())
-            try db.run(contactsTable.delete())
-            try db.run(contactRequestsTable.delete())
-            try db.run(reactionsTable.delete())
-        } catch {
-            print("❌ clearAllData error: \(error)")
-        }
-    }
-    
-    func clearMessages(for chatId: UUID) {
-        guard let db = db else { return }
-        do {
-            try db.run(messagesTable.filter(msgChatId == chatId).delete())
-        } catch {
-            print("❌ clearMessages error: \(error)")
-        }
-    }
-    
-    func recreateTables() {
-        db = nil
-        let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-        let dbPath = "\(path)/messenger.sqlite3"
-        try? FileManager.default.removeItem(atPath: dbPath)
-        setupDatabase()
-    }
-    // MARK: - Reaction operations
-    // MARK: - Reaction operations
-
+    // MARK: - Reactions
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
@@ -512,7 +552,6 @@ class LocalDatabase {
                 reactionEmoji == reaction.emoji
             )
             if try db.scalar(query.count) > 0 {
-                // Обновляем created_at, если нужно
                 try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
                 return true
             }
@@ -524,13 +563,13 @@ class LocalDatabase {
             ))
             return true
         } catch {
-            if (error as? NSError)?.code != 19 { // UNIQUE constraint
+            if (error as? NSError)?.code != 19 {
                 print("❌ saveReaction error: \(error)")
             }
             return false
         }
     }
-
+    
     func getReactions(for messageId: Int64) -> [Reaction] {
         guard let db = db else { return [] }
         let query = reactionsTable.filter(reactionMessageId == messageId)
@@ -551,7 +590,7 @@ class LocalDatabase {
             return []
         }
     }
-
+    
     func deleteReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
         guard let db = db else { return false }
         let query = reactionsTable.filter(
@@ -567,30 +606,42 @@ class LocalDatabase {
             return false
         }
     }
-
-    func removeReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
-        guard let db = db else { return false }
-        let query = reactionsTable.filter(
-            reactionMessageId == messageId &&
-            reactionUserId == userId &&
-            reactionEmoji == emoji
-        )
-        do {
-            try db.run(query.delete())
-            return true
-        } catch {
-            print("❌ removeReaction error: \(error)")
-            return false
-        }
-    }
-
-
+    
     func deleteAllReactions() {
         guard let db = db else { return }
+        do { try db.run(reactionsTable.delete()) } catch { print(error) }
+    }
+    
+    // MARK: - Clear
+    func clearAllData() {
+        guard let db = db else { return }
         do {
+            try db.run(chatsTable.delete())
+            try db.run(messagesTable.delete())
+            try db.run(contactsTable.delete())
+            try db.run(contactRequestsTable.delete())
             try db.run(reactionsTable.delete())
+            try db.run(attachmentsTable.delete())
         } catch {
-            print("❌ deleteAllReactions error: \(error)")
+            print("❌ clearAllData error: \(error)")
         }
+    }
+    
+    func clearMessages(for chatId: UUID) {
+        guard let db = db else { return }
+        do {
+            try db.run(messagesTable.filter(msgChatId == chatId).delete())
+            try db.run(attachmentsTable.delete()) // вложения тоже удалим
+        } catch {
+            print("❌ clearMessages error: \(error)")
+        }
+    }
+    
+    func recreateTables() {
+        db = nil
+        let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+        let dbPath = "\(path)/messenger.sqlite3"
+        try? FileManager.default.removeItem(atPath: dbPath)
+        setupDatabase()
     }
 }
