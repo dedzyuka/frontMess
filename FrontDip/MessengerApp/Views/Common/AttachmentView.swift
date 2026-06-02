@@ -1,5 +1,6 @@
 import SwiftUI
-import PhotosUI
+import AVKit
+import Photos
 
 struct AttachmentView: View {
     let attachment: Attachment
@@ -11,34 +12,17 @@ struct AttachmentView: View {
     @State private var isDownloading = false
     @State private var tempFileURL: URL?
     @State private var showImageViewer = false
+    @State private var showVideoPlayer = false
     @State private var showSaveSuccess = false
+    @State private var showSaveError = false
+    @State private var saveErrorMessage = ""
     
     var body: some View {
         Group {
             if attachment.mimeType?.hasPrefix("image/") == true {
-                if let url = imageURL {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .empty:
-                            ProgressView().frame(width: 200, height: 200)
-                        case .success(let image):
-                            image.resizable().scaledToFit().frame(maxWidth: 200, maxHeight: 200).cornerRadius(12)
-                                .onTapGesture {
-                                    showImageViewer = true
-                                }
-                        case .failure:
-                            fallbackIcon(systemName: "photo")
-                        @unknown default:
-                            EmptyView()
-                        }
-                    }
-                    .fullScreenCover(isPresented: $showImageViewer) {
-                        ZoomableImageView(imageURL: url)
-                    }
-                } else {
-                    ProgressView().frame(width: 200, height: 200)
-                        .onAppear { loadImageURL() }
-                }
+                imageContent
+            } else if attachment.mimeType?.hasPrefix("video/") == true {
+                videoContent
             } else {
                 fileContent
             }
@@ -48,17 +32,25 @@ struct AttachmentView: View {
                 Button("Сохранить в галерею") {
                     saveImageToGallery()
                 }
+            } else if attachment.mimeType?.hasPrefix("video/") == true {
+                Button("Сохранить видео") {
+                    saveVideoToFiles()
+                }
             } else {
                 Button("Сохранить") {
-                    if let url = tempFileURL {
-                        showShareSheet = true
-                    } else if fileData != nil {
-                        createTempFileAndShare()
-                    } else {
-                        Task { await downloadAndShare() }
-                    }
+                    saveFile()
                 }
             }
+        }
+        .alert("Сохранено", isPresented: $showSaveSuccess) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Изображение сохранено в галерею")
+        }
+        .alert("Ошибка", isPresented: $showSaveError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(saveErrorMessage)
         }
         .sheet(isPresented: $showShareSheet) {
             if let url = tempFileURL {
@@ -69,10 +61,55 @@ struct AttachmentView: View {
                     }
             }
         }
-        .alert("Сохранено", isPresented: $showSaveSuccess) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("Изображение сохранено в галерею")
+    }
+    
+    @ViewBuilder
+    private var imageContent: some View {
+        if let url = imageURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 200, maxHeight: 200)
+                        .cornerRadius(12)
+                        .onTapGesture {
+                            showImageViewer = true
+                        }
+                } else if phase.error != nil {
+                    fallbackIcon(systemName: "photo")
+                } else {
+                    ProgressView()
+                }
+            }
+            .fullScreenCover(isPresented: $showImageViewer) {
+                ZoomableImageView(imageURL: url)
+            }
+        } else {
+            ProgressView()
+                .onAppear {
+                    loadImageURL()
+                }
+        }
+    }
+    
+    @ViewBuilder
+    private var videoContent: some View {
+        if let url = imageURL {
+            VideoThumbnailView(url: url)
+                .frame(maxWidth: 200, maxHeight: 200)
+                .cornerRadius(12)
+                .onTapGesture {
+                    showVideoPlayer = true
+                }
+                .fullScreenCover(isPresented: $showVideoPlayer) {
+                    VideoPlayerView(url: url)
+                }
+        } else {
+            ProgressView()
+                .onAppear {
+                    loadImageURL()
+                }
         }
     }
     
@@ -90,7 +127,8 @@ struct AttachmentView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 if isDownloading {
-                    ProgressView().scaleEffect(0.8)
+                    ProgressView()
+                        .scaleEffect(0.8)
                 }
             }
             Spacer()
@@ -104,7 +142,9 @@ struct AttachmentView: View {
             if tempFileURL != nil {
                 showShareSheet = true
             } else if fileData == nil && !isDownloading {
-                Task { await downloadAndShare() }
+                Task {
+                    await downloadAndShare()
+                }
             } else if fileData != nil {
                 createTempFileAndShare()
             }
@@ -125,30 +165,77 @@ struct AttachmentView: View {
     
     private func loadImageURL() {
         let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
-        if let url = URL(string: urlString) { imageURL = url }
+        if let url = URL(string: urlString) {
+            imageURL = url
+        }
     }
     
     private func saveImageToGallery() {
-        guard let url = imageURL else { return }
+        guard let url = imageURL else {
+            saveErrorMessage = "Изображение не загружено"
+            showSaveError = true
+            return
+        }
+        
         Task {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
-                if let image = UIImage(data: data) {
+                guard let image = UIImage(data: data) else {
+                    throw NSError(domain: "ImageError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Не удалось создать изображение"])
+                }
+                
+                let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                guard status == .authorized else {
+                    throw NSError(domain: "PhotoLibrary", code: -3, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к галерее. Разрешите доступ в настройках."])
+                }
+                
+                await MainActor.run {
                     UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-                    await MainActor.run {
-                        showSaveSuccess = true
-                    }
+                    showSaveSuccess = true
                 }
             } catch {
-                print("Save image error: \(error)")
+                await MainActor.run {
+                    saveErrorMessage = error.localizedDescription
+                    showSaveError = true
+                }
+            }
+        }
+    }
+    
+    private func saveVideoToFiles() {
+        guard let url = imageURL else { return }
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileName = attachment.fileName
+        let destURL = tempDir.appendingPathComponent(fileName)
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                try data.write(to: destURL)
+                await MainActor.run {
+                    tempFileURL = destURL
+                    showShareSheet = true
+                }
+            } catch {
+                print("Save video error: \(error)")
+            }
+        }
+    }
+    
+    private func saveFile() {
+        if let url = tempFileURL {
+            showShareSheet = true
+        } else if fileData != nil {
+            createTempFileAndShare()
+        } else {
+            Task {
+                await downloadAndShare()
             }
         }
     }
     
     private func downloadAndShare() async {
         isDownloading = true
-        let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
-        guard let url = URL(string: urlString) else { return }
+        guard let url = imageURL else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             await MainActor.run {
@@ -157,8 +244,9 @@ struct AttachmentView: View {
                 createTempFileAndShare()
             }
         } catch {
-            print("Download error: \(error)")
-            await MainActor.run { isDownloading = false }
+            await MainActor.run {
+                isDownloading = false
+            }
         }
     }
     
@@ -204,4 +292,43 @@ struct ActivityView: UIViewControllerRepresentable {
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+import SwiftUI
+import AVKit
+
+struct VideoThumbnailView: View {
+    let url: URL
+    @State private var thumbnail: UIImage?
+    
+    var body: some View {
+        Group {
+            if let thumbnail = thumbnail {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    Color.black
+                    Image(systemName: "play.circle.fill")
+                        .font(.largeTitle)
+                        .foregroundColor(.white)
+                        .shadow(radius: 2)
+                }
+            }
+        }
+        .onAppear {
+            generateThumbnail()
+        }
+    }
+    
+    private func generateThumbnail() {
+        let asset = AVAsset(url: url)
+        let imageGenerator = AVAssetImageGenerator(asset: asset)
+        imageGenerator.appliesPreferredTrackTransform = true
+        let time = CMTime(seconds: 1, preferredTimescale: 60)
+        if let cgImage = try? imageGenerator.copyCGImage(at: time, actualTime: nil) {
+            thumbnail = UIImage(cgImage: cgImage)
+        }
+    }
 }

@@ -26,6 +26,9 @@ struct ChatView: View {
     @State private var showDeleteConfirmation = false
     @State private var showReactionPicker = false
     @State private var reactionEmoji = ""
+    @State private var selectedVideoURL: URL?
+    @State private var showingMediaPicker = false
+
     
     init(chat: Chat) {
         self.chat = chat
@@ -161,13 +164,13 @@ struct ChatView: View {
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
             ActionSheet(title: Text("Вложение"), buttons: [
-                .default(Text("Фото или видео")) { showingImagePicker = true },
+                .default(Text("Фото или видео")) { showingMediaPicker = true },
                 .default(Text("Документ")) { showingDocumentPicker = true },
                 .cancel()
             ])
         }
-        .sheet(isPresented: $showingImagePicker) {
-            ImagePicker(selectedImage: $selectedImage)
+        .sheet(isPresented: $showingMediaPicker) {
+            MediaPicker(selectedImage: $selectedImage, selectedVideoURL: $selectedVideoURL)
         }
         .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker(selectedURL: $selectedDocumentURL)
@@ -201,6 +204,7 @@ struct ChatView: View {
         Task {
             isUploading = true
             var attachmentId: UUID? = nil
+            
             if let image = selectedImage {
                 do {
                     attachmentId = try await AttachmentUploader.shared.uploadImage(image)
@@ -211,6 +215,16 @@ struct ChatView: View {
                     return
                 }
                 await MainActor.run { selectedImage = nil }
+            } else if let videoURL = selectedVideoURL {
+                do {
+                    attachmentId = try await AttachmentUploader.shared.uploadFile(url: videoURL)
+                    print("✅ Video uploaded, attachmentId: \(attachmentId?.uuidString ?? "nil")")
+                } catch {
+                    print("❌ Upload failed: \(error)")
+                    isUploading = false
+                    return
+                }
+                await MainActor.run { selectedVideoURL = nil }
             } else if let url = selectedDocumentURL {
                 do {
                     attachmentId = try await AttachmentUploader.shared.uploadFile(url: url)
@@ -222,7 +236,7 @@ struct ChatView: View {
                 }
                 await MainActor.run { selectedDocumentURL = nil }
             }
-            
+            print("📤 Sending message with attachmentId: \(attachmentId?.uuidString ?? "nil"), text: '\(viewModel.newMessageText)'")
             await MainActor.run {
                 viewModel.sendMessage(attachmentId: attachmentId)
                 isUploading = false
