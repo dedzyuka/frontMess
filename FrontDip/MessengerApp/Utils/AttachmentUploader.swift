@@ -12,27 +12,25 @@ class AttachmentUploader {
     static let shared = AttachmentUploader()
     private let baseURL = AppConfig.baseURL
 
-    func uploadImage(_ image: UIImage) async throws -> UUID {
+    func uploadImage(_ image: UIImage) async throws -> (attachmentId: UUID, storagePath: String) {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
             throw UploadError.invalidImage
         }
         return try await upload(data: imageData, mimeType: "image/jpeg", fileName: "image.jpg")
     }
 
-    func uploadFile(url: URL) async throws -> UUID {
+    func uploadFile(url: URL) async throws -> (attachmentId: UUID, storagePath: String) {
         let data = try Data(contentsOf: url)
         let fileName = url.lastPathComponent
         let mimeType = guessMimeType(from: fileName)
         return try await upload(data: data, mimeType: mimeType, fileName: fileName)
     }
 
-    private func upload(data: Data, mimeType: String, fileName: String) async throws -> UUID {
+    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String) {
         guard let token = TokenManager.shared.accessToken else {
-            print("❌ Upload: no access token")
             throw UploadError.notAuthenticated
         }
-        print("✅ Upload: using token: \(token.prefix(20))...")
-
+        
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "\(baseURL)/upload/")!)
         request.httpMethod = "POST"
@@ -53,6 +51,7 @@ class AttachmentUploader {
             throw UploadError.networkError("Server error")
         }
 
+        // Парсим ответ, который может содержать только attachment_id
         struct Response: Decodable {
             let attachment_id: String
         }
@@ -60,16 +59,21 @@ class AttachmentUploader {
         guard let uuid = UUID(uuidString: decoded.attachment_id) else {
             throw UploadError.invalidResponse
         }
-        return uuid
+        
+        // Формируем storagePath сами
+        let ext = (fileName as NSString).pathExtension
+        let storagePath = "attachments/\(uuid.uuidString).\(ext)"
+        return (uuid, storagePath)
     }
 
-    private func guessMimeType(from fileName: String) -> String {
+    func guessMimeType(from fileName: String) -> String {
         let ext = (fileName as NSString).pathExtension.lowercased()
         switch ext {
         case "jpg", "jpeg": return "image/jpeg"
         case "png": return "image/png"
         case "gif": return "image/gif"
         case "mp4": return "video/mp4"
+        case "mov": return "video/quicktime"
         case "mp3": return "audio/mpeg"
         case "pdf": return "application/pdf"
         case "doc", "docx": return "application/msword"

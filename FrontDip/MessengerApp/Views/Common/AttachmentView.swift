@@ -45,7 +45,7 @@ struct AttachmentView: View {
         .alert("Сохранено", isPresented: $showSaveSuccess) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("Изображение сохранено в галерею")
+            Text("Сохранено")
         }
         .alert("Ошибка", isPresented: $showSaveError) {
             Button("OK", role: .cancel) { }
@@ -106,8 +106,9 @@ struct AttachmentView: View {
                     VideoPlayerView(url: url)
                 }
         } else {
-            ProgressView()
+            ProgressView().frame(width: 200, height: 200)
                 .onAppear {
+                    print("Video onAppear, storagePath=\(attachment.storagePath)")
                     loadImageURL()
                 }
         }
@@ -166,6 +167,7 @@ struct AttachmentView: View {
     private func loadImageURL() {
         let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
         if let url = URL(string: urlString) {
+            print("loadImageURL: \(urlString)")
             imageURL = url
         }
     }
@@ -293,6 +295,7 @@ struct ActivityView: UIViewControllerRepresentable {
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+
 
 import SwiftUI
 import AVKit

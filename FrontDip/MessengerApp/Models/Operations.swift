@@ -346,6 +346,37 @@ struct GraphQLQueries {
     }
     """
     
+    static let getMessage = """
+    query GetMessage($messageId: Int!, $chatId: String!) {
+        message {
+            getMessage(messageId: $messageId, chatId: $chatId) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                replyToId
+                createdAt
+                updatedAt
+                isEdited
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
+                reactions {
+                    messageId
+                    userId
+                    emoji
+                    createdAt
+                }
+            }
+        }
+    }
+    """
+    
 }
 
 struct UpdateMessageResponse: Decodable {
@@ -395,4 +426,11 @@ struct Attachment: Codable {
     let mimeType: String?
     let storagePath: String
     let uploadedAt: Date?   // добавьте это поле
+}
+
+struct GetMessageResponse: Decodable {
+    let message: GetMessageWrapper
+}
+struct GetMessageWrapper: Decodable {
+    let getMessage: Message
 }

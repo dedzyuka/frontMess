@@ -11,6 +11,7 @@ class ChatViewModel: ObservableObject {
     @Published var otherUser: User?
     @Published var isOtherUserOnline: Bool = false
     
+    
     let chat: Chat
     private let graphQL = GraphQLClient.shared
     private let database = LocalDatabase.shared
@@ -457,10 +458,10 @@ class ChatViewModel: ObservableObject {
     }
     
     // MARK: - Send message
-    func sendMessage(attachmentId: UUID? = nil) {
+    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil) async -> Bool {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty || attachmentId != nil else { return }
-        guard let currentUserId = currentUserId else { return }
+        guard !content.isEmpty || attachmentId != nil else { return false }
+        guard let currentUserId = currentUserId else { return false }
         
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         let tempMessage = Message(
@@ -470,47 +471,109 @@ class ChatViewModel: ObservableObject {
             isEdited: false, deliveredAt: nil, readAt: nil
         )
         
-        DispatchQueue.main.async {
-            self.messages.append(tempMessage)
-            self.newMessageText = ""
-            self.objectWillChange.send()
+        // Временное вложение, если есть
+        var localAttachment: Attachment? = nil
+        if let aid = attachmentId, let fname = fileName, let storage = storagePath {
+            localAttachment = Attachment(
+                attachmentId: aid,
+                fileName: fname,
+                fileSize: fileSize,
+                mimeType: mimeType,
+                storagePath: storage,
+                uploadedAt: Date()
+            )
+            var msgWithAtt = tempMessage
+            msgWithAtt.attachments = [localAttachment!]
+            await MainActor.run {
+                self.messages.append(msgWithAtt)
+                self.newMessageText = ""
+                self.objectWillChange.send()
+            }
+        } else {
+            await MainActor.run {
+                self.messages.append(tempMessage)
+                self.newMessageText = ""
+                self.objectWillChange.send()
+            }
         }
         
-        Task {
-            do {
-                var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
-                if let aid = attachmentId {
-                    variables["attachmentId"] = aid.uuidString
-                }
-                let response: SendMessageResponse = try await graphQL.perform(
-                    query: GraphQLQueries.sendMessage,
-                    variables: variables,
-                    responseType: SendMessageResponse.self,
-                    authToken: TokenManager.shared.accessToken
-                )
-                let newMsg = response.message.sendMessage
-                await MainActor.run {
-                    if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
-                        self.messages[index] = newMsg
-                    } else {
-                        self.messages.append(newMsg)
+        do {
+            var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
+            if let aid = attachmentId {
+                variables["attachmentId"] = aid.uuidString
+            }
+            let response: SendMessageResponse = try await graphQL.perform(
+                query: GraphQLQueries.sendMessage,
+                variables: variables,
+                responseType: SendMessageResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let newMsg = response.message.sendMessage
+            let realMessageId = newMsg.messageId
+            
+            // Заменяем временное сообщение на реальное
+            await MainActor.run {
+                if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
+                    var realMsg = newMsg
+                    if let localAtt = localAttachment {
+                        realMsg.attachments = [localAtt]
                     }
-                    self.messages.sort(by: { $0.createdAt < $1.createdAt })
-                    _ = self.database.saveMessage(newMsg)
-                    if let attachments = newMsg.attachments, !attachments.isEmpty {
-                        _ = self.database.saveAttachments(attachments, for: newMsg.messageId)
+                    self.messages[index] = realMsg
+                    _ = self.database.saveMessage(realMsg)
+                    if let attachments = realMsg.attachments, !attachments.isEmpty {
+                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId)
                     }
-                    self.objectWillChange.send()
-                }
-            } catch {
-                await MainActor.run {
-                    self.messages.removeAll(where: { $0.messageId == tempId })
-                    NotificationService.shared.showError("Не удалось отправить сообщение")
                     self.objectWillChange.send()
                 }
             }
+            
+            // Через 1.5 секунды запрашиваем полное сообщение с сервера
+            Task {
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 секунды
+                if let fullMsg = await self.fetchMessage(byId: realMessageId) {
+                    await MainActor.run {
+                        if let index = self.messages.firstIndex(where: { $0.messageId == realMessageId }) {
+                            self.messages[index] = fullMsg
+                            _ = self.database.saveMessage(fullMsg)
+                            if let attachments = fullMsg.attachments, !attachments.isEmpty {
+                                _ = self.database.saveAttachments(attachments, for: fullMsg.messageId)
+                            }
+                            self.objectWillChange.send()
+                        }
+                    }
+                }
+            }
+            
+            return true
+        } catch {
+            await MainActor.run {
+                self.messages.removeAll(where: { $0.messageId == tempId })
+                NotificationService.shared.showError("Не удалось отправить сообщение")
+                self.objectWillChange.send()
+            }
+            return false
         }
     }
+
+    // Вспомогательный метод (добавить в конец класса)
+    private func fetchMessage(byId messageId: Int64) async -> Message? {
+        let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString]
+        do {
+            let response: GetMessageResponse = try await graphQL.perform(
+                query: GraphQLQueries.getMessage,
+                variables: variables,
+                responseType: GetMessageResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.message.getMessage
+        } catch {
+            print("Failed to fetch message: \(error)")
+            return nil
+        }
+    }
+
+    // Вспомогательный метод для получения полного сообщения
+    
     
     // MARK: - Edit / Delete
     func editMessage(_ message: Message, newContent: String) async -> Bool {
