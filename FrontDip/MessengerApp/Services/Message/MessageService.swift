@@ -74,7 +74,6 @@ class MessageService: ObservableObject {
             let messageId = message.messageId
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
-            // Сохраняем вложения, если есть
             if let attachments = message.attachments, !attachments.isEmpty {
                 _ = database.saveAttachments(attachments, for: messageId)
             }
@@ -92,8 +91,10 @@ class MessageService: ObservableObject {
         guard pendingMessages[messageId] != nil else { return }
         pendingMessages.removeValue(forKey: messageId)
         stopRetryTimer(for: messageId)
-        // Обновляем статус доставки в БД (можно использовать updateMessageStatusLocally)
-        _ = database.updateMessageStatusLocally(messageId: messageId, deliveredAt: Date(), readAt: nil)
+        // Сохраняем статус доставки для текущего пользователя
+        if let currentUserId = AppState.shared.currentUser?.userId {
+            _ = database.saveMessageStatus(messageId: messageId, userId: currentUserId, deliveredAt: Date(), readAt: nil)
+        }
     }
     
     func getMessages(for chatId: UUID) -> [Message] {

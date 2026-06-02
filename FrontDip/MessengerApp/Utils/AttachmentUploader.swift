@@ -32,7 +32,6 @@ class AttachmentUploader {
             throw UploadError.notAuthenticated
         }
         print("✅ Upload: using token: \(token.prefix(20))...")
-        
 
         let boundary = UUID().uuidString
         var request = URLRequest(url: URL(string: "\(baseURL)/upload/")!)
@@ -73,6 +72,10 @@ class AttachmentUploader {
         case "mp4": return "video/mp4"
         case "mp3": return "audio/mpeg"
         case "pdf": return "application/pdf"
+        case "doc", "docx": return "application/msword"
+        case "xls", "xlsx": return "application/vnd.ms-excel"
+        case "zip", "rar": return "application/zip"
+        case "txt": return "text/plain"
         default: return "application/octet-stream"
         }
     }

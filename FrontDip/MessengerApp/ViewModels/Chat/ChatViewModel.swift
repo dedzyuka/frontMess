@@ -21,6 +21,7 @@ class ChatViewModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "last_sync_\(chat.id.uuidString)") }
     }
     private var currentUserId: UUID? { AppState.shared.currentUser?.userId }
+    private var chatMemberIds: [UUID] = []  // ID участников чата
     
     init(chat: Chat) {
         self.chat = chat
@@ -29,6 +30,7 @@ class ChatViewModel: ObservableObject {
         loadMessages()
         Task { await loadChatTitle() }
         Task { await loadOtherUserIfNeeded() }
+        loadChatMemberIds()
     }
     
     private func setupNotifications() {
@@ -90,10 +92,11 @@ class ChatViewModel: ObservableObject {
                       let info = notification.object as? [String: Any],
                       let messageId = info["messageId"] as? Int64,
                       let chatId = info["chatId"] as? UUID,
+                      let userId = info["userId"] as? UUID,
                       chatId == self.chat.id else { return }
                 let deliveredAt = info["deliveredAt"] as? Date
                 let readAt = info["readAt"] as? Date
-                self.updateStatusLocally(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
+                self.updateStatusLocally(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt, userId: userId)
             }
             .store(in: &cancellables)
         
@@ -112,10 +115,10 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
     }
     
-    // MARK: - Loading messages (cached then network)
+    // MARK: - Загрузка сообщений (кэш + сеть)
     func loadMessages() {
         Task {
-            // 1. Сначала загружаем из БД (кэш) и показываем
+            // 1. Загружаем кэш из БД
             let cached = await loadMessagesFromDatabase()
             await MainActor.run {
                 self.messages = cached
@@ -133,6 +136,7 @@ class ChatViewModel: ObservableObject {
                         self.saveMessagesToDatabase(merged)
                         self.objectWillChange.send()
                         self.markVisibleMessagesAsRead()
+                        self.updateSentMessagesStatuses()  // обновим статусы отправленных сообщений
                     }
                     lastSyncDate = Date()
                 }
@@ -145,10 +149,27 @@ class ChatViewModel: ObservableObject {
     private func loadMessagesFromDatabase() async -> [Message] {
         let dbMessages = database.getMessages(for: chat.id)
         var result: [Message] = []
+        var reactions: [Int64: [Reaction]] = [:]
         for var msg in dbMessages {
             let attachments = database.getAttachments(for: msg.messageId)
             msg.attachments = attachments
+            let msgReactions = database.getReactions(for: msg.messageId)
+            msg.reactions = msgReactions
+            if !msgReactions.isEmpty {
+                reactions[msg.messageId] = msgReactions
+            }
+            // Статусы: для чужих сообщений – мой статус
+            if let currentId = currentUserId, msg.senderId != currentId {
+                if let (deliveredAt, readAt) = database.getMessageStatus(for: msg.messageId, userId: currentId) {
+                    msg.deliveredAt = deliveredAt
+                    msg.readAt = readAt
+                }
+            }
+            // для своих сообщений readAt пока не трогаем – обновим после загрузки участников
             result.append(msg)
+        }
+        await MainActor.run {
+            self.reactionsDict = reactions
         }
         return result
     }
@@ -162,10 +183,14 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
-        // Сохраняем вложения в БД
         for msg in messages {
             if let attachments = msg.attachments, !attachments.isEmpty {
                 _ = database.saveAttachments(attachments, for: msg.messageId)
+            }
+            if let reactions = msg.reactions {
+                for reaction in reactions {
+                    _ = database.saveReaction(reaction)
+                }
             }
         }
         return messages
@@ -185,6 +210,53 @@ class ChatViewModel: ObservableObject {
             if let attachments = msg.attachments, !attachments.isEmpty {
                 _ = database.saveAttachments(attachments, for: msg.messageId)
             }
+            if let reactions = msg.reactions {
+                for reaction in reactions {
+                    _ = database.saveReaction(reaction)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Участники чата и статусы отправленных сообщений
+    private func loadChatMemberIds() {
+        Task {
+            let ids = await getChatMemberIds()
+            await MainActor.run {
+                self.chatMemberIds = ids
+                self.updateSentMessagesStatuses()
+            }
+        }
+    }
+    
+    private func updateSentMessagesStatuses() {
+        guard let currentId = currentUserId, !chatMemberIds.isEmpty else { return }
+        let otherIds = chatMemberIds.filter { $0 != currentId }
+        guard let otherId = otherIds.first else { return }
+        
+        for (index, var msg) in messages.enumerated() where msg.senderId == currentId && msg.readAt == nil {
+            if let (_, readAt) = database.getMessageStatus(for: msg.messageId, userId: otherId), readAt != nil {
+                msg.readAt = readAt
+                messages[index] = msg
+                print("✅ Updated sent message status for msg \(msg.messageId): readAt=\(readAt!)")
+            }
+        }
+        objectWillChange.send()
+    }
+    
+    private func getChatMemberIds() async -> [UUID] {
+        let variables = ["chatId": chat.id.uuidString]
+        do {
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
+                variables: variables,
+                responseType: ChatMemberIdsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.map { $0.userId }
+        } catch {
+            print("Failed to load chat member ids: \(error)")
+            return []
         }
     }
     
@@ -223,17 +295,25 @@ class ChatViewModel: ObservableObject {
     }
     
     // MARK: - Status update from WebSocket
-    func updateStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) {
+    func updateStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?, userId: UUID) {
+        print("💾 Saving status for msg \(messageId): delivered=\(deliveredAt != nil), read=\(readAt != nil), userId=\(userId)")
+        _ = database.saveMessageStatus(messageId: messageId, userId: userId, deliveredAt: deliveredAt, readAt: readAt)
+        
         DispatchQueue.main.async {
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
-                if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
-                if let readAt = readAt { msg.readAt = readAt }
+                if userId == self.currentUserId {
+                    // Чужое сообщение: статус текущего пользователя
+                    if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
+                    if let readAt = readAt { msg.readAt = readAt }
+                } else {
+                    // Моё сообщение: статус получателя – показываем две галочки
+                    if let readAt = readAt, readAt != nil {
+                        msg.readAt = readAt
+                    }
+                }
                 self.messages[index] = msg
-                _ = self.database.updateMessageStatusLocally(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
                 self.objectWillChange.send()
-            } else {
-                _ = self.database.updateMessageStatusLocally(messageId: messageId, deliveredAt: deliveredAt, readAt: readAt)
             }
         }
     }
@@ -531,22 +611,6 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    private func getChatMemberIds() async -> [UUID] {
-        let variables = ["chatId": chat.id.uuidString]
-        do {
-            let response: ChatMemberIdsResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMemberIds,
-                variables: variables,
-                responseType: ChatMemberIdsResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            return response.chat.members.map { $0.userId }
-        } catch {
-            print("Failed to load chat member ids: \(error)")
-            return []
-        }
-    }
-    
     // MARK: - Local message updates
     private func updateMessageLocally(messageId: Int64, newContent: String, isEdited: Bool) {
         DispatchQueue.main.async {
@@ -581,6 +645,11 @@ class ChatViewModel: ObservableObject {
                 if let attachments = message.attachments, !attachments.isEmpty {
                     _ = self.database.saveAttachments(attachments, for: message.messageId)
                 }
+                if let reactions = message.reactions {
+                    for reaction in reactions {
+                        _ = self.database.saveReaction(reaction)
+                    }
+                }
                 self.objectWillChange.send()
             }
         }
@@ -588,10 +657,8 @@ class ChatViewModel: ObservableObject {
     
     private func sendDeliveredIfNeeded(for message: Message) {
         guard message.senderId != currentUserId else { return }
-        // Отправляем ack через WebSocket (реализовано в WebSocketService)
         WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
     }
 }
 
-// MARK: - Empty response type
 private struct EmptyResponse: Decodable {}

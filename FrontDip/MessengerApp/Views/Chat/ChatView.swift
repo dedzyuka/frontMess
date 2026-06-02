@@ -212,8 +212,17 @@ struct ChatView: View {
                 }
                 await MainActor.run { selectedImage = nil }
             } else if let url = selectedDocumentURL {
-                // аналогично
+                do {
+                    attachmentId = try await AttachmentUploader.shared.uploadFile(url: url)
+                    print("✅ File uploaded, attachmentId: \(attachmentId?.uuidString ?? "nil")")
+                } catch {
+                    print("❌ Upload failed: \(error)")
+                    isUploading = false
+                    return
+                }
+                await MainActor.run { selectedDocumentURL = nil }
             }
+            
             await MainActor.run {
                 viewModel.sendMessage(attachmentId: attachmentId)
                 isUploading = false

@@ -12,7 +12,8 @@ class LocalDatabase {
     private let contactsTable = Table("contacts")
     private let contactRequestsTable = Table("contact_requests")
     private let reactionsTable = Table("reactions")
-    private let attachmentsTable = Table("attachments")  // новая
+    private let attachmentsTable = Table("attachments")
+    private let messageStatusesTable = Table("message_statuses")  // новая
     
     // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
@@ -71,6 +72,13 @@ class LocalDatabase {
     private let attMimeType = Expression<String?>("mime_type")
     private let attStoragePath = Expression<String>("storage_path")
     private let attUploadedAt = Expression<Date?>("uploaded_at")
+    
+    // === Message Statuses columns ===
+    private let msMessageId = Expression<Int64>("message_id")
+    private let msUserId = Expression<UUID>("user_id")
+    private let msDeliveredAt = Expression<Date?>("delivered_at")
+    private let msReadAt = Expression<Date?>("read_at")
+    private let msCreatedAt = Expression<Date>("created_at")
     
     private init() {
         setupDatabase()
@@ -147,6 +155,16 @@ class LocalDatabase {
                 t.column(attStoragePath)
                 t.column(attUploadedAt)
                 t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
+            })
+            
+            try db?.run(messageStatusesTable.create(ifNotExists: true) { t in
+                t.column(msMessageId)
+                t.column(msUserId)
+                t.column(msDeliveredAt)
+                t.column(msReadAt)
+                t.column(msCreatedAt)
+                t.primaryKey(msMessageId, msUserId)
+                t.foreignKey(msMessageId, references: messagesTable, msgId, delete: .cascade)
             })
             
             print("✅ All tables created")
@@ -229,29 +247,6 @@ class LocalDatabase {
     }
     
     // MARK: - Message operations
-    func updateMessage(_ message: Message) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let query = messagesTable.filter(msgId == message.messageId)
-            let count = try db.scalar(query.count)
-            guard count > 0 else {
-                print("⚠️ updateMessage: message with id \(message.messageId) not found, skipping")
-                return false
-            }
-            try db.run(query.update(
-                msgContent <- message.content,
-                msgUpdatedAt <- message.updatedAt,
-                msgIsEdited <- message.isEdited,
-                msgDeliveredAt <- message.deliveredAt,
-                msgReadAt <- message.readAt
-            ))
-            return true
-        } catch {
-            print("❌ updateMessage error: \(error)")
-            return false
-        }
-    }
-
     func saveMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
@@ -280,17 +275,25 @@ class LocalDatabase {
         }
     }
     
-    func updateMessageStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
+    func updateMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
-        let query = messagesTable.filter(msgId == messageId)
         do {
+            let query = messagesTable.filter(msgId == message.messageId)
+            let count = try db.scalar(query.count)
+            guard count > 0 else {
+                print("⚠️ updateMessage: message with id \(message.messageId) not found")
+                return false
+            }
             try db.run(query.update(
-                msgDeliveredAt <- deliveredAt,
-                msgReadAt <- readAt
+                msgContent <- message.content,
+                msgUpdatedAt <- message.updatedAt,
+                msgIsEdited <- message.isEdited,
+                msgDeliveredAt <- message.deliveredAt,
+                msgReadAt <- message.readAt
             ))
             return true
         } catch {
-            print("❌ updateMessageStatusLocally error: \(error)")
+            print("❌ updateMessage error: \(error)")
             return false
         }
     }
@@ -343,6 +346,46 @@ class LocalDatabase {
         } catch {
             return false
         }
+    }
+    
+    // MARK: - Message Statuses
+    func saveMessageStatus(messageId: Int64, userId: UUID, deliveredAt: Date?, readAt: Date?) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let existing = messageStatusesTable.filter(msMessageId == messageId && msUserId == userId)
+            let count = try db.scalar(existing.count)
+            if count > 0 {
+                try db.run(existing.update(
+                    msDeliveredAt <- deliveredAt,
+                    msReadAt <- readAt
+                ))
+            } else {
+                try db.run(messageStatusesTable.insert(
+                    msMessageId <- messageId,
+                    msUserId <- userId,
+                    msDeliveredAt <- deliveredAt,
+                    msReadAt <- readAt,
+                    msCreatedAt <- Date()
+                ))
+            }
+            return true
+        } catch {
+            print("❌ saveMessageStatus error: \(error)")
+            return false
+        }
+    }
+    
+    func getMessageStatus(for messageId: Int64, userId: UUID) -> (deliveredAt: Date?, readAt: Date?)? {
+        guard let db = db else { return nil }
+        let query = messageStatusesTable.filter(msMessageId == messageId && msUserId == userId)
+        do {
+            if let row = try db.pluck(query) {
+                return (row[msDeliveredAt], row[msReadAt])
+            }
+        } catch {
+            print("❌ getMessageStatus error: \(error)")
+        }
+        return nil
     }
     
     // MARK: - Attachments
@@ -400,6 +443,76 @@ class LocalDatabase {
             print("❌ deleteAttachments error: \(error)")
             return false
         }
+    }
+    
+    // MARK: - Reactions
+    func saveReaction(_ reaction: Reaction) -> Bool {
+        guard let db = db else { return false }
+        do {
+            let query = reactionsTable.filter(
+                reactionMessageId == reaction.messageId &&
+                reactionUserId == reaction.userId &&
+                reactionEmoji == reaction.emoji
+            )
+            if try db.scalar(query.count) > 0 {
+                try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
+                print("✅ Updated reaction for msg \(reaction.messageId)")
+            } else {
+                try db.run(reactionsTable.insert(
+                    reactionMessageId <- reaction.messageId,
+                    reactionUserId <- reaction.userId,
+                    reactionEmoji <- reaction.emoji,
+                    reactionCreatedAt <- reaction.createdAt
+                ))
+                print("✅ Inserted reaction for msg \(reaction.messageId)")
+            }
+            return true
+        } catch {
+            print("❌ saveReaction error: \(error)")
+            return false
+        }
+    }
+    
+    func getReactions(for messageId: Int64) -> [Reaction] {
+        guard let db = db else { return [] }
+        let query = reactionsTable.filter(reactionMessageId == messageId)
+        do {
+            var reactions: [Reaction] = []
+            for row in try db.prepare(query) {
+                let reaction = Reaction(
+                    messageId: row[reactionMessageId],
+                    userId: row[reactionUserId],
+                    emoji: row[reactionEmoji],
+                    createdAt: row[reactionCreatedAt]
+                )
+                reactions.append(reaction)
+            }
+            return reactions
+        } catch {
+            print("❌ getReactions error: \(error)")
+            return []
+        }
+    }
+    
+    func deleteReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
+        guard let db = db else { return false }
+        let query = reactionsTable.filter(
+            reactionMessageId == messageId &&
+            reactionUserId == userId &&
+            reactionEmoji == emoji
+        )
+        do {
+            try db.run(query.delete())
+            return true
+        } catch {
+            print("❌ deleteReaction error: \(error)")
+            return false
+        }
+    }
+    
+    func deleteAllReactions() {
+        guard let db = db else { return }
+        do { try db.run(reactionsTable.delete()) } catch { print(error) }
     }
     
     // MARK: - Contacts
@@ -542,76 +655,6 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Reactions
-    func saveReaction(_ reaction: Reaction) -> Bool {
-        guard let db = db else { return false }
-        do {
-            let query = reactionsTable.filter(
-                reactionMessageId == reaction.messageId &&
-                reactionUserId == reaction.userId &&
-                reactionEmoji == reaction.emoji
-            )
-            if try db.scalar(query.count) > 0 {
-                try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
-                return true
-            }
-            try db.run(reactionsTable.insert(
-                reactionMessageId <- reaction.messageId,
-                reactionUserId <- reaction.userId,
-                reactionEmoji <- reaction.emoji,
-                reactionCreatedAt <- reaction.createdAt
-            ))
-            return true
-        } catch {
-            if (error as? NSError)?.code != 19 {
-                print("❌ saveReaction error: \(error)")
-            }
-            return false
-        }
-    }
-    
-    func getReactions(for messageId: Int64) -> [Reaction] {
-        guard let db = db else { return [] }
-        let query = reactionsTable.filter(reactionMessageId == messageId)
-        do {
-            var reactions: [Reaction] = []
-            for row in try db.prepare(query) {
-                let reaction = Reaction(
-                    messageId: row[reactionMessageId],
-                    userId: row[reactionUserId],
-                    emoji: row[reactionEmoji],
-                    createdAt: row[reactionCreatedAt]
-                )
-                reactions.append(reaction)
-            }
-            return reactions
-        } catch {
-            print("❌ getReactions error: \(error)")
-            return []
-        }
-    }
-    
-    func deleteReaction(messageId: Int64, userId: UUID, emoji: String) -> Bool {
-        guard let db = db else { return false }
-        let query = reactionsTable.filter(
-            reactionMessageId == messageId &&
-            reactionUserId == userId &&
-            reactionEmoji == emoji
-        )
-        do {
-            try db.run(query.delete())
-            return true
-        } catch {
-            print("❌ deleteReaction error: \(error)")
-            return false
-        }
-    }
-    
-    func deleteAllReactions() {
-        guard let db = db else { return }
-        do { try db.run(reactionsTable.delete()) } catch { print(error) }
-    }
-    
     // MARK: - Clear
     func clearAllData() {
         guard let db = db else { return }
@@ -622,6 +665,7 @@ class LocalDatabase {
             try db.run(contactRequestsTable.delete())
             try db.run(reactionsTable.delete())
             try db.run(attachmentsTable.delete())
+            try db.run(messageStatusesTable.delete())
         } catch {
             print("❌ clearAllData error: \(error)")
         }
@@ -631,7 +675,8 @@ class LocalDatabase {
         guard let db = db else { return }
         do {
             try db.run(messagesTable.filter(msgChatId == chatId).delete())
-            try db.run(attachmentsTable.delete()) // вложения тоже удалим
+            try db.run(attachmentsTable.delete())
+            try db.run(messageStatusesTable.delete())
         } catch {
             print("❌ clearMessages error: \(error)")
         }
@@ -643,5 +688,10 @@ class LocalDatabase {
         let dbPath = "\(path)/messenger.sqlite3"
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
+    }
+    // Для совместимости со старым кодом
+    func updateMessageStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return false }
+        return saveMessageStatus(messageId: messageId, userId: currentUserId, deliveredAt: deliveredAt, readAt: readAt)
     }
 }

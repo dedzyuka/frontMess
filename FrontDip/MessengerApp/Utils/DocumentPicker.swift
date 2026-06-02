@@ -1,9 +1,3 @@
-//
-//  DocumentPicker.swift
-//  FrontDip
-//
-//
-
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -11,7 +5,12 @@ struct DocumentPicker: UIViewControllerRepresentable {
     @Binding var selectedURL: URL?
     
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data, .pdf, .image, .video, .audio])
+        let supportedTypes: [UTType] = [
+            .data, .pdf, .text, .plainText, .rtf,
+            .spreadsheet, .presentation, .archive,
+            .audio, .video, .image, .pdf, .xml, .json
+        ]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes)
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker
