@@ -462,7 +462,7 @@ class ChatViewModel: ObservableObject {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
         guard let currentUserId = currentUserId else { return false }
-        
+
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         let tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
@@ -470,8 +470,8 @@ class ChatViewModel: ObservableObject {
             createdAt: Date(), updatedAt: Date(), deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil
         )
-        
-        // Временное вложение, если есть
+
+        // Временное вложение для локального отображения
         var localAttachment: Attachment? = nil
         if let aid = attachmentId, let fname = fileName, let storage = storagePath {
             localAttachment = Attachment(
@@ -496,7 +496,7 @@ class ChatViewModel: ObservableObject {
                 self.objectWillChange.send()
             }
         }
-        
+
         do {
             var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
             if let aid = attachmentId {
@@ -508,16 +508,10 @@ class ChatViewModel: ObservableObject {
                 responseType: SendMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            let newMsg = response.message.sendMessage
-            let realMessageId = newMsg.messageId
-            
-            // Заменяем временное сообщение на реальное
+            let realMsg = response.message.sendMessage   // теперь содержит attachments
+
             await MainActor.run {
                 if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
-                    var realMsg = newMsg
-                    if let localAtt = localAttachment {
-                        realMsg.attachments = [localAtt]
-                    }
                     self.messages[index] = realMsg
                     _ = self.database.saveMessage(realMsg)
                     if let attachments = realMsg.attachments, !attachments.isEmpty {
@@ -526,24 +520,13 @@ class ChatViewModel: ObservableObject {
                     self.objectWillChange.send()
                 }
             }
-            
-            // Через 1.5 секунды запрашиваем полное сообщение с сервера
-            Task {
-                try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 секунды
-                if let fullMsg = await self.fetchMessage(byId: realMessageId) {
-                    await MainActor.run {
-                        if let index = self.messages.firstIndex(where: { $0.messageId == realMessageId }) {
-                            self.messages[index] = fullMsg
-                            _ = self.database.saveMessage(fullMsg)
-                            if let attachments = fullMsg.attachments, !attachments.isEmpty {
-                                _ = self.database.saveAttachments(attachments, for: fullMsg.messageId)
-                            }
-                            self.objectWillChange.send()
-                        }
-                    }
-                }
-            }
-            
+
+            // 🚫 Удаляем этот блок (дополнительный fetch через 1.5 секунды)
+            // Task {
+            //     try? await Task.sleep(nanoseconds: 1_500_000_000)
+            //     if let fullMsg = await self.fetchMessage(byId: realMessageId) { ... }
+            // }
+
             return true
         } catch {
             await MainActor.run {
