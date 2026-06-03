@@ -1,3 +1,8 @@
+//
+//  ChatView.swift
+//  MessengerApp
+//
+
 import SwiftUI
 
 struct ChatView: View {
@@ -13,7 +18,7 @@ struct ChatView: View {
     @State private var showingMediaPicker = false
     @State private var showingDocumentPicker = false
     @State private var isUploading = false
-    @State private var isSending = false          // 🔄 индикатор отправки
+    @State private var isSending = false
     
     // Редактирование/удаление/реакции
     @State private var selectedMessage: Message?
@@ -22,9 +27,15 @@ struct ChatView: View {
     @State private var showDeleteConfirmation = false
     @State private var showReactionPicker = false
     @State private var reactionEmoji = ""
+    
+    // Typing
     @State private var typingTimer: Timer?
     @State private var isTyping = false
-
+    
+    // Вычисляемое свойство для проверки приватного чата
+    private var isPrivateChat: Bool {
+        chat.chatType == "1" || chat.chatType.lowercased() == "private"
+    }
     
     init(chat: Chat) {
         self.chat = chat
@@ -33,35 +44,51 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок
+            // Заголовок с аватаркой, именем, статусом и печатью
             HStack(spacing: 12) {
-                Button { presentationMode.wrappedValue.dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.title2).foregroundColor(.blue)
+                Button {
+                    presentationMode.wrappedValue.dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.title2)
+                        .foregroundColor(.blue)
                 }
                 .frame(width: 44, height: 44)
                 
-                if viewModel.chat.chatType.lowercased() == "private", let otherUser = viewModel.otherUser {
-                    NavigationLink(destination: UserProfileView(userId: otherUser.userId)) {
+                if isPrivateChat, let otherUser = viewModel.otherUser {
+                    Button {
+                        let profileView = UserProfileView(userId: otherUser.userId)
+                        let hosting = UIHostingController(rootView: profileView)
+                        UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                    } label: {
                         HStack(spacing: 8) {
                             AvatarView(urlString: otherUser.avatarUrl, size: 40)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(otherUser.nickName).font(.headline).foregroundColor(.primary)
+                                Text(otherUser.nickName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
                                 if viewModel.isSomeoneTyping {
                                     Text("печатает...")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
-                                        .padding(.leading, 8)
-                                }
-                                HStack(spacing: 4) {
-                                    Circle().fill(viewModel.isOtherUserOnline ? Color.green : Color.gray).frame(width: 8, height: 8)
-                                    Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн").font(.caption).foregroundColor(.secondary)
+                                } else {
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(viewModel.isOtherUserOnline ? Color.green : Color.gray)
+                                            .frame(width: 8, height: 8)
+                                        Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
                             }
                         }
                     }
                     .buttonStyle(PlainButtonStyle())
                 } else {
-                    Text(viewModel.chatTitle).font(.headline).lineLimit(1)
+                    Text(viewModel.chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
                     if viewModel.isSomeoneTyping {
                         Text("печатает...")
                             .font(.caption)
@@ -71,8 +98,11 @@ struct ChatView: View {
                 }
                 
                 Spacer()
+                
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
-                    Image(systemName: "info.circle").font(.title2).foregroundColor(.blue)
+                    Image(systemName: "info.circle")
+                        .font(.title2)
+                        .foregroundColor(.blue)
                 }
                 .frame(width: 44, height: 44)
             }
@@ -80,7 +110,7 @@ struct ChatView: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground))
             
-            // Список сообщений
+            // Список сообщений (без изменений)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -114,10 +144,12 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода
+            // Поле ввода (без изменений)
             HStack(spacing: 12) {
                 Button { showingActionSheet = true } label: {
-                    Image(systemName: "plus.circle.fill").font(.system(size: 32)).foregroundColor(.blue)
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.blue)
                 }
                 
                 TextField("Сообщение", text: $viewModel.newMessageText)
@@ -126,8 +158,8 @@ struct ChatView: View {
                     .cornerRadius(25)
                     .disabled(isSending)
                     .onChange(of: viewModel.newMessageText) { newValue in
-                            handleTyping(newValue)
-                        }
+                        handleTyping(newValue)
+                    }
                 
                 if isUploading || isSending {
                     ProgressView().frame(width: 32, height: 32)
@@ -192,7 +224,7 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка с вложением (исправленная)
+    // MARK: - Отправка с вложением
     private func sendMessageWithAttachment() {
         Task {
             isSending = true
@@ -266,6 +298,8 @@ struct ChatView: View {
             }
         }
     }
+    
+    // MARK: - Typing indicator
     private func handleTyping(_ text: String) {
         if !text.isEmpty && !isTyping {
             isTyping = true

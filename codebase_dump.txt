@@ -631,7 +631,8 @@ struct Chat: Identifiable, Codable {
     var otherUserId: UUID?
     var otherUserNickname: String?
     var otherUserAvatarUrl: String?
-    var otherUserIsOnline: Bool = false// только для исходящих сообщений
+    var otherUserIsOnline: Bool = false
+    var isTyping: Bool = false
     
     var id: UUID { chatId }
     
@@ -3556,6 +3557,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         case "chat.created":
             handleChatCreated(json)
         case "typing.start", "typing.stop":
+            let payload = json["payload"] as? [String: Any] ?? [:]  // <-- добавить эту строку
+            print("📢 Received typing event: \(event), payload: \(payload)")
             handleTyping(json, event: event)
         case "message.ack":
             handleAck(json)
@@ -4449,6 +4452,31 @@ class ChatListViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .typingStarted)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      let userId = notification.userInfo?["userId"] as? UUID,
+                      userId != self.currentUserId else { return }
+                if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
+                    self.chats[index].isTyping = true
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .typingStopped)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID else { return }
+                if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
+                    self.chats[index].isTyping = false
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &cancellables)
     }
     
     func loadChats() async {
@@ -4476,9 +4504,9 @@ class ChatListViewModel: ObservableObject {
                 self.chats = updatedChats.sorted { $0.lastActivityDate > $1.lastActivityDate }
                 self.isLoading = false
                 self.errorMessage = nil
+                // Запускаем фоновую загрузку данных о собеседниках
+                Task { await self.enrichPrivateChats() }
             }
-            // Обогащаем приватные чаты информацией о втором участнике
-            await enrichPrivateChats()
         } catch {
             await MainActor.run {
                 self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
@@ -4486,25 +4514,31 @@ class ChatListViewModel: ObservableObject {
             }
         }
     }
-    
-    // НОВЫЙ МЕТОД: загрузка данных о втором участнике для приватных чатов
+
     private func enrichPrivateChats() async {
         guard let currentUserId = currentUserId else { return }
         for i in 0..<chats.count where chats[i].chatType.lowercased() == "private" {
-            let chat = chats[i]
-            let memberIds = await getChatMemberIds(for: chat.id)
+            let chatId = chats[i].id
+            // Пропускаем уже загруженные
+            if chats[i].otherUserId != nil { continue }
+            let memberIds = await getChatMemberIds(for: chatId)
             let otherId = memberIds.first(where: { $0 != currentUserId })
             guard let otherId else { continue }
             do {
                 let otherUser = try await UserService.shared.getUser(userId: otherId)
                 await MainActor.run {
-                    chats[i].otherUserId = otherId
-                    chats[i].otherUserNickname = otherUser.nickName
-                    chats[i].otherUserAvatarUrl = otherUser.avatarUrl
-                    chats[i].otherUserIsOnline = otherUser.isOnline ?? false
+                    // Ищем актуальный индекс (массив мог измениться)
+                    if let idx = self.chats.firstIndex(where: { $0.id == chatId }) {
+                        self.chats[idx].otherUserId = otherId
+                        self.chats[idx].otherUserNickname = otherUser.nickName
+                        self.chats[idx].otherUserAvatarUrl = otherUser.avatarUrl
+                        self.chats[idx].otherUserIsOnline = otherUser.isOnline ?? false
+                        // Принудительно обновляем UI
+                        self.objectWillChange.send()
+                    }
                 }
             } catch {
-                print("Failed to load other user for chat \(chat.id): \(error)")
+                print("Failed to load other user for chat \(chatId): \(error)")
             }
         }
     }
@@ -5011,26 +5045,32 @@ class ChatViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .typingStarted)
-                    .receive(on: DispatchQueue.main)
-                    .sink { [weak self] notification in
-                        guard let self = self,
-                              let chatId = notification.userInfo?["chatId"] as? UUID,
-                              chatId == self.chat.id,
-                              let userId = notification.userInfo?["userId"] as? UUID,
-                              userId != self.currentUserId else { return }
-                        self.isSomeoneTyping = true
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      chatId == self.chat.id,
+                      let userId = notification.userInfo?["userId"] as? UUID,
+                      userId != self.currentUserId else { return }
+                self.isSomeoneTyping = true
+                // Авто-сброс через 3 секунды, если не пришёл typing.stop
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    if self?.isSomeoneTyping == true {
+                        self?.isSomeoneTyping = false
                     }
-                    .store(in: &cancellables)
-                
-                NotificationCenter.default.publisher(for: .typingStopped)
-                    .receive(on: DispatchQueue.main)
-                    .sink { [weak self] notification in
-                        guard let self = self,
-                              let chatId = notification.userInfo?["chatId"] as? UUID,
-                              chatId == self.chat.id else { return }
-                        self.isSomeoneTyping = false
-                    }
-                    .store(in: &cancellables)
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .typingStopped)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      chatId == self.chat.id else { return }
+                self.isSomeoneTyping = false
+            }
+            .store(in: &cancellables)
     }
     
     // MARK: - Загрузка сообщений (кэш + сеть)
@@ -6613,14 +6653,7 @@ struct ContactSelectionRow: View {
     
     var body: some View {
         HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text((contact.contactUser?.nickName ?? "?").prefix(1).uppercased())
-                        .font(.headline)
-                        .foregroundColor(.blue)
-                )
+            AvatarView(urlString: contact.contactUser?.avatarUrl, size: 40)
             
             VStack(alignment: .leading) {
                 Text(contact.contactUser?.nickName ?? "Неизвестный")
@@ -6779,6 +6812,7 @@ struct ChatListView: View {
                 NavigationLink(destination: ChatView(chat: chat)) {
                     ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
                 }
+                .id(chat.id)
             }
             .listStyle(PlainListStyle())
             .refreshable {
@@ -6795,8 +6829,7 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Аватар
-            if chat.chatType.lowercased() == "private", let otherUserNickname = chat.otherUserNickname {
-                // Приватный чат – аватар собеседника с индикатором онлайн
+            if chat.chatType.lowercased() == "private" {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
                         Circle()
@@ -6805,7 +6838,6 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                // Групповой чат
                 Circle()
                     .fill(Color.blue.opacity(0.2))
                     .frame(width: 50, height: 50)
@@ -6819,16 +6851,21 @@ struct ChatRow: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 // Название чата
-                if chat.chatType.lowercased() == "private", let nickname = chat.otherUserNickname {
-                    Text(nickname)
+                if chat.chatType.lowercased() == "private" {
+                    Text(chat.otherUserNickname ?? "Загрузка...")
                         .font(.headline)
                 } else {
                     Text(chat.name ?? "Чат")
                         .font(.headline)
                 }
                 
-                // Превью сообщения (без изменений)
-                if let preview = chat.lastMessagePreview {
+                // Статус печати или последнее сообщение
+                if chat.chatType.lowercased() == "private" && chat.isTyping {
+                    Text("печатает...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                } else if let preview = chat.lastMessagePreview {
                     HStack(spacing: 4) {
                         if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
                             (Text(preview.senderNickname ?? "Кто-то")
@@ -6888,6 +6925,8 @@ struct ChatRow: View {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
+    
+
 
 // MessageStatusIcon остаётся без изменений
 struct MessageStatusIcon: View {
@@ -7041,6 +7080,11 @@ struct ChatMemberRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
+//
+//  ChatView.swift
+//  MessengerApp
+//
+
 import SwiftUI
 
 struct ChatView: View {
@@ -7056,7 +7100,7 @@ struct ChatView: View {
     @State private var showingMediaPicker = false
     @State private var showingDocumentPicker = false
     @State private var isUploading = false
-    @State private var isSending = false          // 🔄 индикатор отправки
+    @State private var isSending = false
     
     // Редактирование/удаление/реакции
     @State private var selectedMessage: Message?
@@ -7065,7 +7109,10 @@ struct ChatView: View {
     @State private var showDeleteConfirmation = false
     @State private var showReactionPicker = false
     @State private var reactionEmoji = ""
-
+    
+    // Typing
+    @State private var typingTimer: Timer?
+    @State private var isTyping = false
     
     init(chat: Chat) {
         self.chat = chat
@@ -7074,35 +7121,52 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок
+            // Заголовок (исправленный)
             HStack(spacing: 12) {
-                Button { presentationMode.wrappedValue.dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.title2).foregroundColor(.blue)
+                Button {
+                    presentationMode.wrappedValue.dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.title2)
+                        .foregroundColor(.blue)
                 }
                 .frame(width: 44, height: 44)
                 
                 if viewModel.chat.chatType.lowercased() == "private", let otherUser = viewModel.otherUser {
-                    NavigationLink(destination: UserProfileView(userId: otherUser.userId)) {
+                    // Кликабельный блок: аватарка + имя + статус
+                    Button {
+                        let profileView = UserProfileView(userId: otherUser.userId)
+                        let hosting = UIHostingController(rootView: profileView)
+                        UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                    } label: {
                         HStack(spacing: 8) {
                             AvatarView(urlString: otherUser.avatarUrl, size: 40)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(otherUser.nickName).font(.headline).foregroundColor(.primary)
+                                Text(otherUser.nickName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
                                 if viewModel.isSomeoneTyping {
                                     Text("печатает...")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
-                                        .padding(.leading, 8)
-                                }
-                                HStack(spacing: 4) {
-                                    Circle().fill(viewModel.isOtherUserOnline ? Color.green : Color.gray).frame(width: 8, height: 8)
-                                    Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн").font(.caption).foregroundColor(.secondary)
+                                } else {
+                                    HStack(spacing: 4) {
+                                        Circle()
+                                            .fill(viewModel.isOtherUserOnline ? Color.green : Color.gray)
+                                            .frame(width: 8, height: 8)
+                                        Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
                             }
                         }
                     }
                     .buttonStyle(PlainButtonStyle())
                 } else {
-                    Text(viewModel.chatTitle).font(.headline).lineLimit(1)
+                    Text(viewModel.chatTitle)
+                        .font(.headline)
+                        .lineLimit(1)
                     if viewModel.isSomeoneTyping {
                         Text("печатает...")
                             .font(.caption)
@@ -7112,8 +7176,11 @@ struct ChatView: View {
                 }
                 
                 Spacer()
+                
                 NavigationLink(destination: ChatSidebarView(chat: chat)) {
-                    Image(systemName: "info.circle").font(.title2).foregroundColor(.blue)
+                    Image(systemName: "info.circle")
+                        .font(.title2)
+                        .foregroundColor(.blue)
                 }
                 .frame(width: 44, height: 44)
             }
@@ -7158,7 +7225,9 @@ struct ChatView: View {
             // Поле ввода
             HStack(spacing: 12) {
                 Button { showingActionSheet = true } label: {
-                    Image(systemName: "plus.circle.fill").font(.system(size: 32)).foregroundColor(.blue)
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.blue)
                 }
                 
                 TextField("Сообщение", text: $viewModel.newMessageText)
@@ -7166,6 +7235,9 @@ struct ChatView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(25)
                     .disabled(isSending)
+                    .onChange(of: viewModel.newMessageText) { newValue in
+                        handleTyping(newValue)
+                    }
                 
                 if isUploading || isSending {
                     ProgressView().frame(width: 32, height: 32)
@@ -7230,7 +7302,7 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка с вложением (исправленная)
+    // MARK: - Отправка с вложением
     private func sendMessageWithAttachment() {
         Task {
             isSending = true
@@ -7304,7 +7376,23 @@ struct ChatView: View {
             }
         }
     }
+    
+    // MARK: - Typing indicator
+    private func handleTyping(_ text: String) {
+        if !text.isEmpty && !isTyping {
+            isTyping = true
+            WebSocketService.shared.sendTyping(chatId: chat.id, isTyping: true)
+        }
+        typingTimer?.invalidate()
+        typingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
+            if self.isTyping {
+                self.isTyping = false
+                WebSocketService.shared.sendTyping(chatId: self.chat.id, isTyping: false)
+            }
+        }
+    }
 }
+
 
 ./FrontDip/MessengerApp/Views/Chat/InviteShareView.swift
 
@@ -7990,7 +8078,8 @@ struct SideMenuView: View {
     }
 }
 
-// ./FrontDip/MessengerApp/Views/Common/AvatarView.swift
+// AvatarView.swift – полный код с исправлениями
+
 import SwiftUI
 
 struct AvatarView: View {
@@ -7999,12 +8088,10 @@ struct AvatarView: View {
     @State private var image: UIImage?
     
     private var fullURL: URL? {
-        guard let urlString, !urlString.isEmpty else { return nil }
-        // Если уже полный URL, используем как есть
+        guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
         if urlString.lowercased().hasPrefix("http") {
             return URL(string: urlString)
         }
-        // Собираем через baseURL + /media/ (без приведения к нижнему регистру)
         let base = AppConfig.baseURL
         let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
         return URL(string: base + "/media/" + path)
@@ -9272,6 +9359,7 @@ struct UserProfileView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     AvatarView(urlString: viewModel.user?.avatarUrl, size: 100)
+                        .id(viewModel.user?.avatarUrl)
                         .padding(.top, 20)
                     
                     Text(viewModel.user?.nickName ?? "Загрузка...")

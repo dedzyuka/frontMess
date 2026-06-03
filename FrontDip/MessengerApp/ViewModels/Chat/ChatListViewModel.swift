@@ -73,7 +73,7 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // НОВАЯ ПОДПИСКА: обновление онлайн-статуса для приватных чатов
+        // Обновление онлайн-статуса для приватных чатов
         NotificationCenter.default.publisher(for: .statusUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -83,6 +83,34 @@ class ChatListViewModel: ObservableObject {
                       let isOnline = info["is_online"] as? Bool else { return }
                 for i in 0..<self.chats.count where self.chats[i].otherUserId == userId {
                     self.chats[i].otherUserIsOnline = isOnline
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Индикатор печати (тайпинг)
+        NotificationCenter.default.publisher(for: .typingStarted)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      let userId = notification.userInfo?["userId"] as? UUID,
+                      userId != self.currentUserId else { return }
+                if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
+                    self.chats[index].isTyping = true
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .typingStopped)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID else { return }
+                if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
+                    self.chats[index].isTyping = false
+                    self.objectWillChange.send()
                 }
             }
             .store(in: &cancellables)
@@ -113,10 +141,8 @@ class ChatListViewModel: ObservableObject {
                 self.chats = updatedChats.sorted { $0.lastActivityDate > $1.lastActivityDate }
                 self.isLoading = false
                 self.errorMessage = nil
+                Task { await self.enrichPrivateChats() }
             }
-            // Обогащаем приватные чаты информацией о втором участнике
-            await enrichPrivateChats()
-            await MainActor.run { self.objectWillChange.send() }
         } catch {
             await MainActor.run {
                 self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
@@ -124,13 +150,11 @@ class ChatListViewModel: ObservableObject {
             }
         }
     }
-    
-    // НОВЫЙ МЕТОД: загрузка данных о втором участнике для приватных чатов
+
     private func enrichPrivateChats() async {
         guard let currentUserId = currentUserId else { return }
-        for i in 0..<chats.count where chats[i].chatType.lowercased() == "private" {
+        for i in 0..<chats.count where chats[i].isPrivate {   // ← изменено
             let chatId = chats[i].id
-            // Пропускаем уже загруженные
             if chats[i].otherUserId != nil { continue }
             let memberIds = await getChatMemberIds(for: chatId)
             let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -138,12 +162,12 @@ class ChatListViewModel: ObservableObject {
             do {
                 let otherUser = try await UserService.shared.getUser(userId: otherId)
                 await MainActor.run {
-                    if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
-                        self.chats[index].otherUserId = otherId
-                        self.chats[index].otherUserNickname = otherUser.nickName
-                        self.chats[index].otherUserAvatarUrl = otherUser.avatarUrl
-                        self.chats[index].otherUserIsOnline = otherUser.isOnline ?? false
-                        self.objectWillChange.send()  // Принудительное обновление UI
+                    if let idx = self.chats.firstIndex(where: { $0.id == chatId }) {
+                        self.chats[idx].otherUserId = otherId
+                        self.chats[idx].otherUserNickname = otherUser.nickName
+                        self.chats[idx].otherUserAvatarUrl = otherUser.avatarUrl
+                        self.chats[idx].otherUserIsOnline = otherUser.isOnline ?? false
+                        self.objectWillChange.send()
                     }
                 }
             } catch {
@@ -168,7 +192,6 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
-
     private func handleNewMessage(_ message: Message) {
         guard let index = chats.firstIndex(where: { $0.id == message.chatId }) else {
             Task { await loadChats() }
@@ -195,6 +218,7 @@ class ChatListViewModel: ObservableObject {
         
         chats[index] = updatedChat
         chats.sort { $0.lastActivityDate > $1.lastActivityDate }
+        objectWillChange.send()
     }
     
     private func handleMessageUpdated(chatId: UUID, messageId: Int64, newContent: String) {
@@ -213,6 +237,7 @@ class ChatListViewModel: ObservableObject {
         updatedChat.lastMessagePreview = updatedPreview
         chats[index] = updatedChat
         chats.sort { $0.lastActivityDate > $1.lastActivityDate }
+        objectWillChange.send()
     }
 
     private func handleMessageDeleted(chatId: UUID, messageId: Int64) {
@@ -223,8 +248,8 @@ class ChatListViewModel: ObservableObject {
             await refreshChat(chatId)
         }
     }
+    
     func refreshChat(_ chatId: UUID) async {
-        // Опционально: сделать запрос одного чата, пока перезагружаем все
         await loadChats()
     }
     
@@ -244,31 +269,28 @@ class ChatListViewModel: ObservableObject {
             updatedChat.lastMessageStatus = .sending
         }
         chats[index] = updatedChat
-    }
-    
-    private func refreshLastMessage(for chatId: UUID) async {
-        await loadChats()
+        objectWillChange.send()
     }
     
     private func fetchMessageStatus(for messageId: Int64) -> MessageStatusType? {
-        // Получаем статус из локальной БД для данного сообщения
-        guard let (deliveredAt, readAt) = LocalDatabase.shared.getMessageStatus(for: messageId, userId: currentUserId ?? UUID()) else { return nil }
-        if readAt != nil { return .read }
-        if deliveredAt != nil { return .delivered }
+        guard let currentUserId = currentUserId else { return nil }
+        if let (deliveredAt, readAt) = LocalDatabase.shared.getMessageStatus(for: messageId, userId: currentUserId) {
+            if readAt != nil { return .read }
+            if deliveredAt != nil { return .delivered }
+        }
         return .sending
     }
     
-    // MARK: - Сброс непрочитанных
     func resetUnreadCount(for chatId: UUID) {
         if let index = chats.firstIndex(where: { $0.id == chatId }) {
             var chat = chats[index]
             chat.unreadCount = 0
             chats[index] = chat
             unreadCounts[chatId] = 0
+            objectWillChange.send()
         }
     }
     
-    // MARK: - Существующие методы (без изменений)
     func createChat(name: String) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
@@ -307,6 +329,7 @@ class ChatListViewModel: ObservableObject {
             )
             await MainActor.run {
                 self.chats.insert(newChat, at: 0)
+                self.objectWillChange.send()
             }
             return true
         } catch {
@@ -346,8 +369,6 @@ class ChatListViewModel: ObservableObject {
             return nil
         }
     }
-
-
 
     private func createPrivateChat(with userId: UUID) async -> Chat? {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
@@ -389,6 +410,7 @@ class ChatListViewModel: ObservableObject {
         DispatchQueue.main.async {
             if !self.chats.contains(where: { $0.id == chat.id }) {
                 self.chats.insert(chat, at: 0)
+                self.objectWillChange.send()
             }
         }
     }

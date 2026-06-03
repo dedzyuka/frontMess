@@ -134,15 +134,20 @@ struct ChatListView: View {
     }
 }
 
+// MARK: - ChatRow
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
     
+    // Вычисляемое свойство для проверки приватного чата
+    private var isPrivateChat: Bool {
+        chat.chatType == "1" || chat.chatType.lowercased() == "private"
+    }
+    
     var body: some View {
         HStack(spacing: 12) {
-            // Аватар
-            if chat.chatType.lowercased() == "private", let otherUserNickname = chat.otherUserNickname {
-                // Приватный чат – аватар собеседника с индикатором онлайн
+            // Аватар для приватного чата
+            if isPrivateChat {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
                         Circle()
@@ -151,7 +156,6 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                // Групповой чат
                 Circle()
                     .fill(Color.blue.opacity(0.2))
                     .frame(width: 50, height: 50)
@@ -164,19 +168,24 @@ struct ChatRow: View {
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                // Название чата
-                if chat.chatType.lowercased() == "private", let nickname = chat.otherUserNickname {
-                    Text(nickname)
+                // Имя собеседника или название группы
+                if isPrivateChat {
+                    Text(chat.otherUserNickname ?? "Загрузка...")
                         .font(.headline)
                 } else {
                     Text(chat.name ?? "Чат")
                         .font(.headline)
                 }
                 
-                // Превью сообщения (без изменений)
-                if let preview = chat.lastMessagePreview {
+                // Статус печати или последнее сообщение
+                if isPrivateChat && chat.isTyping {
+                    Text("печатает...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                } else if let preview = chat.lastMessagePreview {
                     HStack(spacing: 4) {
-                        if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
+                        if !isPrivateChat && preview.senderId != currentUserId {
                             (Text(preview.senderNickname ?? "Кто-то")
                                 .font(.caption)
                                 .foregroundColor(.secondary) +
@@ -235,7 +244,6 @@ struct ChatRow: View {
     }
 }
 
-// MessageStatusIcon остаётся без изменений
 struct MessageStatusIcon: View {
     let status: MessageStatusType
     var body: some View {

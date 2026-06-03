@@ -97,9 +97,11 @@ struct Reaction: Identifiable, Codable {
     let emoji: String
     let createdAt: Date
 }
+// ./FrontDip/MessengerApp/Models/Models.swift (фрагмент)
+
 struct Chat: Identifiable, Codable {
     let chatId: UUID
-    let chatType: String
+    let chatType: String   // "1" = private, "2" = group, "3" = channel
     let name: String?
     let description: String?
     let avatarUrl: String?
@@ -110,23 +112,27 @@ struct Chat: Identifiable, Codable {
     let membersCount: Int
     var lastMessage: String?
     
-    // НОВЫЕ ПОЛЯ
     var lastMessagePreview: MessagePreview?
     var unreadCount: Int = 0
     var lastMessageStatus: MessageStatusType?
     var otherUserId: UUID?
     var otherUserNickname: String?
     var otherUserAvatarUrl: String?
-    var otherUserIsOnline: Bool = false// только для исходящих сообщений
+    var otherUserIsOnline: Bool = false
+    var isTyping: Bool = false
     
     var id: UUID { chatId }
     
-    // Вычисляемое свойство для сортировки
+    // ⭐️ Добавляем вычисляемое свойство
+    var isPrivate: Bool {
+        return chatType == "1" || chatType.lowercased() == "private"
+    }
+    
     var lastActivityDate: Date {
         return lastMessagePreview?.createdAt ?? createdAt
     }
     
-    // Кастомный декодер, чтобы поддерживать новые поля (если они приходят с сервера)
+    // Остальные CodingKeys и декодеры остаются без изменений
     enum CodingKeys: String, CodingKey {
         case chatId, chatType, name, description, avatarUrl, creatorId, isPublic, maxMembers, createdAt, membersCount, lastMessage, lastMessagePreview
     }

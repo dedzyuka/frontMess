@@ -645,7 +645,7 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - Chat title / other user
     func loadOtherUserIfNeeded() async {
-        guard chat.chatType == "PRIVATE" || chat.chatType.lowercased() == "private" else { return }
+        guard chat.isPrivate else { return }   // ← изменено
         guard let currentUserId = currentUserId else { return }
         let memberIds = await getChatMemberIds()
         let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -668,6 +668,10 @@ class ChatViewModel: ObservableObject {
     func loadChatTitle() async {
         if let name = chat.name, !name.isEmpty {
             chatTitle = name
+            return
+        }
+        guard chat.isPrivate else {   // ← изменено
+            chatTitle = "Чат"
             return
         }
         guard let currentUserId = currentUserId else {
