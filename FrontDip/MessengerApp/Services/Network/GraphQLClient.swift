@@ -85,18 +85,36 @@ class GraphQLClient {
         guard (200...299).contains(httpResponse.statusCode) else {
             throw GraphQLError.httpError(httpResponse.statusCode, String(data: data, encoding: .utf8))
         }
-        if let jsonString = String(data: data, encoding: .utf8) {
-            print("📦 Raw response: \(jsonString)")
-        }
+        
+        let rawString = String(data: data, encoding: .utf8) ?? "nil"
+        print("📦 Raw response for \(Response.self): \(rawString)")
+        
         let decoder = JSONDecoder.snakeCaseDecoder
-        let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
-        if let errors = graphQLResponse.errors, !errors.isEmpty {
-            throw GraphQLError.graphQLErrors(errors.map { $0.message })
+        do {
+            let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
+            if let errors = graphQLResponse.errors, !errors.isEmpty {
+                throw GraphQLError.graphQLErrors(errors.map { $0.message })
+            }
+            guard let data = graphQLResponse.data else {
+                throw GraphQLError.noData
+            }
+            return data
+        } catch let DecodingError.dataCorrupted(context) {
+            print("❌ Data corrupted: \(context)")
+            throw GraphQLError.decodingError("Data corrupted: \(context.debugDescription)")
+        } catch let DecodingError.keyNotFound(key, context) {
+            print("❌ Key '\(key)' not found: \(context.debugDescription)")
+            throw GraphQLError.decodingError("Missing key '\(key)'")
+        } catch let DecodingError.typeMismatch(type, context) {
+            print("❌ Type mismatch for type \(type): \(context.debugDescription)")
+            throw GraphQLError.decodingError("Type mismatch for \(type)")
+        } catch let DecodingError.valueNotFound(type, context) {
+            print("❌ Value not found for type \(type): \(context.debugDescription)")
+            throw GraphQLError.decodingError("Value not found for \(type)")
+        } catch {
+            print("❌ Other decoding error: \(error)")
+            throw GraphQLError.decodingError(error.localizedDescription)
         }
-        guard let data = graphQLResponse.data else {
-            throw GraphQLError.noData
-        }
-        return data
     }
     
     private func refreshTokenIfNeeded() async -> Bool {

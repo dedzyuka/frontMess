@@ -72,6 +72,21 @@ struct SideMenuView: View {
                         MenuItem(icon: "rectangle.portrait.and.arrow.right", title: "Выйти", isDestructive: true) {
                             showLogoutAlert = true
                         }
+                        MenuItem(icon: "person.circle", title: "Мой профиль") {
+                            let profileView = ProfileView()
+                            let hosting = UIHostingController(rootView: profileView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
+                        MenuItem(icon: "lock.shield", title: "Приватность") {
+                            let privacyView = PrivacySettingsView()
+                            let hosting = UIHostingController(rootView: privacyView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
+                        MenuItem(icon: "laptopcomputer.and.iphone", title: "Сессии") {
+                            let sessionsView = SessionsView()
+                            let hosting = UIHostingController(rootView: sessionsView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
                         Spacer()
                     }
                     .padding(.horizontal, 24)
@@ -108,32 +123,52 @@ struct SideMenuView: View {
 }
 
 // MARK: - AvatarView (вынесена для переиспользования)
+// AvatarView.swift (обновить)
+// ./FrontDip/MessengerApp/Views/Common/AvatarView.swift
+import SwiftUI
+
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
     
+    private var fullURL: URL? {
+        guard let urlString, !urlString.isEmpty else { return nil }
+        if urlString.hasPrefix("http") {
+            return URL(string: urlString)
+        }
+        // Базовый URL для аватаров (настраивается в AppConfig)
+        let base = AppConfig.baseURL
+        return URL(string: base + "/media/" + urlString)
+    }
+    
     var body: some View {
-        if let urlString, let url = URL(string: urlString), !urlString.isEmpty {
-            AsyncImage(url: url) { image in
-                image.resizable()
-            } placeholder: {
-                Circle().fill(Color.gray.opacity(0.3))
-                    .overlay(ProgressView())
+        if let url = fullURL {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable()
+                } else if phase.error != nil {
+                    placeholderView
+                } else {
+                    ProgressView()
+                }
             }
             .frame(width: size, height: size)
             .clipShape(Circle())
         } else {
-            Circle()
-                .fill(Color.gray.opacity(0.3))
-                .frame(width: size, height: size)
-                .overlay(
-                    Image(systemName: "person")
-                        .foregroundColor(.gray)
-                )
+            placeholderView
         }
     }
+    
+    private var placeholderView: some View {
+        Circle()
+            .fill(Color.gray.opacity(0.3))
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: "person")
+                    .foregroundColor(.gray)
+            )
+    }
 }
-
 struct MenuItem: View {
     let icon: String
     let title: String

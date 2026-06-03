@@ -66,6 +66,7 @@ struct ChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
                 Task { await viewModel.loadChats() }
             }
+            
 
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)

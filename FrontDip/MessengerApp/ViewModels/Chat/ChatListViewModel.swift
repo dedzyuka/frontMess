@@ -155,8 +155,6 @@ class ChatListViewModel: ObservableObject {
         guard let index = chats.firstIndex(where: { $0.id == chatId }),
               var preview = chats[index].lastMessagePreview,
               preview.messageId == messageId else { return }
-        
-        // Обновляем превью
         let updatedPreview = MessagePreview(
             messageId: preview.messageId,
             senderId: preview.senderId,
@@ -168,14 +166,20 @@ class ChatListViewModel: ObservableObject {
         var updatedChat = chats[index]
         updatedChat.lastMessagePreview = updatedPreview
         chats[index] = updatedChat
+        chats.sort { $0.lastActivityDate > $1.lastActivityDate }
     }
-    
+
     private func handleMessageDeleted(chatId: UUID, messageId: Int64) {
         guard let index = chats.firstIndex(where: { $0.id == chatId }),
               let preview = chats[index].lastMessagePreview,
               preview.messageId == messageId else { return }
-        
-        Task { await refreshLastMessage(for: chatId) }
+        Task {
+            await refreshChat(chatId)
+        }
+    }
+    func refreshChat(_ chatId: UUID) async {
+        // Опционально: сделать запрос одного чата, пока перезагружаем все
+        await loadChats()
     }
     
     private func handleStatusUpdate(chatId: UUID, messageId: Int64, userId: UUID, info: [String: Any]) {

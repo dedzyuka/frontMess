@@ -162,3 +162,126 @@ struct IncomingContactsResponse: Decodable {
 struct IncomingContactWrapper: Decodable {
     let incoming: [Contact]
 }
+
+struct MyProfileResponse: Decodable {
+    let user: MyProfileWrapper
+}
+struct MyProfileWrapper: Decodable {
+    let myProfile: User
+}
+
+struct MyPrivacyResponse: Decodable {
+    let user: PrivacyWrapper
+}
+struct PrivacyWrapper: Decodable {
+    let myPrivacy: PrivacySettingsResponse
+}
+struct PrivacySettingsResponse: Decodable {
+    let whoCanWriteMe: String
+    let whoCanAddToGroups: String
+    let whoCanSeePhone: String
+    let whoCanSeeLastSeen: String
+    let updatedAt: Date?
+}
+
+struct UpdatePrivacyResponse: Decodable {
+    let user: UpdatePrivacyWrapper
+}
+struct UpdatePrivacyWrapper: Decodable {
+    let updatePrivacy: PrivacySettingsResponse
+}
+
+struct ListSessionsResponse: Decodable {
+    let auth: SessionsWrapper
+}
+struct SessionsWrapper: Decodable {
+    let sessions: [SessionInfo]
+}
+struct SessionInfo: Decodable {
+    let sessionId: String
+    let deviceInfo: String?
+    let userAgent: String?
+    let ipAddress: String?
+    let createdAt: Date?
+    let lastSeenAt: Date?
+    let isCurrent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case deviceInfo
+        case userAgent
+        case ipAddress
+        case createdAt
+        case lastSeenAt
+        case isCurrent
+    }
+
+    // Внутренний enum для парсинга Protobuf Timestamp
+    private enum TimestampKeys: String, CodingKey {
+        case seconds
+        case nanos
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        deviceInfo = try? container.decodeIfPresent(String.self, forKey: .deviceInfo)
+        userAgent = try? container.decodeIfPresent(String.self, forKey: .userAgent)
+        ipAddress = try? container.decodeIfPresent(String.self, forKey: .ipAddress)
+        isCurrent = try container.decode(Bool.self, forKey: .isCurrent)
+
+        // Функция парсинга Protobuf Timestamp
+        func parseProtobufTimestamp(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> Date? {
+            // Пробуем извлечь как вложенный контейнер с полями seconds/nanos
+            guard let timestampContainer = try? container.nestedContainer(keyedBy: TimestampKeys.self, forKey: key) else {
+                // Если не получилось, возможно это уже строка ISO8601 (запасной вариант)
+                if let dateString = try? container.decode(String.self, forKey: key) {
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    return formatter.date(from: dateString)
+                }
+                return nil
+            }
+            let seconds = try timestampContainer.decode(Int64.self, forKey: .seconds)
+            let nanos = try timestampContainer.decode(Int32.self, forKey: .nanos)
+            let interval = TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000
+            return Date(timeIntervalSince1970: interval)
+        }
+
+        createdAt = try? parseProtobufTimestamp(container, forKey: .createdAt)
+        lastSeenAt = try? parseProtobufTimestamp(container, forKey: .lastSeenAt)
+    }
+}
+
+struct RevokeSessionResponse: Decodable {
+    let auth: RevokeWrapper
+}
+struct RevokeWrapper: Decodable {
+    let revokeSession: Bool
+}
+
+struct LogoutAllResponse: Decodable {
+    let auth: LogoutAllWrapper
+}
+struct LogoutAllWrapper: Decodable {
+    let logoutAllOtherSessions: Bool
+}
+struct UpdateUserResponse: Decodable {
+    let user: UpdateUserWrapper
+}
+struct UpdateUserWrapper: Decodable {
+    let update: User
+}
+
+// MARK: - Custom Decoder for Protobuf Timestamp in SessionInfo
+private struct ProtobufTimestampCodingKeys: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+    init(stringValue: String) { self.stringValue = stringValue }
+    init(intValue: Int) { self.intValue = intValue; self.stringValue = "\(intValue)" }
+    
+    static let seconds = ProtobufTimestampCodingKeys(stringValue: "seconds")
+    static let nanos = ProtobufTimestampCodingKeys(stringValue: "nanos")
+}
+

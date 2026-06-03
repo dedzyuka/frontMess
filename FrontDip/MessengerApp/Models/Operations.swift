@@ -385,6 +385,123 @@ struct GraphQLQueries {
     }
     """
     
+    static let updateUser = """
+    mutation UpdateUser($userId: String!, $nickName: String, $firstName: String, $lastName: String, $middleName: String, $email: String, $phone: String, $avatarUrl: String, $bio: String) {
+        user {
+            update(userId: $userId, nickName: $nickName, firstName: $firstName, lastName: $lastName, middleName: $middleName, email: $email, phone: $phone, avatarUrl: $avatarUrl, bio: $bio) {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let myProfile = """
+    query MyProfile {
+        user {
+            myProfile {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let myPrivacy = """
+    query MyPrivacy {
+        user {
+            myPrivacy {
+                whoCanWriteMe
+                whoCanAddToGroups
+                whoCanSeePhone
+                whoCanSeeLastSeen
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let updatePrivacy = """
+    mutation UpdatePrivacy($whoCanWriteMe: String, $whoCanAddToGroups: String, $whoCanSeePhone: String, $whoCanSeeLastSeen: String) {
+        user {
+            updatePrivacy(input: {
+                whoCanWriteMe: $whoCanWriteMe
+                whoCanAddToGroups: $whoCanAddToGroups
+                whoCanSeePhone: $whoCanSeePhone
+                whoCanSeeLastSeen: $whoCanSeeLastSeen
+            }) {
+                whoCanWriteMe
+                whoCanAddToGroups
+                whoCanSeePhone
+                whoCanSeeLastSeen
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let listSessions = """
+    query ListSessions {
+        auth {
+            sessions {
+                sessionId
+                deviceInfo
+                userAgent
+                ipAddress
+                createdAt
+                lastSeenAt
+                isCurrent
+            }
+        }
+    }
+    """
+
+    static let revokeSession = """
+    mutation RevokeSession($sessionId: String!) {
+        auth {
+            revokeSession(sessionId: $sessionId)
+        }
+    }
+    """
+
+    static let logoutAllOtherSessions = """
+    mutation LogoutAllOtherSessions {
+        auth {
+            logoutAllOtherSessions
+        }
+    }
+    """
+    
 }
 
 struct UpdateMessageResponse: Decodable {

@@ -184,6 +184,8 @@ class ChatViewModel: ObservableObject {
         )
         let messages = response.message.listMessages
         for msg in messages {
+            // Используем saveMessage (он проверяет существование)
+            _ = database.saveMessage(msg)
             if let attachments = msg.attachments, !attachments.isEmpty {
                 _ = database.saveAttachments(attachments, for: msg.messageId)
             }

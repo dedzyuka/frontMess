@@ -35,6 +35,14 @@ struct ContactsView: View {
             .onAppear {
                 contactService.loadContacts()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .statusUpdated)) { notification in
+                guard let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool else { return }
+                if let index = contactService.contacts.firstIndex(where: { $0.contactUserId == userId }) {
+                    contactService.contacts[index].contactUser?.isOnline = isOnline
+                }
+            }
         }
     }
 }
@@ -47,34 +55,30 @@ struct ContactRow: View {
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: contact.contactUserId)) {
             HStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.3))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(contact.contactUser?.nickName.prefix(1).uppercased() ?? "?")
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                    )
+                AvatarView(urlString: contact.contactUser?.avatarUrl, size: 40)
                 
                 VStack(alignment: .leading) {
                     Text(contact.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
-                    Text("Добавлен: \(formatDate(contact.createdAt))")
-                        .font(.caption)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(contact.contactUser?.isOnline == true ? Color.green : Color.gray)
+                            .frame(width: 8, height: 8)
+                        Text(contact.contactUser?.isOnline == true ? "онлайн" : "офлайн")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                
-                
                 Spacer()
-                
-                Button(action: {
+                Button {
                     showingActionSheet = true
-                }) {
+                } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-            .buttonStyle(PlainButtonStyle())
+            .padding(.vertical, 8)
             .swipeActions {
                 Button(role: .destructive) {
                     ContactService.shared.removeContact(userId: contact.contactUserId)
@@ -82,16 +86,13 @@ struct ContactRow: View {
                     Label("Удалить", systemImage: "trash")
                 }
             }
-            .padding(.vertical, 8)
             .actionSheet(isPresented: $showingActionSheet) {
                 ActionSheet(
-                    title: Text(contact.contactUser?.avatarUrl ?? "Неизвестный"),
+                    title: Text(contact.contactUser?.nickName ?? "Контакт"),
                     buttons: [
-                        .default(Text("Добавить в чат")) {
-                            showingChatSelection = true
-                        },
+                        .default(Text("Добавить в чат")) { showingChatSelection = true },
                         .destructive(Text("Удалить контакт")) {
-                            ContactService.shared.removeContact(userId: contact.userId)
+                            ContactService.shared.removeContact(userId: contact.contactUserId)
                         },
                         .cancel()
                     ]
@@ -101,13 +102,6 @@ struct ContactRow: View {
                 ChatSelectionView(contact: contact)
             }
         }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
+        .buttonStyle(PlainButtonStyle())
     }
 }

@@ -1,27 +1,94 @@
 import Foundation
 
 // MARK: - User
-struct User: Identifiable, Codable {
+class User: Identifiable, Codable {
     let userId: UUID
-    let nickName: String
-    let firstName: String?
-    let lastName: String?
-    let middleName: String?
-    let email: String?
-    let phone: String?
-    let avatarUrl: String?
-    let bio: String?
-    let lastSeen: Date?
-    
+    var nickName: String
+    var firstName: String?
+    var lastName: String?
+    var middleName: String?
+    var email: String?
+    var phone: String?
+    var avatarUrl: String?
+    var bio: String?
+    var lastSeen: Date?
     var isOnline: Bool?
-    let status: String?          // опционально
-    let emailVerified: Bool?
-    let phoneVerified: Bool?
-    let isAdmin: Bool?
-    let createdAt: Date?
-    let updatedAt: Date?
+    var status: String?
+    var emailVerified: Bool?
+    var phoneVerified: Bool?
+    var isAdmin: Bool?
+    var createdAt: Date?
+    var updatedAt: Date?
     
     var id: UUID { userId }
+    
+    // Инициализатор с параметрами (можно оставить как есть, только свойства теперь var)
+    init(userId: UUID, nickName: String, firstName: String?, lastName: String?, middleName: String?, email: String?, phone: String?, avatarUrl: String?, bio: String?, lastSeen: Date?, isOnline: Bool?, status: String?, emailVerified: Bool?, phoneVerified: Bool?, isAdmin: Bool?, createdAt: Date?, updatedAt: Date?) {
+        self.userId = userId
+        self.nickName = nickName
+        self.firstName = firstName
+        self.lastName = lastName
+        self.middleName = middleName
+        self.email = email
+        self.phone = phone
+        self.avatarUrl = avatarUrl
+        self.bio = bio
+        self.lastSeen = lastSeen
+        self.isOnline = isOnline
+        self.status = status
+        self.emailVerified = emailVerified
+        self.phoneVerified = phoneVerified
+        self.isAdmin = isAdmin
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+    
+    // Codable – добавить required init и encode
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try container.decode(UUID.self, forKey: .userId)
+        nickName = try container.decode(String.self, forKey: .nickName)
+        firstName = try? container.decodeIfPresent(String.self, forKey: .firstName)
+        lastName = try? container.decodeIfPresent(String.self, forKey: .lastName)
+        middleName = try? container.decodeIfPresent(String.self, forKey: .middleName)
+        email = try? container.decodeIfPresent(String.self, forKey: .email)
+        phone = try? container.decodeIfPresent(String.self, forKey: .phone)
+        avatarUrl = try? container.decodeIfPresent(String.self, forKey: .avatarUrl)
+        bio = try? container.decodeIfPresent(String.self, forKey: .bio)
+        lastSeen = try? container.decodeIfPresent(Date.self, forKey: .lastSeen)
+        isOnline = try? container.decodeIfPresent(Bool.self, forKey: .isOnline)
+        status = try? container.decodeIfPresent(String.self, forKey: .status)
+        emailVerified = try? container.decodeIfPresent(Bool.self, forKey: .emailVerified)
+        phoneVerified = try? container.decodeIfPresent(Bool.self, forKey: .phoneVerified)
+        isAdmin = try? container.decodeIfPresent(Bool.self, forKey: .isAdmin)
+        createdAt = try? container.decodeIfPresent(Date.self, forKey: .createdAt)
+        updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(nickName, forKey: .nickName)
+        try container.encodeIfPresent(firstName, forKey: .firstName)
+        try container.encodeIfPresent(lastName, forKey: .lastName)
+        try container.encodeIfPresent(middleName, forKey: .middleName)
+        try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(phone, forKey: .phone)
+        try container.encodeIfPresent(avatarUrl, forKey: .avatarUrl)
+        try container.encodeIfPresent(bio, forKey: .bio)
+        try container.encodeIfPresent(lastSeen, forKey: .lastSeen)
+        try container.encodeIfPresent(isOnline, forKey: .isOnline)
+        try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(emailVerified, forKey: .emailVerified)
+        try container.encodeIfPresent(phoneVerified, forKey: .phoneVerified)
+        try container.encodeIfPresent(isAdmin, forKey: .isAdmin)
+        try container.encodeIfPresent(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case userId, nickName, firstName, lastName, middleName, email, phone, avatarUrl, bio, lastSeen, isOnline, status, emailVerified, phoneVerified, isAdmin, createdAt, updatedAt
+    }
 }
 struct Reaction: Identifiable, Codable {
     let id = UUID()
@@ -115,20 +182,12 @@ struct Contact: Identifiable, Codable {
     let status: String
     let createdAt: Date
     let updatedAt: Date?
-    let contactUser: User?
+    var contactUser: User?   // теперь var
     
-    // Вычисляемое свойство для Identifiable (не участвует в декодировании)
-    var id: String {
-        "\(userId.uuidString)-\(contactUserId.uuidString)"
-    }
+    var id: String { "\(userId.uuidString)-\(contactUserId.uuidString)" }
     
     enum CodingKeys: String, CodingKey {
-        case userId
-        case contactUserId
-        case status
-        case createdAt
-        case updatedAt
-        case contactUser
+        case userId, contactUserId, status, createdAt, updatedAt, contactUser
     }
 }
 
