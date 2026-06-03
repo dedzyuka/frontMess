@@ -694,4 +694,20 @@ class LocalDatabase {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return false }
         return saveMessageStatus(messageId: messageId, userId: currentUserId, deliveredAt: deliveredAt, readAt: readAt)
     }
+    func deleteMessage(_ messageId: Int64) -> Bool {
+        guard let db = db else { return false }
+        do {
+            // Удаляем зависимые записи (foreign keys не настроены каскадно, делаем вручную)
+            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
+            try db.run(reactionsTable.filter(reactionMessageId == messageId).delete())
+            try db.run(messageStatusesTable.filter(msMessageId == messageId).delete())
+            // Удаляем само сообщение
+            try db.run(messagesTable.filter(msgId == messageId).delete())
+            print("✅ Message \(messageId) deleted from local DB")
+            return true
+        } catch {
+            print("❌ deleteMessage error: \(error)")
+            return false
+        }
+    }
 }

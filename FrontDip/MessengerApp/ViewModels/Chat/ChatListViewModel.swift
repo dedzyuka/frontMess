@@ -1,51 +1,95 @@
+//
+//  ChatListViewModel.swift
+//  FrontDip
+//
+
 import Foundation
 import Combine
 
 class ChatListViewModel: ObservableObject {
     @Published var chats: [Chat] = []
-        @Published var isLoading = false
-        @Published var errorMessage: String?
-        
-        private let graphQL = GraphQLClient.shared
-        private var cancellables = Set<AnyCancellable>()   // ← добавить
-        
-        init() {
-            setupNotifications()   // ← добавить
-        }
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let graphQL = GraphQLClient.shared
+    private var cancellables = Set<AnyCancellable>()
+    private var currentUserId: UUID? { AppState.shared.currentUser?.userId }
+    
+    // Хранилище непрочитанных (in-memory)
+    private var unreadCounts: [UUID: Int] = [:]
+    
+    init() {
+        setupNotifications()
+    }
     
     private func setupNotifications() {
-            NotificationCenter.default.publisher(for: .newMessageReceived)
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] notification in
-                    guard let message = notification.object as? Message else { return }
-                    if let index = self?.chats.firstIndex(where: { $0.id == message.chatId }) {
-                        // Создаём новый Chat с обновлённым lastMessage
-                        if let oldChat = self?.chats[index] {
-                            let updatedChat = Chat(
-                                chatId: oldChat.id,
-                                chatType: oldChat.chatType,
-                                name: oldChat.name,
-                                description: oldChat.description,
-                                avatarUrl: oldChat.avatarUrl,
-                                creatorId: oldChat.creatorId,
-                                isPublic: oldChat.isPublic,
-                                maxMembers: oldChat.maxMembers,
-                                createdAt: oldChat.createdAt,
-                                membersCount: oldChat.membersCount,
-                                lastMessage: message.content
-                            )
-                            self?.chats[index] = updatedChat
-                        }
-                    }
+        // ---- Существующие подписки (из оригинального кода) ----
+        NotificationCenter.default.publisher(for: .chatCreated)
+            .sink { [weak self] notification in
+                if let newChat = notification.object as? Chat {
+                    self?.addChat(newChat)
                 }
-                .store(in: &cancellables)
-        }
+            }
+            .store(in: &cancellables)
         
+        // ---- НОВЫЕ ПОДПИСКИ для превью и непрочитанных ----
+        // Новое сообщение
+        NotificationCenter.default.publisher(for: .newMessageReceived)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let message = notification.object as? Message else { return }
+                self?.handleNewMessage(message)
+            }
+            .store(in: &cancellables)
+        
+        // Обновление сообщения (редактирование)
+        NotificationCenter.default.publisher(for: .messageUpdated)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64,
+                      let chatId = info["chatId"] as? UUID,
+                      let content = info["content"] as? String else { return }
+                self?.handleMessageUpdated(chatId: chatId, messageId: messageId, newContent: content)
+            }
+            .store(in: &cancellables)
+        
+        // Удаление сообщения
+        NotificationCenter.default.publisher(for: .messageDeleted)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let (messageId, chatId) = notification.object as? (Int64, UUID) else { return }
+                self?.handleMessageDeleted(chatId: chatId, messageId: messageId)
+            }
+            .store(in: &cancellables)
+        
+        // Обновление статуса (доставка/прочтение)
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64,
+                      let chatId = info["chatId"] as? UUID,
+                      let userId = info["userId"] as? UUID else { return }
+                self?.handleStatusUpdate(chatId: chatId, messageId: messageId, userId: userId, info: info)
+            }
+            .store(in: &cancellables)
+        
+        // Событие открытия чата (для сброса непрочитанных)
+        NotificationCenter.default.publisher(for: .chatOpened)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                if let chatId = notification.object as? UUID {
+                    self?.resetUnreadCount(for: chatId)
+                }
+            }
+            .store(in: &cancellables)
+    }
     
+    // MARK: - Загрузка чатов (модифицированная)
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
-        
         
         do {
             let response: ListChatsResponse = try await graphQL.perform(
@@ -54,8 +98,18 @@ class ChatListViewModel: ObservableObject {
                 responseType: ListChatsResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
+            let loadedChats = response.chat.list
             await MainActor.run {
-                self.chats = response.chat.list
+                var updatedChats = loadedChats
+                for i in 0..<updatedChats.count {
+                    let chatId = updatedChats[i].id
+                    updatedChats[i].unreadCount = self.unreadCounts[chatId] ?? 0
+                    if let preview = updatedChats[i].lastMessagePreview,
+                       preview.senderId == self.currentUserId {
+                        updatedChats[i].lastMessageStatus = self.fetchMessageStatus(for: preview.messageId)
+                    }
+                }
+                self.chats = updatedChats.sorted { $0.lastActivityDate > $1.lastActivityDate }
                 self.isLoading = false
                 self.errorMessage = nil
             }
@@ -67,6 +121,104 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
+    // MARK: - НОВЫЕ ОБРАБОТЧИКИ для превью
+    
+    private func handleNewMessage(_ message: Message) {
+        guard let index = chats.firstIndex(where: { $0.id == message.chatId }) else {
+            Task { await loadChats() }
+            return
+        }
+        
+        var updatedChat = chats[index]
+        let preview = MessagePreview(
+            messageId: message.messageId,
+            senderId: message.senderId,
+            senderNickname: nil,
+            textPreview: message.content ?? (message.attachments != nil ? "[Вложение]" : ""),
+            createdAt: message.createdAt,
+            type: message.type
+        )
+        updatedChat.lastMessagePreview = preview
+        
+        if message.senderId != currentUserId {
+            updatedChat.unreadCount += 1
+            unreadCounts[message.chatId] = updatedChat.unreadCount
+        } else {
+            updatedChat.lastMessageStatus = .sending
+        }
+        
+        chats[index] = updatedChat
+        chats.sort { $0.lastActivityDate > $1.lastActivityDate }
+    }
+    
+    private func handleMessageUpdated(chatId: UUID, messageId: Int64, newContent: String) {
+        guard let index = chats.firstIndex(where: { $0.id == chatId }),
+              var preview = chats[index].lastMessagePreview,
+              preview.messageId == messageId else { return }
+        
+        // Обновляем превью
+        let updatedPreview = MessagePreview(
+            messageId: preview.messageId,
+            senderId: preview.senderId,
+            senderNickname: preview.senderNickname,
+            textPreview: newContent,
+            createdAt: preview.createdAt,
+            type: preview.type
+        )
+        var updatedChat = chats[index]
+        updatedChat.lastMessagePreview = updatedPreview
+        chats[index] = updatedChat
+    }
+    
+    private func handleMessageDeleted(chatId: UUID, messageId: Int64) {
+        guard let index = chats.firstIndex(where: { $0.id == chatId }),
+              let preview = chats[index].lastMessagePreview,
+              preview.messageId == messageId else { return }
+        
+        Task { await refreshLastMessage(for: chatId) }
+    }
+    
+    private func handleStatusUpdate(chatId: UUID, messageId: Int64, userId: UUID, info: [String: Any]) {
+        guard let index = chats.firstIndex(where: { $0.id == chatId }),
+              let preview = chats[index].lastMessagePreview,
+              preview.messageId == messageId,
+              let deliveredAt = info["deliveredAt"] as? Date?,
+              let readAt = info["readAt"] as? Date? else { return }
+        
+        var updatedChat = chats[index]
+        if readAt != nil {
+            updatedChat.lastMessageStatus = .read
+        } else if deliveredAt != nil {
+            updatedChat.lastMessageStatus = .delivered
+        } else {
+            updatedChat.lastMessageStatus = .sending
+        }
+        chats[index] = updatedChat
+    }
+    
+    private func refreshLastMessage(for chatId: UUID) async {
+        await loadChats()
+    }
+    
+    private func fetchMessageStatus(for messageId: Int64) -> MessageStatusType? {
+        // Получаем статус из локальной БД для данного сообщения
+        guard let (deliveredAt, readAt) = LocalDatabase.shared.getMessageStatus(for: messageId, userId: currentUserId ?? UUID()) else { return nil }
+        if readAt != nil { return .read }
+        if deliveredAt != nil { return .delivered }
+        return .sending
+    }
+    
+    // MARK: - Сброс непрочитанных
+    func resetUnreadCount(for chatId: UUID) {
+        if let index = chats.firstIndex(where: { $0.id == chatId }) {
+            var chat = chats[index]
+            chat.unreadCount = 0
+            chats[index] = chat
+            unreadCounts[chatId] = 0
+        }
+    }
+    
+    // MARK: - Существующие методы (без изменений)
     func createChat(name: String) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
@@ -116,11 +268,9 @@ class ChatListViewModel: ObservableObject {
     }
 
     func findOrCreatePrivateChat(with userId: UUID) async -> Chat? {
-        // Сначала ищем существующий
         if let existing = await findExistingPrivateChat(with: userId) {
             return existing
         }
-        // Создаём новый
         return await createPrivateChat(with: userId)
     }
 
@@ -144,13 +294,6 @@ class ChatListViewModel: ObservableObject {
         } catch {
             print("Error finding private chat: \(error)")
             return nil
-        }
-    }
-    func addChat(_ chat: Chat) {
-        DispatchQueue.main.async {
-            if !self.chats.contains(where: { $0.id == chat.id }) {
-                self.chats.insert(chat, at: 0)
-            }
         }
     }
 
@@ -204,7 +347,12 @@ class ChatListViewModel: ObservableObject {
             return nil
         }
     }
-
     
-    
+    func addChat(_ chat: Chat) {
+        DispatchQueue.main.async {
+            if !self.chats.contains(where: { $0.id == chat.id }) {
+                self.chats.insert(chat, at: 0)
+            }
+        }
+    }
 }

@@ -41,19 +41,39 @@ struct Chat: Identifiable, Codable {
     let maxMembers: Int
     let createdAt: Date
     let membersCount: Int
-    var lastMessage: String?   // ← строковое поле
-
+    var lastMessage: String?
+    
+    // НОВЫЕ ПОЛЯ
+    var lastMessagePreview: MessagePreview?
+    var unreadCount: Int = 0
+    var lastMessageStatus: MessageStatusType?   // только для исходящих сообщений
+    
     var id: UUID { chatId }
+    
+    // Вычисляемое свойство для сортировки
+    var lastActivityDate: Date {
+        return lastMessagePreview?.createdAt ?? createdAt
+    }
+    
+    // Кастомный декодер, чтобы поддерживать новые поля (если они приходят с сервера)
+    enum CodingKeys: String, CodingKey {
+        case chatId, chatType, name, description, avatarUrl, creatorId, isPublic, maxMembers, createdAt, membersCount, lastMessage, lastMessagePreview
+    }
 }
 
 // MARK: - MessagePreview
 struct MessagePreview: Codable {
     let messageId: Int64
     let senderId: UUID
-    let type: String
+    let senderNickname: String?
     let textPreview: String?
     let createdAt: Date
-    let isDeleted: Bool
+    let type: String
+}
+enum MessageStatusType {
+    case sending
+    case delivered
+    case read
 }
 
 

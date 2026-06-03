@@ -31,7 +31,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок (как раньше)
+            // Заголовок
             HStack(spacing: 12) {
                 Button { presentationMode.wrappedValue.dismiss() } label: {
                     Image(systemName: "chevron.left").font(.title2).foregroundColor(.blue)
@@ -100,7 +100,7 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода и кнопка отправки
+            // Поле ввода
             HStack(spacing: 12) {
                 Button { showingActionSheet = true } label: {
                     Image(systemName: "plus.circle.fill").font(.system(size: 32)).foregroundColor(.blue)
@@ -170,6 +170,9 @@ struct ChatView: View {
                 }
             }
         )
+        .onAppear {
+            NotificationCenter.default.post(name: .chatOpened, object: chat.id)
+        }
     }
     
     // MARK: - Отправка с вложением (исправленная)

@@ -119,7 +119,7 @@ class ChatViewModel: ObservableObject {
     // MARK: - Загрузка сообщений (кэш + сеть)
     func loadMessages() {
         Task {
-            // 1. Загружаем кэш из БД
+            // 1. Быстрый показ из кэша (для мгновенного отображения)
             let cached = await loadMessagesFromDatabase()
             await MainActor.run {
                 self.messages = cached
@@ -127,20 +127,19 @@ class ChatViewModel: ObservableObject {
                 self.markVisibleMessagesAsRead()
             }
             
-            // 2. Загружаем свежие с сервера
+            // 2. Загружаем свежие данные с сервера – ПОЛНОСТЬЮ ЗАМЕНЯЕМ
             do {
-                let newMessages = try await fetchMessagesFromServer()
-                if !newMessages.isEmpty {
-                    let merged = mergeMessages(current: cached, new: newMessages)
-                    await MainActor.run {
-                        self.messages = merged
-                        self.saveMessagesToDatabase(merged)
-                        self.objectWillChange.send()
-                        self.markVisibleMessagesAsRead()
-                        self.updateSentMessagesStatuses()  // обновим статусы отправленных сообщений
-                    }
-                    lastSyncDate = Date()
+                let freshMessages = try await fetchMessagesFromServer()
+                await MainActor.run {
+                    // Заменяем массив, не сливая
+                    self.messages = freshMessages
+                    // Перезаписываем БД актуальными данными
+                    self.saveMessagesToDatabase(freshMessages)
+                    self.objectWillChange.send()
+                    self.markVisibleMessagesAsRead()
+                    self.updateSentMessagesStatuses()
                 }
+                self.lastSyncDate = Date()
             } catch {
                 print("Network load error: \(error)")
             }
@@ -675,7 +674,7 @@ class ChatViewModel: ObservableObject {
     private func deleteMessageLocally(messageId: Int64) {
         DispatchQueue.main.async {
             self.messages.removeAll(where: { $0.messageId == messageId })
-            _ = self.database.deleteAttachments(for: messageId)
+            _ = self.database.deleteMessage(messageId)   // полное удаление
             self.objectWillChange.send()
         }
     }

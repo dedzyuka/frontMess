@@ -71,6 +71,14 @@ struct GraphQLQueries {
           membersCount
           createdAt
           lastMessage
+          lastMessagePreview {
+            messageId
+            senderId
+            senderNickname
+            textPreview
+            createdAt
+            type
+          }
         }
       }
     }

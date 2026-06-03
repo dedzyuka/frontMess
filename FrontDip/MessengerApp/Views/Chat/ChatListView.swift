@@ -2,8 +2,6 @@
 //  ChatListView.swift
 //  FrontDip
 //
-//  Created by Bogdan Sakhno on 21.05.26.
-//
 
 import SwiftUI
 
@@ -55,20 +53,14 @@ struct ChatListView: View {
                 if let chat = notification.object as? Chat {
                     selectedChat = chat
                     showChat = true
-                    // Опционально: если чата нет в списке viewModel.chats – добавить его
                     if !viewModel.chats.contains(where: { $0.id == chat.id }) {
                         viewModel.addChat(chat)
                     }
                 }
             }
-            // Обновление списка при новых сообщениях
             .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
-                // Не перезагружать список, а только обновить lastMessage для соответствующего чата
-                // Вместо loadChats() вызываем updateLastMessage(for:)
-                if let currentChat = self.selectedChat {
-                    // ничего не делаем, сообщение уже добавится в текущий ChatViewModel
-                } else {
-                    Task { await viewModel.loadChats() } // только если не в чате
+                if self.selectedChat == nil {
+                    Task { await viewModel.loadChats() }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
@@ -90,7 +82,7 @@ struct ChatListView: View {
             Button("Создать") {
                 isCreating = true
                 Task {
-                    await createChat()
+                    await viewModel.createChat(name: newChatName)
                     isCreating = false
                     showCreateChat = false
                 }
@@ -105,7 +97,6 @@ struct ChatListView: View {
             Text(viewModel.errorMessage ?? "")
         }
     }
-    
 
     @ViewBuilder
     private var mainContent: some View {
@@ -130,7 +121,7 @@ struct ChatListView: View {
         } else {
             List(viewModel.chats) { chat in
                 NavigationLink(destination: ChatView(chat: chat)) {
-                    ChatRow(chat: chat)
+                    ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
                 }
             }
             .listStyle(PlainListStyle())
@@ -139,20 +130,16 @@ struct ChatListView: View {
             }
         }
     }
-
-    private func createChat() async {
-        let success = await viewModel.createChat(name: newChatName)
-        if success {
-            newChatName = ""
-        }
-    }
 }
 
+// MARK: - Новая ChatRow с превью и статусами
 struct ChatRow: View {
     let chat: Chat
-
+    let currentUserId: UUID?
+    
     var body: some View {
         HStack(spacing: 12) {
+            // Аватар
             Circle()
                 .fill(Color.blue.opacity(0.2))
                 .frame(width: 50, height: 50)
@@ -162,25 +149,95 @@ struct ChatRow: View {
                         .fontWeight(.semibold)
                         .foregroundColor(.blue)
                 )
+            
             VStack(alignment: .leading, spacing: 4) {
+                // Название чата
                 Text(chat.name ?? "Чат")
                     .font(.headline)
-                Text(chat.lastMessage ?? "Нет сообщений")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                
+                // Превью сообщения
+                if let preview = chat.lastMessagePreview {
+                    HStack(spacing: 4) {
+                        // Для групп – ник отправителя
+                        if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
+                            (Text(preview.senderNickname ?? "Кто-то")
+                                .font(.caption)
+                                .foregroundColor(.secondary) +
+                             Text(": ")
+                                .font(.caption)
+                                .foregroundColor(.secondary) +
+                             Text(preview.textPreview ?? "")
+                                .font(.caption)
+                                .foregroundColor(.secondary))
+                        } else {
+                            Text(preview.textPreview ?? "")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        // Статус для своих сообщений (галочки)
+                        if preview.senderId == currentUserId, let status = chat.lastMessageStatus {
+                            Spacer().frame(width: 4)
+                            MessageStatusIcon(status: status)
+                                .font(.caption2)
+                        }
+                    }
                     .lineLimit(1)
+                } else {
+                    Text("Нет сообщений")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
+            
             Spacer()
-            Text(formatDate(chat.createdAt))
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            
+            // Правая колонка: время + счётчик
+            VStack(alignment: .trailing, spacing: 4) {
+                if let preview = chat.lastMessagePreview {
+                    Text(formatDate(preview.createdAt))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                
+                if chat.unreadCount > 0 && (chat.lastMessagePreview?.senderId != currentUserId) {
+                    Text("\(chat.unreadCount)")
+                        .font(.caption2)
+                        .padding(6)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .clipShape(Circle())
+                }
+            }
         }
         .padding(.vertical, 8)
     }
-
+    
     private func formatDate(_ date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// Компонент иконки статуса
+struct MessageStatusIcon: View {
+    let status: MessageStatusType
+    
+    var body: some View {
+        switch status {
+        case .sending:
+            Image(systemName: "clock")
+                .foregroundColor(.gray)
+        case .delivered:
+            Image(systemName: "checkmark")
+                .foregroundColor(.gray)
+        case .read:
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark")
+                Image(systemName: "checkmark")
+            }
+            .foregroundColor(.blue)
+        }
     }
 }
