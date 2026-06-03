@@ -124,6 +124,7 @@ struct ChatListView: View {
                 NavigationLink(destination: ChatView(chat: chat)) {
                     ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
                 }
+                .id(chat.id)
             }
             .listStyle(PlainListStyle())
             .refreshable {
@@ -133,7 +134,6 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - Новая ChatRow с превью и статусами
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -141,25 +141,41 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Аватар
-            Circle()
-                .fill(Color.blue.opacity(0.2))
-                .frame(width: 50, height: 50)
-                .overlay(
-                    Text((chat.name?.prefix(1).uppercased() ?? "?"))
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.blue)
-                )
+            if chat.chatType.lowercased() == "private", let otherUserNickname = chat.otherUserNickname {
+                // Приватный чат – аватар собеседника с индикатором онлайн
+                AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
+                    .overlay(
+                        Circle()
+                            .fill(chat.otherUserIsOnline ? Color.green : Color.gray)
+                            .frame(width: 12, height: 12)
+                            .offset(x: 18, y: 18)
+                    )
+            } else {
+                // Групповой чат
+                Circle()
+                    .fill(Color.blue.opacity(0.2))
+                    .frame(width: 50, height: 50)
+                    .overlay(
+                        Text((chat.name?.prefix(1).uppercased() ?? "?"))
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.blue)
+                    )
+            }
             
             VStack(alignment: .leading, spacing: 4) {
                 // Название чата
-                Text(chat.name ?? "Чат")
-                    .font(.headline)
+                if chat.chatType.lowercased() == "private", let nickname = chat.otherUserNickname {
+                    Text(nickname)
+                        .font(.headline)
+                } else {
+                    Text(chat.name ?? "Чат")
+                        .font(.headline)
+                }
                 
-                // Превью сообщения
+                // Превью сообщения (без изменений)
                 if let preview = chat.lastMessagePreview {
                     HStack(spacing: 4) {
-                        // Для групп – ник отправителя
                         if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
                             (Text(preview.senderNickname ?? "Кто-то")
                                 .font(.caption)
@@ -176,7 +192,6 @@ struct ChatRow: View {
                                 .foregroundColor(.secondary)
                         }
                         
-                        // Статус для своих сообщений (галочки)
                         if preview.senderId == currentUserId, let status = chat.lastMessageStatus {
                             Spacer().frame(width: 4)
                             MessageStatusIcon(status: status)
@@ -193,7 +208,6 @@ struct ChatRow: View {
             
             Spacer()
             
-            // Правая колонка: время + счётчик
             VStack(alignment: .trailing, spacing: 4) {
                 if let preview = chat.lastMessagePreview {
                     Text(formatDate(preview.createdAt))
@@ -221,24 +235,18 @@ struct ChatRow: View {
     }
 }
 
-// Компонент иконки статуса
+// MessageStatusIcon остаётся без изменений
 struct MessageStatusIcon: View {
     let status: MessageStatusType
-    
     var body: some View {
         switch status {
-        case .sending:
-            Image(systemName: "clock")
-                .foregroundColor(.gray)
-        case .delivered:
+        case .sending: Image(systemName: "clock").foregroundColor(.gray)
+        case .delivered: Image(systemName: "checkmark").foregroundColor(.gray)
+        case .read: HStack(spacing: 2) {
             Image(systemName: "checkmark")
-                .foregroundColor(.gray)
-        case .read:
-            HStack(spacing: 2) {
-                Image(systemName: "checkmark")
-                Image(systemName: "checkmark")
-            }
-            .foregroundColor(.blue)
+            Image(systemName: "checkmark")
+        }
+        .foregroundColor(.blue)
         }
     }
 }

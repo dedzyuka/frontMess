@@ -165,9 +165,11 @@ struct AttachmentView: View {
     }
     
     private func loadImageURL() {
-        let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
+        let base = AppConfig.baseURL
+        let path = attachment.storagePath
+        let urlString = base + "/media/" + path
         if let url = URL(string: urlString) {
-            print("loadImageURL: \(urlString)")
+            print("Attachment URL: \(urlString)")
             imageURL = url
         }
     }

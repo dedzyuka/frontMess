@@ -22,6 +22,8 @@ struct ChatView: View {
     @State private var showDeleteConfirmation = false
     @State private var showReactionPicker = false
     @State private var reactionEmoji = ""
+    @State private var typingTimer: Timer?
+    @State private var isTyping = false
 
     
     init(chat: Chat) {
@@ -44,6 +46,12 @@ struct ChatView: View {
                             AvatarView(urlString: otherUser.avatarUrl, size: 40)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(otherUser.nickName).font(.headline).foregroundColor(.primary)
+                                if viewModel.isSomeoneTyping {
+                                    Text("печатает...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .padding(.leading, 8)
+                                }
                                 HStack(spacing: 4) {
                                     Circle().fill(viewModel.isOtherUserOnline ? Color.green : Color.gray).frame(width: 8, height: 8)
                                     Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн").font(.caption).foregroundColor(.secondary)
@@ -54,6 +62,12 @@ struct ChatView: View {
                     .buttonStyle(PlainButtonStyle())
                 } else {
                     Text(viewModel.chatTitle).font(.headline).lineLimit(1)
+                    if viewModel.isSomeoneTyping {
+                        Text("печатает...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 8)
+                    }
                 }
                 
                 Spacer()
@@ -111,6 +125,9 @@ struct ChatView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(25)
                     .disabled(isSending)
+                    .onChange(of: viewModel.newMessageText) { newValue in
+                            handleTyping(newValue)
+                        }
                 
                 if isUploading || isSending {
                     ProgressView().frame(width: 32, height: 32)
@@ -246,6 +263,19 @@ struct ChatView: View {
                 if !success {
                     NotificationService.shared.showError("Не удалось отправить сообщение")
                 }
+            }
+        }
+    }
+    private func handleTyping(_ text: String) {
+        if !text.isEmpty && !isTyping {
+            isTyping = true
+            WebSocketService.shared.sendTyping(chatId: chat.id, isTyping: true)
+        }
+        typingTimer?.invalidate()
+        typingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
+            if self.isTyping {
+                self.isTyping = false
+                WebSocketService.shared.sendTyping(chatId: self.chat.id, isTyping: false)
             }
         }
     }

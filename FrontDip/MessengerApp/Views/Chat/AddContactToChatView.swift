@@ -109,14 +109,7 @@ struct ContactSelectionRow: View {
     
     var body: some View {
         HStack {
-            Circle()
-                .fill(Color.blue.opacity(0.3))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text((contact.contactUser?.nickName ?? "?").prefix(1).uppercased())
-                        .font(.headline)
-                        .foregroundColor(.blue)
-                )
+            AvatarView(urlString: contact.contactUser?.avatarUrl, size: 40)
             
             VStack(alignment: .leading) {
                 Text(contact.contactUser?.nickName ?? "Неизвестный")

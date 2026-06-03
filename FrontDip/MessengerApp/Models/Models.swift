@@ -113,7 +113,11 @@ struct Chat: Identifiable, Codable {
     // НОВЫЕ ПОЛЯ
     var lastMessagePreview: MessagePreview?
     var unreadCount: Int = 0
-    var lastMessageStatus: MessageStatusType?   // только для исходящих сообщений
+    var lastMessageStatus: MessageStatusType?
+    var otherUserId: UUID?
+    var otherUserNickname: String?
+    var otherUserAvatarUrl: String?
+    var otherUserIsOnline: Bool = false// только для исходящих сообщений
     
     var id: UUID { chatId }
     

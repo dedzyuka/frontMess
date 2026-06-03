@@ -1,8 +1,4 @@
-//
-//  ChatListViewModel.swift
-//  FrontDip
-//
-
+// ./FrontDip/MessengerApp/ViewModels/Chat/ChatListViewModel.swift
 import Foundation
 import Combine
 
@@ -15,7 +11,6 @@ class ChatListViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var currentUserId: UUID? { AppState.shared.currentUser?.userId }
     
-    // Хранилище непрочитанных (in-memory)
     private var unreadCounts: [UUID: Int] = [:]
     
     init() {
@@ -23,7 +18,6 @@ class ChatListViewModel: ObservableObject {
     }
     
     private func setupNotifications() {
-        // ---- Существующие подписки (из оригинального кода) ----
         NotificationCenter.default.publisher(for: .chatCreated)
             .sink { [weak self] notification in
                 if let newChat = notification.object as? Chat {
@@ -32,8 +26,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // ---- НОВЫЕ ПОДПИСКИ для превью и непрочитанных ----
-        // Новое сообщение
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -42,7 +34,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Обновление сообщения (редактирование)
         NotificationCenter.default.publisher(for: .messageUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -54,7 +45,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Удаление сообщения
         NotificationCenter.default.publisher(for: .messageDeleted)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -63,7 +53,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Обновление статуса (доставка/прочтение)
         NotificationCenter.default.publisher(for: .statusUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -75,7 +64,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Событие открытия чата (для сброса непрочитанных)
         NotificationCenter.default.publisher(for: .chatOpened)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -84,9 +72,22 @@ class ChatListViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        
+        // НОВАЯ ПОДПИСКА: обновление онлайн-статуса для приватных чатов
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool else { return }
+                for i in 0..<self.chats.count where self.chats[i].otherUserId == userId {
+                    self.chats[i].otherUserIsOnline = isOnline
+                }
+            }
+            .store(in: &cancellables)
     }
     
-    // MARK: - Загрузка чатов (модифицированная)
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
@@ -113,6 +114,9 @@ class ChatListViewModel: ObservableObject {
                 self.isLoading = false
                 self.errorMessage = nil
             }
+            // Обогащаем приватные чаты информацией о втором участнике
+            await enrichPrivateChats()
+            await MainActor.run { self.objectWillChange.send() }
         } catch {
             await MainActor.run {
                 self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
@@ -121,8 +125,50 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
-    // MARK: - НОВЫЕ ОБРАБОТЧИКИ для превью
+    // НОВЫЙ МЕТОД: загрузка данных о втором участнике для приватных чатов
+    private func enrichPrivateChats() async {
+        guard let currentUserId = currentUserId else { return }
+        for i in 0..<chats.count where chats[i].chatType.lowercased() == "private" {
+            let chatId = chats[i].id
+            // Пропускаем уже загруженные
+            if chats[i].otherUserId != nil { continue }
+            let memberIds = await getChatMemberIds(for: chatId)
+            let otherId = memberIds.first(where: { $0 != currentUserId })
+            guard let otherId else { continue }
+            do {
+                let otherUser = try await UserService.shared.getUser(userId: otherId)
+                await MainActor.run {
+                    if let index = self.chats.firstIndex(where: { $0.id == chatId }) {
+                        self.chats[index].otherUserId = otherId
+                        self.chats[index].otherUserNickname = otherUser.nickName
+                        self.chats[index].otherUserAvatarUrl = otherUser.avatarUrl
+                        self.chats[index].otherUserIsOnline = otherUser.isOnline ?? false
+                        self.objectWillChange.send()  // Принудительное обновление UI
+                    }
+                }
+            } catch {
+                print("Failed to load other user for chat \(chatId): \(error)")
+            }
+        }
+    }
     
+    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
+        let variables = ["chatId": chatId.uuidString]
+        do {
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
+                variables: variables,
+                responseType: ChatMemberIdsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.map { $0.userId }
+        } catch {
+            print("Failed to load chat member ids: \(error)")
+            return []
+        }
+    }
+    
+
     private func handleNewMessage(_ message: Message) {
         guard let index = chats.firstIndex(where: { $0.id == message.chatId }) else {
             Task { await loadChats() }
@@ -301,20 +347,7 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
-        let variables = ["chatId": chatId.uuidString]
-        do {
-            let response: ChatMemberIdsResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMemberIds,
-                variables: variables,
-                responseType: ChatMemberIdsResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            return response.chat.members.map { $0.userId }
-        } catch {
-            return []
-        }
-    }
+
 
     private func createPrivateChat(with userId: UUID) async -> Chat? {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }

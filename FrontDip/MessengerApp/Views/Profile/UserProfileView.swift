@@ -17,6 +17,7 @@ struct UserProfileView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     AvatarView(urlString: viewModel.user?.avatarUrl, size: 100)
+                        .id(viewModel.user?.avatarUrl)
                         .padding(.top, 20)
                     
                     Text(viewModel.user?.nickName ?? "Загрузка...")

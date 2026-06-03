@@ -67,7 +67,8 @@ class GraphQLClient {
         query: String,
         variables: [String: Any]?,
         responseType: Response.Type,
-        authToken: String?
+        authToken: String?,
+        isRetry: Bool = false
     ) async throws -> Response {
         var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
@@ -83,6 +84,12 @@ class GraphQLClient {
             throw GraphQLError.networkError(URLError(.badServerResponse))
         }
         guard (200...299).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 401 && !isRetry {
+                let refreshed = await refreshTokenIfNeeded()
+                if refreshed, let newToken = TokenManager.shared.accessToken {
+                    return try await performRequest(query: query, variables: variables, responseType: responseType, authToken: newToken, isRetry: true)
+                }
+            }
             throw GraphQLError.httpError(httpResponse.statusCode, String(data: data, encoding: .utf8))
         }
         

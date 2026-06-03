@@ -1,4 +1,3 @@
-// ./FrontDip/MessengerApp/Views/Contact/ContactsView.swift
 import SwiftUI
 
 struct ContactsView: View {
@@ -21,7 +20,7 @@ struct ContactsView: View {
                     }
                     .listStyle(PlainListStyle())
                     .refreshable {
-                        contactService.loadContacts()
+                        await contactService.loadContacts()
                     }
                 }
             }

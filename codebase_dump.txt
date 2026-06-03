@@ -267,6 +267,129 @@ struct IncomingContactWrapper: Decodable {
     let incoming: [Contact]
 }
 
+struct MyProfileResponse: Decodable {
+    let user: MyProfileWrapper
+}
+struct MyProfileWrapper: Decodable {
+    let myProfile: User
+}
+
+struct MyPrivacyResponse: Decodable {
+    let user: PrivacyWrapper
+}
+struct PrivacyWrapper: Decodable {
+    let myPrivacy: PrivacySettingsResponse
+}
+struct PrivacySettingsResponse: Decodable {
+    let whoCanWriteMe: String
+    let whoCanAddToGroups: String
+    let whoCanSeePhone: String
+    let whoCanSeeLastSeen: String
+    let updatedAt: Date?
+}
+
+struct UpdatePrivacyResponse: Decodable {
+    let user: UpdatePrivacyWrapper
+}
+struct UpdatePrivacyWrapper: Decodable {
+    let updatePrivacy: PrivacySettingsResponse
+}
+
+struct ListSessionsResponse: Decodable {
+    let auth: SessionsWrapper
+}
+struct SessionsWrapper: Decodable {
+    let sessions: [SessionInfo]
+}
+struct SessionInfo: Decodable {
+    let sessionId: String
+    let deviceInfo: String?
+    let userAgent: String?
+    let ipAddress: String?
+    let createdAt: Date?
+    let lastSeenAt: Date?
+    let isCurrent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case deviceInfo
+        case userAgent
+        case ipAddress
+        case createdAt
+        case lastSeenAt
+        case isCurrent
+    }
+
+    // Внутренний enum для парсинга Protobuf Timestamp
+    private enum TimestampKeys: String, CodingKey {
+        case seconds
+        case nanos
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        deviceInfo = try? container.decodeIfPresent(String.self, forKey: .deviceInfo)
+        userAgent = try? container.decodeIfPresent(String.self, forKey: .userAgent)
+        ipAddress = try? container.decodeIfPresent(String.self, forKey: .ipAddress)
+        isCurrent = try container.decode(Bool.self, forKey: .isCurrent)
+
+        // Функция парсинга Protobuf Timestamp
+        func parseProtobufTimestamp(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> Date? {
+            // Пробуем извлечь как вложенный контейнер с полями seconds/nanos
+            guard let timestampContainer = try? container.nestedContainer(keyedBy: TimestampKeys.self, forKey: key) else {
+                // Если не получилось, возможно это уже строка ISO8601 (запасной вариант)
+                if let dateString = try? container.decode(String.self, forKey: key) {
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    return formatter.date(from: dateString)
+                }
+                return nil
+            }
+            let seconds = try timestampContainer.decode(Int64.self, forKey: .seconds)
+            let nanos = try timestampContainer.decode(Int32.self, forKey: .nanos)
+            let interval = TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000
+            return Date(timeIntervalSince1970: interval)
+        }
+
+        createdAt = try? parseProtobufTimestamp(container, forKey: .createdAt)
+        lastSeenAt = try? parseProtobufTimestamp(container, forKey: .lastSeenAt)
+    }
+}
+
+struct RevokeSessionResponse: Decodable {
+    let auth: RevokeWrapper
+}
+struct RevokeWrapper: Decodable {
+    let revokeSession: Bool
+}
+
+struct LogoutAllResponse: Decodable {
+    let auth: LogoutAllWrapper
+}
+struct LogoutAllWrapper: Decodable {
+    let logoutAllOtherSessions: Bool
+}
+struct UpdateUserResponse: Decodable {
+    let user: UpdateUserWrapper
+}
+struct UpdateUserWrapper: Decodable {
+    let update: User
+}
+
+// MARK: - Custom Decoder for Protobuf Timestamp in SessionInfo
+private struct ProtobufTimestampCodingKeys: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+    init(stringValue: String) { self.stringValue = stringValue }
+    init(intValue: Int) { self.intValue = intValue; self.stringValue = "\(intValue)" }
+    
+    static let seconds = ProtobufTimestampCodingKeys(stringValue: "seconds")
+    static let nanos = ProtobufTimestampCodingKeys(stringValue: "nanos")
+}
+
+
 ./FrontDip/MessengerApp/Models/Chat/Chat.swift
 
 
@@ -392,27 +515,94 @@ struct ContactAPI: Codable {
 import Foundation
 
 // MARK: - User
-struct User: Identifiable, Codable {
+class User: Identifiable, Codable {
     let userId: UUID
-    let nickName: String
-    let firstName: String?
-    let lastName: String?
-    let middleName: String?
-    let email: String?
-    let phone: String?
-    let avatarUrl: String?
-    let bio: String?
-    let lastSeen: Date?
-    
+    var nickName: String
+    var firstName: String?
+    var lastName: String?
+    var middleName: String?
+    var email: String?
+    var phone: String?
+    var avatarUrl: String?
+    var bio: String?
+    var lastSeen: Date?
     var isOnline: Bool?
-    let status: String?          // опционально
-    let emailVerified: Bool?
-    let phoneVerified: Bool?
-    let isAdmin: Bool?
-    let createdAt: Date?
-    let updatedAt: Date?
+    var status: String?
+    var emailVerified: Bool?
+    var phoneVerified: Bool?
+    var isAdmin: Bool?
+    var createdAt: Date?
+    var updatedAt: Date?
     
     var id: UUID { userId }
+    
+    // Инициализатор с параметрами (можно оставить как есть, только свойства теперь var)
+    init(userId: UUID, nickName: String, firstName: String?, lastName: String?, middleName: String?, email: String?, phone: String?, avatarUrl: String?, bio: String?, lastSeen: Date?, isOnline: Bool?, status: String?, emailVerified: Bool?, phoneVerified: Bool?, isAdmin: Bool?, createdAt: Date?, updatedAt: Date?) {
+        self.userId = userId
+        self.nickName = nickName
+        self.firstName = firstName
+        self.lastName = lastName
+        self.middleName = middleName
+        self.email = email
+        self.phone = phone
+        self.avatarUrl = avatarUrl
+        self.bio = bio
+        self.lastSeen = lastSeen
+        self.isOnline = isOnline
+        self.status = status
+        self.emailVerified = emailVerified
+        self.phoneVerified = phoneVerified
+        self.isAdmin = isAdmin
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+    
+    // Codable – добавить required init и encode
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try container.decode(UUID.self, forKey: .userId)
+        nickName = try container.decode(String.self, forKey: .nickName)
+        firstName = try? container.decodeIfPresent(String.self, forKey: .firstName)
+        lastName = try? container.decodeIfPresent(String.self, forKey: .lastName)
+        middleName = try? container.decodeIfPresent(String.self, forKey: .middleName)
+        email = try? container.decodeIfPresent(String.self, forKey: .email)
+        phone = try? container.decodeIfPresent(String.self, forKey: .phone)
+        avatarUrl = try? container.decodeIfPresent(String.self, forKey: .avatarUrl)
+        bio = try? container.decodeIfPresent(String.self, forKey: .bio)
+        lastSeen = try? container.decodeIfPresent(Date.self, forKey: .lastSeen)
+        isOnline = try? container.decodeIfPresent(Bool.self, forKey: .isOnline)
+        status = try? container.decodeIfPresent(String.self, forKey: .status)
+        emailVerified = try? container.decodeIfPresent(Bool.self, forKey: .emailVerified)
+        phoneVerified = try? container.decodeIfPresent(Bool.self, forKey: .phoneVerified)
+        isAdmin = try? container.decodeIfPresent(Bool.self, forKey: .isAdmin)
+        createdAt = try? container.decodeIfPresent(Date.self, forKey: .createdAt)
+        updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(nickName, forKey: .nickName)
+        try container.encodeIfPresent(firstName, forKey: .firstName)
+        try container.encodeIfPresent(lastName, forKey: .lastName)
+        try container.encodeIfPresent(middleName, forKey: .middleName)
+        try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(phone, forKey: .phone)
+        try container.encodeIfPresent(avatarUrl, forKey: .avatarUrl)
+        try container.encodeIfPresent(bio, forKey: .bio)
+        try container.encodeIfPresent(lastSeen, forKey: .lastSeen)
+        try container.encodeIfPresent(isOnline, forKey: .isOnline)
+        try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(emailVerified, forKey: .emailVerified)
+        try container.encodeIfPresent(phoneVerified, forKey: .phoneVerified)
+        try container.encodeIfPresent(isAdmin, forKey: .isAdmin)
+        try container.encodeIfPresent(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case userId, nickName, firstName, lastName, middleName, email, phone, avatarUrl, bio, lastSeen, isOnline, status, emailVerified, phoneVerified, isAdmin, createdAt, updatedAt
+    }
 }
 struct Reaction: Identifiable, Codable {
     let id = UUID()
@@ -437,7 +627,11 @@ struct Chat: Identifiable, Codable {
     // НОВЫЕ ПОЛЯ
     var lastMessagePreview: MessagePreview?
     var unreadCount: Int = 0
-    var lastMessageStatus: MessageStatusType?   // только для исходящих сообщений
+    var lastMessageStatus: MessageStatusType?
+    var otherUserId: UUID?
+    var otherUserNickname: String?
+    var otherUserAvatarUrl: String?
+    var otherUserIsOnline: Bool = false// только для исходящих сообщений
     
     var id: UUID { chatId }
     
@@ -506,20 +700,12 @@ struct Contact: Identifiable, Codable {
     let status: String
     let createdAt: Date
     let updatedAt: Date?
-    let contactUser: User?
+    var contactUser: User?   // теперь var
     
-    // Вычисляемое свойство для Identifiable (не участвует в декодировании)
-    var id: String {
-        "\(userId.uuidString)-\(contactUserId.uuidString)"
-    }
+    var id: String { "\(userId.uuidString)-\(contactUserId.uuidString)" }
     
     enum CodingKeys: String, CodingKey {
-        case userId
-        case contactUserId
-        case status
-        case createdAt
-        case updatedAt
-        case contactUser
+        case userId, contactUserId, status, createdAt, updatedAt, contactUser
     }
 }
 
@@ -933,6 +1119,123 @@ struct GraphQLQueries {
     }
     """
     
+    static let updateUser = """
+    mutation UpdateUser($userId: String!, $nickName: String, $firstName: String, $lastName: String, $middleName: String, $email: String, $phone: String, $avatarUrl: String, $bio: String) {
+        user {
+            update(userId: $userId, nickName: $nickName, firstName: $firstName, lastName: $lastName, middleName: $middleName, email: $email, phone: $phone, avatarUrl: $avatarUrl, bio: $bio) {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let myProfile = """
+    query MyProfile {
+        user {
+            myProfile {
+                userId
+                nickName
+                firstName
+                lastName
+                middleName
+                email
+                phone
+                avatarUrl
+                bio
+                lastSeen
+                isOnline
+                status
+                emailVerified
+                phoneVerified
+                isAdmin
+                createdAt
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let myPrivacy = """
+    query MyPrivacy {
+        user {
+            myPrivacy {
+                whoCanWriteMe
+                whoCanAddToGroups
+                whoCanSeePhone
+                whoCanSeeLastSeen
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let updatePrivacy = """
+    mutation UpdatePrivacy($whoCanWriteMe: String, $whoCanAddToGroups: String, $whoCanSeePhone: String, $whoCanSeeLastSeen: String) {
+        user {
+            updatePrivacy(input: {
+                whoCanWriteMe: $whoCanWriteMe
+                whoCanAddToGroups: $whoCanAddToGroups
+                whoCanSeePhone: $whoCanSeePhone
+                whoCanSeeLastSeen: $whoCanSeeLastSeen
+            }) {
+                whoCanWriteMe
+                whoCanAddToGroups
+                whoCanSeePhone
+                whoCanSeeLastSeen
+                updatedAt
+            }
+        }
+    }
+    """
+
+    static let listSessions = """
+    query ListSessions {
+        auth {
+            sessions {
+                sessionId
+                deviceInfo
+                userAgent
+                ipAddress
+                createdAt
+                lastSeenAt
+                isCurrent
+            }
+        }
+    }
+    """
+
+    static let revokeSession = """
+    mutation RevokeSession($sessionId: String!) {
+        auth {
+            revokeSession(sessionId: $sessionId)
+        }
+    }
+    """
+
+    static let logoutAllOtherSessions = """
+    mutation LogoutAllOtherSessions {
+        auth {
+            logoutAllOtherSessions
+        }
+    }
+    """
+    
 }
 
 struct UpdateMessageResponse: Decodable {
@@ -975,13 +1278,26 @@ struct Tokens: Decodable {
 }
 
 
+// Models.swift (фрагмент)
+// Models.swift (только структура Attachment, остальное без изменений)
 struct Attachment: Codable {
     let attachmentId: UUID
     let fileName: String
     let fileSize: Int?
     let mimeType: String?
     let storagePath: String
-    let uploadedAt: Date?   // добавьте это поле
+    let uploadedAt: Date?
+    let messageCreatedAt: Date?      // новое поле
+    
+    enum CodingKeys: String, CodingKey {
+        case attachmentId
+        case fileName
+        case fileSize
+        case mimeType
+        case storagePath
+        case uploadedAt
+        case messageCreatedAt = "message_created_at"
+    }
 }
 
 struct GetMessageResponse: Decodable {
@@ -1265,6 +1581,7 @@ class LocalDatabase {
     private let attMimeType = Expression<String?>("mime_type")
     private let attStoragePath = Expression<String>("storage_path")
     private let attUploadedAt = Expression<Date?>("uploaded_at")
+    private let attMessageCreatedAt = Expression<Date?>("message_created_at")
     
     // === Message Statuses columns ===
     private let msMessageId = Expression<Int64>("message_id")
@@ -1347,6 +1664,7 @@ class LocalDatabase {
                 t.column(attMimeType)
                 t.column(attStoragePath)
                 t.column(attUploadedAt)
+                t.column(attMessageCreatedAt)
                 t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
             })
             
@@ -1582,19 +1900,21 @@ class LocalDatabase {
     }
     
     // MARK: - Attachments
-    func saveAttachments(_ attachments: [Attachment], for messageId: Int64) -> Bool {
+    func saveAttachments(_ attachments: [Attachment], for messageId: Int64, messageCreatedAt: Date) -> Bool {
         guard let db = db else { return false }
         do {
+            // Удаляем старые вложения
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
                 try db.run(attachmentsTable.insert(
                     attId <- att.attachmentId,
                     attMessageId <- messageId,
+                    attMessageCreatedAt <- messageCreatedAt,
                     attFileName <- att.fileName,
                     attFileSize <- att.fileSize,
                     attMimeType <- att.mimeType,
                     attStoragePath <- att.storagePath,
-                    attUploadedAt <- att.uploadedAt
+                    attUploadedAt <- att.uploadedAt ?? Date()
                 ))
             }
             return true
@@ -1616,7 +1936,8 @@ class LocalDatabase {
                     fileSize: row[attFileSize],
                     mimeType: row[attMimeType],
                     storagePath: row[attStoragePath],
-                    uploadedAt: row[attUploadedAt]
+                    uploadedAt: row[attUploadedAt],
+                    messageCreatedAt: row[attMessageCreatedAt]
                 )
                 attachments.append(att)
             }
@@ -2012,7 +2333,7 @@ class MessageService: ObservableObject {
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
             if let attachments = message.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: messageId)
+                _ = database.saveAttachments(attachments, for: messageId, messageCreatedAt: message.createdAt)
             }
             sendMessageAck(for: message)
             NotificationCenter.default.post(name: .newMessageReceived, object: message)
@@ -2469,7 +2790,8 @@ class GraphQLClient {
         query: String,
         variables: [String: Any]?,
         responseType: Response.Type,
-        authToken: String?
+        authToken: String?,
+        isRetry: Bool = false
     ) async throws -> Response {
         var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
@@ -2485,20 +2807,44 @@ class GraphQLClient {
             throw GraphQLError.networkError(URLError(.badServerResponse))
         }
         guard (200...299).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 401 && !isRetry {
+                let refreshed = await refreshTokenIfNeeded()
+                if refreshed, let newToken = TokenManager.shared.accessToken {
+                    return try await performRequest(query: query, variables: variables, responseType: responseType, authToken: newToken, isRetry: true)
+                }
+            }
             throw GraphQLError.httpError(httpResponse.statusCode, String(data: data, encoding: .utf8))
         }
-        if let jsonString = String(data: data, encoding: .utf8) {
-            print("📦 Raw response: \(jsonString)")
-        }
+        
+        let rawString = String(data: data, encoding: .utf8) ?? "nil"
+        print("📦 Raw response for \(Response.self): \(rawString)")
+        
         let decoder = JSONDecoder.snakeCaseDecoder
-        let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
-        if let errors = graphQLResponse.errors, !errors.isEmpty {
-            throw GraphQLError.graphQLErrors(errors.map { $0.message })
+        do {
+            let graphQLResponse = try decoder.decode(GraphQLResponse<Response>.self, from: data)
+            if let errors = graphQLResponse.errors, !errors.isEmpty {
+                throw GraphQLError.graphQLErrors(errors.map { $0.message })
+            }
+            guard let data = graphQLResponse.data else {
+                throw GraphQLError.noData
+            }
+            return data
+        } catch let DecodingError.dataCorrupted(context) {
+            print("❌ Data corrupted: \(context)")
+            throw GraphQLError.decodingError("Data corrupted: \(context.debugDescription)")
+        } catch let DecodingError.keyNotFound(key, context) {
+            print("❌ Key '\(key)' not found: \(context.debugDescription)")
+            throw GraphQLError.decodingError("Missing key '\(key)'")
+        } catch let DecodingError.typeMismatch(type, context) {
+            print("❌ Type mismatch for type \(type): \(context.debugDescription)")
+            throw GraphQLError.decodingError("Type mismatch for \(type)")
+        } catch let DecodingError.valueNotFound(type, context) {
+            print("❌ Value not found for type \(type): \(context.debugDescription)")
+            throw GraphQLError.decodingError("Value not found for \(type)")
+        } catch {
+            print("❌ Other decoding error: \(error)")
+            throw GraphQLError.decodingError(error.localizedDescription)
         }
-        guard let data = graphQLResponse.data else {
-            throw GraphQLError.noData
-        }
-        return data
     }
     
     private func refreshTokenIfNeeded() async -> Bool {
@@ -3256,7 +3602,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                         fileSize: attDict["file_size"] as? Int,
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
-                        uploadedAt: Date()
+                        uploadedAt: Date(),
+                        messageCreatedAt: createdAt
                     )
                     attachments.append(attachment)
                 }
@@ -3268,13 +3615,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             replyToId: nil, content: content, type: "text",
             createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil,
-            reactions: nil, attachments: attachments.isEmpty ? nil : attachments
+            reactions: nil, attachments: attachments
         )
-        
+
         if !LocalDatabase.shared.messageExists(messageId) {
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
-                _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId)
+                _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
             }
         }
         
@@ -3648,12 +3995,7 @@ extension View {
 
 ./FrontDip/MessengerApp/Utils/ImagePicker.swift
 
-//
-//  ImagePicker.swift
-//  FrontDip
-//
-//
-
+// ImagePicker.swift
 import SwiftUI
 import PhotosUI
 
@@ -3678,12 +4020,20 @@ struct ImagePicker: UIViewControllerRepresentable {
     class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let parent: ImagePicker
         init(_ parent: ImagePicker) { self.parent = parent }
+        
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             picker.dismiss(animated: true)
-            guard let provider = results.first?.itemProvider, provider.canLoadObject(ofClass: UIImage.self) else { return }
-            provider.loadObject(ofClass: UIImage.self) { image, _ in
+            guard let provider = results.first?.itemProvider,
+                  provider.canLoadObject(ofClass: UIImage.self) else { return }
+            
+            provider.loadObject(ofClass: UIImage.self) { image, error in
                 DispatchQueue.main.async {
-                    self.parent.selectedImage = image as? UIImage
+                    if let error = error {
+                        print("❌ ImagePicker error: \(error.localizedDescription)")
+                    } else if let image = image as? UIImage {
+                        print("✅ ImagePicker selected image of size: \(image.size)")
+                        self.parent.selectedImage = image
+                    }
                 }
             }
         }
@@ -4011,11 +4361,7 @@ class AuthViewModel: ObservableObject {
 
 ./FrontDip/MessengerApp/ViewModels/Chat/ChatListViewModel.swift
 
-//
-//  ChatListViewModel.swift
-//  FrontDip
-//
-
+// ./FrontDip/MessengerApp/ViewModels/Chat/ChatListViewModel.swift
 import Foundation
 import Combine
 
@@ -4028,7 +4374,6 @@ class ChatListViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var currentUserId: UUID? { AppState.shared.currentUser?.userId }
     
-    // Хранилище непрочитанных (in-memory)
     private var unreadCounts: [UUID: Int] = [:]
     
     init() {
@@ -4036,7 +4381,6 @@ class ChatListViewModel: ObservableObject {
     }
     
     private func setupNotifications() {
-        // ---- Существующие подписки (из оригинального кода) ----
         NotificationCenter.default.publisher(for: .chatCreated)
             .sink { [weak self] notification in
                 if let newChat = notification.object as? Chat {
@@ -4045,8 +4389,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // ---- НОВЫЕ ПОДПИСКИ для превью и непрочитанных ----
-        // Новое сообщение
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4055,7 +4397,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Обновление сообщения (редактирование)
         NotificationCenter.default.publisher(for: .messageUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4067,7 +4408,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Удаление сообщения
         NotificationCenter.default.publisher(for: .messageDeleted)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4076,7 +4416,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Обновление статуса (доставка/прочтение)
         NotificationCenter.default.publisher(for: .statusUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4088,7 +4427,6 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Событие открытия чата (для сброса непрочитанных)
         NotificationCenter.default.publisher(for: .chatOpened)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4097,9 +4435,22 @@ class ChatListViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        
+        // НОВАЯ ПОДПИСКА: обновление онлайн-статуса для приватных чатов
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool else { return }
+                for i in 0..<self.chats.count where self.chats[i].otherUserId == userId {
+                    self.chats[i].otherUserIsOnline = isOnline
+                }
+            }
+            .store(in: &cancellables)
     }
     
-    // MARK: - Загрузка чатов (модифицированная)
     func loadChats() async {
         guard TokenManager.shared.accessToken != nil else { return }
         await MainActor.run { isLoading = true }
@@ -4126,6 +4477,8 @@ class ChatListViewModel: ObservableObject {
                 self.isLoading = false
                 self.errorMessage = nil
             }
+            // Обогащаем приватные чаты информацией о втором участнике
+            await enrichPrivateChats()
         } catch {
             await MainActor.run {
                 self.errorMessage = "Ошибка загрузки чатов: \(error.localizedDescription)"
@@ -4134,8 +4487,45 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
-    // MARK: - НОВЫЕ ОБРАБОТЧИКИ для превью
+    // НОВЫЙ МЕТОД: загрузка данных о втором участнике для приватных чатов
+    private func enrichPrivateChats() async {
+        guard let currentUserId = currentUserId else { return }
+        for i in 0..<chats.count where chats[i].chatType.lowercased() == "private" {
+            let chat = chats[i]
+            let memberIds = await getChatMemberIds(for: chat.id)
+            let otherId = memberIds.first(where: { $0 != currentUserId })
+            guard let otherId else { continue }
+            do {
+                let otherUser = try await UserService.shared.getUser(userId: otherId)
+                await MainActor.run {
+                    chats[i].otherUserId = otherId
+                    chats[i].otherUserNickname = otherUser.nickName
+                    chats[i].otherUserAvatarUrl = otherUser.avatarUrl
+                    chats[i].otherUserIsOnline = otherUser.isOnline ?? false
+                }
+            } catch {
+                print("Failed to load other user for chat \(chat.id): \(error)")
+            }
+        }
+    }
     
+    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
+        let variables = ["chatId": chatId.uuidString]
+        do {
+            let response: ChatMemberIdsResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMemberIds,
+                variables: variables,
+                responseType: ChatMemberIdsResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.map { $0.userId }
+        } catch {
+            print("Failed to load chat member ids: \(error)")
+            return []
+        }
+    }
+    
+
     private func handleNewMessage(_ message: Message) {
         guard let index = chats.firstIndex(where: { $0.id == message.chatId }) else {
             Task { await loadChats() }
@@ -4168,8 +4558,6 @@ class ChatListViewModel: ObservableObject {
         guard let index = chats.firstIndex(where: { $0.id == chatId }),
               var preview = chats[index].lastMessagePreview,
               preview.messageId == messageId else { return }
-        
-        // Обновляем превью
         let updatedPreview = MessagePreview(
             messageId: preview.messageId,
             senderId: preview.senderId,
@@ -4181,14 +4569,20 @@ class ChatListViewModel: ObservableObject {
         var updatedChat = chats[index]
         updatedChat.lastMessagePreview = updatedPreview
         chats[index] = updatedChat
+        chats.sort { $0.lastActivityDate > $1.lastActivityDate }
     }
-    
+
     private func handleMessageDeleted(chatId: UUID, messageId: Int64) {
         guard let index = chats.firstIndex(where: { $0.id == chatId }),
               let preview = chats[index].lastMessagePreview,
               preview.messageId == messageId else { return }
-        
-        Task { await refreshLastMessage(for: chatId) }
+        Task {
+            await refreshChat(chatId)
+        }
+    }
+    func refreshChat(_ chatId: UUID) async {
+        // Опционально: сделать запрос одного чата, пока перезагружаем все
+        await loadChats()
     }
     
     private func handleStatusUpdate(chatId: UUID, messageId: Int64, userId: UUID, info: [String: Any]) {
@@ -4310,20 +4704,7 @@ class ChatListViewModel: ObservableObject {
         }
     }
 
-    private func getChatMemberIds(for chatId: UUID) async -> [UUID] {
-        let variables = ["chatId": chatId.uuidString]
-        do {
-            let response: ChatMemberIdsResponse = try await graphQL.perform(
-                query: GraphQLQueries.getChatMemberIds,
-                variables: variables,
-                responseType: ChatMemberIdsResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
-            return response.chat.members.map { $0.userId }
-        } catch {
-            return []
-        }
-    }
+
 
     private func createPrivateChat(with userId: UUID) async -> Chat? {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
@@ -4524,6 +4905,7 @@ class ChatViewModel: ObservableObject {
     @Published var reactionsDict: [Int64: [Reaction]] = [:]
     @Published var otherUser: User?
     @Published var isOtherUserOnline: Bool = false
+    @Published var isSomeoneTyping: Bool = false
     
     
     let chat: Chat
@@ -4628,6 +5010,27 @@ class ChatViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .typingStarted)
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] notification in
+                        guard let self = self,
+                              let chatId = notification.userInfo?["chatId"] as? UUID,
+                              chatId == self.chat.id,
+                              let userId = notification.userInfo?["userId"] as? UUID,
+                              userId != self.currentUserId else { return }
+                        self.isSomeoneTyping = true
+                    }
+                    .store(in: &cancellables)
+                
+                NotificationCenter.default.publisher(for: .typingStopped)
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] notification in
+                        guard let self = self,
+                              let chatId = notification.userInfo?["chatId"] as? UUID,
+                              chatId == self.chat.id else { return }
+                        self.isSomeoneTyping = false
+                    }
+                    .store(in: &cancellables)
     }
     
     // MARK: - Загрузка сообщений (кэш + сеть)
@@ -4644,9 +5047,10 @@ class ChatViewModel: ObservableObject {
             // 2. Загружаем свежие данные с сервера – ПОЛНОСТЬЮ ЗАМЕНЯЕМ
             do {
                 let freshMessages = try await fetchMessagesFromServer()
+                let sortedFresh = freshMessages.sorted { $0.createdAt < $1.createdAt }
                 await MainActor.run {
                     // Заменяем массив, не сливая
-                    self.messages = freshMessages
+                    self.messages = sortedFresh
                     // Перезаписываем БД актуальными данными
                     self.saveMessagesToDatabase(freshMessages)
                     self.objectWillChange.send()
@@ -4697,18 +5101,17 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
-        for msg in messages {
-            if let attachments = msg.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: msg.messageId)
-            }
-            if let reactions = msg.reactions {
-                for reaction in reactions {
-                    _ = database.saveReaction(reaction)
+            for msg in messages {
+                _ = database.saveMessage(msg)
+                if let attachments = msg.attachments, !attachments.isEmpty {
+                    _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
+                }
+                if let reactions = msg.reactions {
+                    for reaction in reactions { _ = database.saveReaction(reaction) }
                 }
             }
+            return messages
         }
-        return messages
-    }
     
     private func mergeMessages(current: [Message], new: [Message]) -> [Message] {
         var dict = Dictionary(uniqueKeysWithValues: current.map { ($0.messageId, $0) })
@@ -4722,12 +5125,10 @@ class ChatViewModel: ObservableObject {
         for msg in messages {
             _ = database.saveMessage(msg)
             if let attachments = msg.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: msg.messageId)
+                _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
             }
             if let reactions = msg.reactions {
-                for reaction in reactions {
-                    _ = database.saveReaction(reaction)
-                }
+                for reaction in reactions { _ = database.saveReaction(reaction) }
             }
         }
     }
@@ -4993,7 +5394,8 @@ class ChatViewModel: ObservableObject {
                 fileSize: fileSize,
                 mimeType: mimeType,
                 storagePath: storage,
-                uploadedAt: Date()
+                uploadedAt: Date(),
+                messageCreatedAt: nil 
             )
             var msgWithAtt = tempMessage
             msgWithAtt.attachments = [localAttachment!]
@@ -5028,7 +5430,7 @@ class ChatViewModel: ObservableObject {
                     self.messages[index] = realMsg
                     _ = self.database.saveMessage(realMsg)
                     if let attachments = realMsg.attachments, !attachments.isEmpty {
-                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId)
+                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
                     }
                     self.objectWillChange.send()
                 }
@@ -5202,7 +5604,7 @@ class ChatViewModel: ObservableObject {
                 self.messages = newMessages
                 _ = self.database.saveMessage(message)
                 if let attachments = message.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: message.messageId)
+                    _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
                 }
                 if let reactions = message.reactions {
                     for reaction in reactions {
@@ -5339,8 +5741,233 @@ class CreateChatViewModel: ObservableObject {
 ./FrontDip/MessengerApp/ViewModels/Message/MessageViewModel.swift
 
 
+./FrontDip/MessengerApp/ViewModels/Profile/PrivacySettingsViewModel.swift
+
+// ./FrontDip/MessengerApp/ViewModels/Profile/PrivacySettingsViewModel.swift
+import Foundation
+
+class PrivacySettingsViewModel: ObservableObject {
+    @Published var settings: PrivacySettingsResponse?
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let graphQL = GraphQLClient.shared
+    
+    func loadSettings() {
+        isLoading = true
+        Task {
+            do {
+                let response: MyPrivacyResponse = try await graphQL.perform(
+                    query: GraphQLQueries.myPrivacy,
+                    variables: [:],
+                    responseType: MyPrivacyResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                await MainActor.run {
+                    self.settings = response.user.myPrivacy
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    func update(whoCanWriteMe: String? = nil,
+                whoCanAddToGroups: String? = nil,
+                whoCanSeePhone: String? = nil,
+                whoCanSeeLastSeen: String? = nil) async -> Bool {
+        await MainActor.run { isLoading = true }
+        var variables: [String: Any] = [:]
+        if let w = whoCanWriteMe { variables["whoCanWriteMe"] = w }
+        if let a = whoCanAddToGroups { variables["whoCanAddToGroups"] = a }
+        if let p = whoCanSeePhone { variables["whoCanSeePhone"] = p }
+        if let l = whoCanSeeLastSeen { variables["whoCanSeeLastSeen"] = l }
+        
+        do {
+            let response: UpdatePrivacyResponse = try await graphQL.perform(
+                query: GraphQLQueries.updatePrivacy,
+                variables: variables,
+                responseType: UpdatePrivacyResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            await MainActor.run {
+                self.settings = response.user.updatePrivacy
+                self.isLoading = false
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+            }
+            return false
+        }
+    }
+}
+
 ./FrontDip/MessengerApp/ViewModels/Profile/ProfileViewModel.swift
 
+import Foundation
+import SwiftUI
+
+class ProfileViewModel: ObservableObject {
+    @Published var user: User?
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let graphQL = GraphQLClient.shared
+    
+    func loadMyProfile() {
+        Task { @MainActor in
+            isLoading = true
+            defer { isLoading = false }
+            
+            do {
+                let response: MyProfileResponse = try await graphQL.perform(
+                    query: GraphQLQueries.myProfile,
+                    variables: [:],
+                    responseType: MyProfileResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                self.user = response.user.myProfile
+                AppState.shared.currentUser = self.user
+            } catch {
+                self.errorMessage = "Ошибка загрузки профиля: \(error.localizedDescription)"
+                print("❌ Profile load error: \(error)")
+            }
+        }
+    }
+    
+    func updateUser(updatedUser: User, avatarData: Data? = nil) async -> Bool {
+        await MainActor.run { isLoading = true }
+        
+        var avatarUrl = updatedUser.avatarUrl
+        if let avatarData = avatarData {
+            print("📤 Uploading avatar with size: \(avatarData.count) bytes")
+            do {
+                let (attachmentId, storagePath) = try await AttachmentUploader.shared.uploadImage(UIImage(data: avatarData)!)
+                print("✅ Avatar uploaded: id=\(attachmentId), path=\(storagePath)")
+                avatarUrl = storagePath
+            } catch {
+                print("❌ Avatar upload error: \(error)")
+                await MainActor.run { errorMessage = "Ошибка загрузки аватара: \(error.localizedDescription)" }
+                return false
+            }
+        }
+        
+        guard let currentUserId = AppState.shared.currentUser?.userId.uuidString.lowercased() else {
+            await MainActor.run { errorMessage = "Пользователь не авторизован" }
+            return false
+        }
+        
+        let nilIfEmpty: (String?) -> Any = { value in
+            guard let value = value, !value.isEmpty else { return NSNull() }
+            return value
+        }
+        
+        let variables: [String: Any] = [
+            "userId": currentUserId,
+            "nickName": updatedUser.nickName,
+            "firstName": nilIfEmpty(updatedUser.firstName),
+            "lastName": nilIfEmpty(updatedUser.lastName),
+            "middleName": nilIfEmpty(updatedUser.middleName),
+            "email": nilIfEmpty(updatedUser.email),
+            "phone": nilIfEmpty(updatedUser.phone),
+            "avatarUrl": avatarUrl ?? NSNull(),
+            "bio": nilIfEmpty(updatedUser.bio)
+        ]
+        
+        do {
+            let response: UpdateUserResponse = try await graphQL.perform(
+                query: GraphQLQueries.updateUser,
+                variables: variables,
+                responseType: UpdateUserResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            await MainActor.run {
+                self.user = response.user.update
+                AppState.shared.currentUser = self.user
+                self.isLoading = false
+            }
+            return true
+        } catch {
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+            }
+            // Пробуем перезагрузить профиль на случай частичного обновления
+            await loadMyProfile()
+            return false
+        }
+    }
+}
+
+./FrontDip/MessengerApp/ViewModels/Profile/SessionsViewModel.swift
+
+import Foundation
+
+class SessionsViewModel: ObservableObject {
+    @Published var sessions: [SessionInfo] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let graphQL = GraphQLClient.shared
+    
+    func loadSessions() {
+        Task { @MainActor in
+            isLoading = true
+            defer { isLoading = false }
+            
+            do {
+                let response: ListSessionsResponse = try await graphQL.perform(
+                    query: GraphQLQueries.listSessions,
+                    variables: [:],
+                    responseType: ListSessionsResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                self.sessions = response.auth.sessions
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    func revokeSession(sessionId: String) async -> Bool {
+        do {
+            let _: RevokeSessionResponse = try await graphQL.perform(
+                query: GraphQLQueries.revokeSession,
+                variables: ["sessionId": sessionId],
+                responseType: RevokeSessionResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            await loadSessions()
+            return true
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
+            return false
+        }
+    }
+    
+    func logoutAllOther() async -> Bool {
+        do {
+            let _: LogoutAllResponse = try await graphQL.perform(
+                query: GraphQLQueries.logoutAllOtherSessions,
+                variables: [:],
+                responseType: LogoutAllResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            await loadSessions()
+            return true
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
+            return false
+        }
+    }
+}
 
 ./FrontDip/MessengerApp/ViewModels/Profile/UserProfileViewModel.swift
 
@@ -6094,6 +6721,7 @@ struct ChatListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
                 Task { await viewModel.loadChats() }
             }
+            
 
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
@@ -6160,7 +6788,6 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - Новая ChatRow с превью и статусами
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -6168,25 +6795,41 @@ struct ChatRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Аватар
-            Circle()
-                .fill(Color.blue.opacity(0.2))
-                .frame(width: 50, height: 50)
-                .overlay(
-                    Text((chat.name?.prefix(1).uppercased() ?? "?"))
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.blue)
-                )
+            if chat.chatType.lowercased() == "private", let otherUserNickname = chat.otherUserNickname {
+                // Приватный чат – аватар собеседника с индикатором онлайн
+                AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
+                    .overlay(
+                        Circle()
+                            .fill(chat.otherUserIsOnline ? Color.green : Color.gray)
+                            .frame(width: 12, height: 12)
+                            .offset(x: 18, y: 18)
+                    )
+            } else {
+                // Групповой чат
+                Circle()
+                    .fill(Color.blue.opacity(0.2))
+                    .frame(width: 50, height: 50)
+                    .overlay(
+                        Text((chat.name?.prefix(1).uppercased() ?? "?"))
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.blue)
+                    )
+            }
             
             VStack(alignment: .leading, spacing: 4) {
                 // Название чата
-                Text(chat.name ?? "Чат")
-                    .font(.headline)
+                if chat.chatType.lowercased() == "private", let nickname = chat.otherUserNickname {
+                    Text(nickname)
+                        .font(.headline)
+                } else {
+                    Text(chat.name ?? "Чат")
+                        .font(.headline)
+                }
                 
-                // Превью сообщения
+                // Превью сообщения (без изменений)
                 if let preview = chat.lastMessagePreview {
                     HStack(spacing: 4) {
-                        // Для групп – ник отправителя
                         if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
                             (Text(preview.senderNickname ?? "Кто-то")
                                 .font(.caption)
@@ -6203,7 +6846,6 @@ struct ChatRow: View {
                                 .foregroundColor(.secondary)
                         }
                         
-                        // Статус для своих сообщений (галочки)
                         if preview.senderId == currentUserId, let status = chat.lastMessageStatus {
                             Spacer().frame(width: 4)
                             MessageStatusIcon(status: status)
@@ -6220,7 +6862,6 @@ struct ChatRow: View {
             
             Spacer()
             
-            // Правая колонка: время + счётчик
             VStack(alignment: .trailing, spacing: 4) {
                 if let preview = chat.lastMessagePreview {
                     Text(formatDate(preview.createdAt))
@@ -6248,24 +6889,18 @@ struct ChatRow: View {
     }
 }
 
-// Компонент иконки статуса
+// MessageStatusIcon остаётся без изменений
 struct MessageStatusIcon: View {
     let status: MessageStatusType
-    
     var body: some View {
         switch status {
-        case .sending:
-            Image(systemName: "clock")
-                .foregroundColor(.gray)
-        case .delivered:
+        case .sending: Image(systemName: "clock").foregroundColor(.gray)
+        case .delivered: Image(systemName: "checkmark").foregroundColor(.gray)
+        case .read: HStack(spacing: 2) {
             Image(systemName: "checkmark")
-                .foregroundColor(.gray)
-        case .read:
-            HStack(spacing: 2) {
-                Image(systemName: "checkmark")
-                Image(systemName: "checkmark")
-            }
-            .foregroundColor(.blue)
+            Image(systemName: "checkmark")
+        }
+        .foregroundColor(.blue)
         }
     }
 }
@@ -6452,6 +7087,12 @@ struct ChatView: View {
                             AvatarView(urlString: otherUser.avatarUrl, size: 40)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(otherUser.nickName).font(.headline).foregroundColor(.primary)
+                                if viewModel.isSomeoneTyping {
+                                    Text("печатает...")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .padding(.leading, 8)
+                                }
                                 HStack(spacing: 4) {
                                     Circle().fill(viewModel.isOtherUserOnline ? Color.green : Color.gray).frame(width: 8, height: 8)
                                     Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн").font(.caption).foregroundColor(.secondary)
@@ -6462,6 +7103,12 @@ struct ChatView: View {
                     .buttonStyle(PlainButtonStyle())
                 } else {
                     Text(viewModel.chatTitle).font(.headline).lineLimit(1)
+                    if viewModel.isSomeoneTyping {
+                        Text("печатает...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 8)
+                    }
                 }
                 
                 Spacer()
@@ -6911,9 +7558,11 @@ struct AttachmentView: View {
     }
     
     private func loadImageURL() {
-        let urlString = "http://localhost:9000/messenger/\(attachment.storagePath)"
+        let base = AppConfig.baseURL
+        let path = attachment.storagePath
+        let urlString = base + "/media/" + path
         if let url = URL(string: urlString) {
-            print("loadImageURL: \(urlString)")
+            print("Attachment URL: \(urlString)")
             imageURL = url
         }
     }
@@ -7110,7 +7759,7 @@ struct LoadingView: View {
 
 ./FrontDip/MessengerApp/Views/Common/SearchView.swift
 
-// ./FrontDip/MessengerApp/Views/Contact/SearchView.swift
+// ./FrontDip/MessengerApp/Views/Common/SearchView.swift
 import SwiftUI
 
 struct SearchView: View {
@@ -7139,7 +7788,6 @@ struct SearchView: View {
                 }
                 .padding()
                 
-                // Результаты поиска
                 if viewModel.isLoading {
                     Spacer()
                     ProgressView()
@@ -7179,14 +7827,8 @@ struct SearchResultRow: View {
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: user.userId)) {
             HStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.3))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(user.nickName.prefix(1).uppercased())
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                    )
+                // ✅ ИСПРАВЛЕНО: используем AvatarView вместо Circle с текстом
+                AvatarView(urlString: user.avatarUrl, size: 40)
                 
                 VStack(alignment: .leading) {
                     Text(user.nickName)
@@ -7216,9 +7858,9 @@ struct SearchResultRow: View {
             }
         }
         .buttonStyle(PlainButtonStyle())
-                .swipeActions {
-                    Button("Добавить") { onAdd() }
-                }
+        .swipeActions {
+            Button("Добавить") { onAdd() }
+        }
     }
 }
 
@@ -7298,6 +7940,21 @@ struct SideMenuView: View {
                         MenuItem(icon: "rectangle.portrait.and.arrow.right", title: "Выйти", isDestructive: true) {
                             showLogoutAlert = true
                         }
+                        MenuItem(icon: "person.circle", title: "Мой профиль") {
+                            let profileView = ProfileView()
+                            let hosting = UIHostingController(rootView: profileView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
+                        MenuItem(icon: "lock.shield", title: "Приватность") {
+                            let privacyView = PrivacySettingsView()
+                            let hosting = UIHostingController(rootView: privacyView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
+                        MenuItem(icon: "laptopcomputer.and.iphone", title: "Сессии") {
+                            let sessionsView = SessionsView()
+                            let hosting = UIHostingController(rootView: sessionsView)
+                            UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                        }
                         Spacer()
                     }
                     .padding(.horizontal, 24)
@@ -7333,33 +7990,69 @@ struct SideMenuView: View {
     }
 }
 
-// MARK: - AvatarView (вынесена для переиспользования)
+// ./FrontDip/MessengerApp/Views/Common/AvatarView.swift
+import SwiftUI
+
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
+    @State private var image: UIImage?
+    
+    private var fullURL: URL? {
+        guard let urlString, !urlString.isEmpty else { return nil }
+        // Если уже полный URL, используем как есть
+        if urlString.lowercased().hasPrefix("http") {
+            return URL(string: urlString)
+        }
+        // Собираем через baseURL + /media/ (без приведения к нижнему регистру)
+        let base = AppConfig.baseURL
+        let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
+        return URL(string: base + "/media/" + path)
+    }
     
     var body: some View {
-        if let urlString, let url = URL(string: urlString), !urlString.isEmpty {
-            AsyncImage(url: url) { image in
-                image.resizable()
-            } placeholder: {
-                Circle().fill(Color.gray.opacity(0.3))
-                    .overlay(ProgressView())
+        Group {
+            if let image = image {
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                placeholderView
+                    .onAppear {
+                        loadImage()
+                    }
             }
-            .frame(width: size, height: size)
-            .clipShape(Circle())
-        } else {
-            Circle()
-                .fill(Color.gray.opacity(0.3))
-                .frame(width: size, height: size)
-                .overlay(
-                    Image(systemName: "person")
-                        .foregroundColor(.gray)
-                )
         }
     }
+    
+    private func loadImage() {
+        guard let url = fullURL else { return }
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            if let error = error {
+                print("❌ Avatar load error: \(error)")
+                return
+            }
+            guard let data = data, let uiImage = UIImage(data: data) else {
+                print("❌ Invalid image data")
+                return
+            }
+            DispatchQueue.main.async {
+                self.image = uiImage
+            }
+        }.resume()
+    }
+    
+    private var placeholderView: some View {
+        Circle()
+            .fill(Color.gray.opacity(0.3))
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: "person")
+                    .foregroundColor(.gray)
+            )
+    }
 }
-
 struct MenuItem: View {
     let icon: String
     let title: String
@@ -7642,7 +8335,6 @@ struct ChatSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Contact/ContactsView.swift
 
-// ./FrontDip/MessengerApp/Views/Contact/ContactsView.swift
 import SwiftUI
 
 struct ContactsView: View {
@@ -7665,7 +8357,7 @@ struct ContactsView: View {
                     }
                     .listStyle(PlainListStyle())
                     .refreshable {
-                        contactService.loadContacts()
+                        await contactService.loadContacts()
                     }
                 }
             }
@@ -7679,6 +8371,14 @@ struct ContactsView: View {
             .onAppear {
                 contactService.loadContacts()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .statusUpdated)) { notification in
+                guard let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool else { return }
+                if let index = contactService.contacts.firstIndex(where: { $0.contactUserId == userId }) {
+                    contactService.contacts[index].contactUser?.isOnline = isOnline
+                }
+            }
         }
     }
 }
@@ -7691,34 +8391,30 @@ struct ContactRow: View {
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: contact.contactUserId)) {
             HStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.3))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(contact.contactUser?.nickName.prefix(1).uppercased() ?? "?")
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                    )
+                AvatarView(urlString: contact.contactUser?.avatarUrl, size: 40)
                 
                 VStack(alignment: .leading) {
                     Text(contact.contactUser?.nickName ?? "Неизвестный")
                         .font(.headline)
-                    Text("Добавлен: \(formatDate(contact.createdAt))")
-                        .font(.caption)
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(contact.contactUser?.isOnline == true ? Color.green : Color.gray)
+                            .frame(width: 8, height: 8)
+                        Text(contact.contactUser?.isOnline == true ? "онлайн" : "офлайн")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                
-                
                 Spacer()
-                
-                Button(action: {
+                Button {
                     showingActionSheet = true
-                }) {
+                } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundColor(.blue)
                 }
                 .buttonStyle(PlainButtonStyle())
             }
-            .buttonStyle(PlainButtonStyle())
+            .padding(.vertical, 8)
             .swipeActions {
                 Button(role: .destructive) {
                     ContactService.shared.removeContact(userId: contact.contactUserId)
@@ -7726,16 +8422,13 @@ struct ContactRow: View {
                     Label("Удалить", systemImage: "trash")
                 }
             }
-            .padding(.vertical, 8)
             .actionSheet(isPresented: $showingActionSheet) {
                 ActionSheet(
-                    title: Text(contact.contactUser?.avatarUrl ?? "Неизвестный"),
+                    title: Text(contact.contactUser?.nickName ?? "Контакт"),
                     buttons: [
-                        .default(Text("Добавить в чат")) {
-                            showingChatSelection = true
-                        },
+                        .default(Text("Добавить в чат")) { showingChatSelection = true },
                         .destructive(Text("Удалить контакт")) {
-                            ContactService.shared.removeContact(userId: contact.userId)
+                            ContactService.shared.removeContact(userId: contact.contactUserId)
                         },
                         .cancel()
                     ]
@@ -7745,14 +8438,7 @@ struct ContactRow: View {
                 ChatSelectionView(contact: contact)
             }
         }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
+        .buttonStyle(PlainButtonStyle())
     }
 }
 
@@ -8194,8 +8880,373 @@ struct ContactRequestRow: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Profile/EditProfileView.swift
+
+// ./FrontDip/MessengerApp/Views/Profile/EditProfileView.swift
+import SwiftUI
+
+struct EditProfileView: View {
+    let user: User?
+    let onSave: (User, Data?) -> Void
+    @Environment(\.dismiss) var dismiss
+    
+    @State private var nickName: String
+    @State private var firstName: String
+    @State private var lastName: String
+    @State private var middleName: String
+    @State private var email: String
+    @State private var phone: String
+    @State private var bio: String
+    @State private var selectedImage: UIImage?
+    @State private var showingImagePicker = false
+    
+    init(user: User?, onSave: @escaping (User, Data?) -> Void) {
+        self.user = user
+        self.onSave = onSave
+        _nickName = State(initialValue: user?.nickName ?? "")
+        _firstName = State(initialValue: user?.firstName ?? "")
+        _lastName = State(initialValue: user?.lastName ?? "")
+        _middleName = State(initialValue: user?.middleName ?? "")
+        _email = State(initialValue: user?.email ?? "")
+        _phone = State(initialValue: user?.phone ?? "")
+        _bio = State(initialValue: user?.bio ?? "")
+    }
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Аватар")) {
+                    HStack {
+                        AvatarView(urlString: user?.avatarUrl, size: 60)
+                        Button("Выбрать фото") {
+                            showingImagePicker = true
+                        }
+                    }
+                }
+                Section(header: Text("Основное")) {
+                    TextField("Никнейм *", text: $nickName)
+                    TextField("Имя", text: $firstName)
+                    TextField("Фамилия", text: $lastName)
+                    TextField("Отчество", text: $middleName)
+                }
+                Section(header: Text("Контакты")) {
+                    TextField("Email", text: $email)
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                    TextField("Телефон", text: $phone)
+                        .keyboardType(.phonePad)
+                }
+                Section(header: Text("О себе")) {
+                    TextEditor(text: $bio)
+                        .frame(height: 100)
+                }
+            }
+            .navigationTitle("Редактировать")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Сохранить") {
+                        guard let user = user else { return }
+                        let updatedUser = User(
+                            userId: user.userId,
+                            nickName: nickName,
+                            firstName: firstName.isEmpty ? nil : firstName,
+                            lastName: lastName.isEmpty ? nil : lastName,
+                            middleName: middleName.isEmpty ? nil : middleName,
+                            email: email.isEmpty ? nil : email,
+                            phone: phone.isEmpty ? nil : phone,
+                            avatarUrl: user.avatarUrl,
+                            bio: bio.isEmpty ? nil : bio,
+                            lastSeen: user.lastSeen,
+                            isOnline: user.isOnline,
+                            status: user.status,
+                            emailVerified: user.emailVerified,
+                            phoneVerified: user.phoneVerified,
+                            isAdmin: user.isAdmin,
+                            createdAt: user.createdAt,
+                            updatedAt: user.updatedAt
+                        )
+                        let avatarData = selectedImage?.jpegData(compressionQuality: 0.8)
+                        print("📸 Avatar data size: \(avatarData?.count ?? 0) bytes")
+                        onSave(updatedUser, avatarData)
+                    }
+                }
+            }
+            .sheet(isPresented: $showingImagePicker) {
+                ImagePicker(selectedImage: $selectedImage)
+            }
+        }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Profile/PrivacySettingsView.swift
+
+// ./FrontDip/MessengerApp/Views/Profile/PrivacySettingsView.swift
+import SwiftUI
+
+struct PrivacySettingsView: View {
+    @StateObject private var viewModel = PrivacySettingsViewModel()
+    @Environment(\.dismiss) var dismiss
+    @State private var selectedWriteMe = "everyone"
+    @State private var selectedAddToGroups = "everyone"
+    @State private var selectedSeePhone = "contacts"
+    @State private var selectedSeeLastSeen = "everyone"
+    
+    let options = ["everyone", "contacts", "nobody"]
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Picker("Кто может писать мне", selection: $selectedWriteMe) {
+                    ForEach(options, id: \.self) { option in
+                        Text(option.localizedCapitalized).tag(option)
+                    }
+                }
+                Picker("Кто может добавлять в группы", selection: $selectedAddToGroups) {
+                    ForEach(options, id: \.self) { option in
+                        Text(option.localizedCapitalized).tag(option)
+                    }
+                }
+                Picker("Кто видит мой телефон", selection: $selectedSeePhone) {
+                    ForEach(options, id: \.self) { option in
+                        Text(option.localizedCapitalized).tag(option)
+                    }
+                }
+                Picker("Кто видит время последнего посещения", selection: $selectedSeeLastSeen) {
+                    ForEach(options, id: \.self) { option in
+                        Text(option.localizedCapitalized).tag(option)
+                    }
+                }
+            }
+            .navigationTitle("Приватность")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Сохранить") {
+                        Task {
+                            let success = await viewModel.update(
+                                whoCanWriteMe: selectedWriteMe,
+                                whoCanAddToGroups: selectedAddToGroups,
+                                whoCanSeePhone: selectedSeePhone,
+                                whoCanSeeLastSeen: selectedSeeLastSeen
+                            )
+                            if success {
+                                dismiss()
+                            }
+                        }
+                    }
+                }
+            }
+            .onAppear {
+                viewModel.loadSettings()
+                if let settings = viewModel.settings {
+                    selectedWriteMe = settings.whoCanWriteMe
+                    selectedAddToGroups = settings.whoCanAddToGroups
+                    selectedSeePhone = settings.whoCanSeePhone
+                    selectedSeeLastSeen = settings.whoCanSeeLastSeen
+                }
+            }
+            .overlay {
+                if viewModel.isLoading {
+                    ProgressView()
+                }
+            }
+        }
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Profile/ProfileView.swift
 
+// ./FrontDip/MessengerApp/Views/Profile/ProfileView.swift
+import SwiftUI
+
+struct ProfileView: View {
+    @StateObject private var viewModel = ProfileViewModel()
+    @Environment(\.dismiss) var dismiss
+    @State private var showingEditSheet = false
+    
+    var body: some View {
+        NavigationView {
+            Group {
+                if viewModel.isLoading {
+                    ProgressView()
+                } else if let user = viewModel.user {
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            AvatarView(urlString: user.avatarUrl, size: 120)
+                                .padding(.top, 30)
+                            
+                            Text(user.nickName)
+                                .font(.title)
+                                .fontWeight(.bold)
+                            
+                            if let firstName = user.firstName, let lastName = user.lastName {
+                                Text("\(firstName) \(lastName)")
+                                    .font(.subheadline)
+                            }
+                            
+                            if let email = user.email {
+                                Label(email, systemImage: "envelope")
+                                    .font(.caption)
+                            }
+                            
+                            if let phone = user.phone {
+                                Label(phone, systemImage: "phone")
+                                    .font(.caption)
+                            }
+                            
+                            if let bio = user.bio, !bio.isEmpty {
+                                Text(bio)
+                                    .padding()
+                                    .background(Color(.systemGray6))
+                                    .cornerRadius(12)
+                                    .padding(.horizontal)
+                            }
+                            
+                            HStack {
+                                Text("Аккаунт создан:")
+                                Text(formatDate(user.createdAt ?? Date()))
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            
+                            Button("Редактировать профиль") {
+                                showingEditSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .padding()
+                        }
+                        .padding()
+                    }
+                } else {
+                    Text("Не удалось загрузить профиль")
+                }
+            }
+            .navigationTitle("Мой профиль")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showingEditSheet) {
+                EditProfileView(user: viewModel.user) { updatedUser, avatarData in
+                    Task {
+                        _ = await viewModel.updateUser(updatedUser: updatedUser, avatarData: avatarData)
+                        await MainActor.run { showingEditSheet = false }
+                    }
+                }
+            }
+            .onAppear {
+                viewModel.loadMyProfile()
+            }
+            .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") { viewModel.errorMessage = nil }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.string(from: date)
+    }
+}
+
+./FrontDip/MessengerApp/Views/Profile/SessionsView.swift
+
+// ./FrontDip/MessengerApp/Views/Profile/SessionsView.swift
+import SwiftUI
+
+struct SessionsView: View {
+    @StateObject private var viewModel = SessionsViewModel()
+    @State private var showingLogoutAllAlert = false
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            List {
+                ForEach(viewModel.sessions, id: \.sessionId) { session in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(session.isCurrent ? "Текущая сессия" : (session.deviceInfo ?? "Неизвестное устройство"))
+                                .font(.headline)
+                            Spacer()
+                            if !session.isCurrent {
+                                Button("Завершить") {
+                                    Task {
+                                        _ = await viewModel.revokeSession(sessionId: session.sessionId)
+                                    }
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundColor(.red)
+                            }
+                        }
+                        if let userAgent = session.userAgent {
+                            Text(userAgent)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        if let ip = session.ipAddress {
+                            Text("IP: \(ip)")
+                                .font(.caption2)
+                        }
+                        if let lastSeen = session.lastSeenAt {
+                            Text("Активна: \(formatDate(lastSeen))")
+                                .font(.caption2)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Активные сессии")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Завершить все") {
+                        showingLogoutAllAlert = true
+                    }
+                    .foregroundColor(.red)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+            .alert("Завершить все сессии кроме текущей?", isPresented: $showingLogoutAllAlert) {
+                Button("Отмена", role: .cancel) { }
+                Button("Завершить", role: .destructive) {
+                    Task {
+                        _ = await viewModel.logoutAllOther()
+                    }
+                }
+            }
+            .onAppear {
+                viewModel.loadSessions()
+            }
+            .overlay {
+                if viewModel.isLoading {
+                    ProgressView()
+                }
+            }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        formatter.locale = Locale(identifier: "ru_RU")
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
 
 ./FrontDip/MessengerApp/Views/Profile/SettingsView.swift
 

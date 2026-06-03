@@ -1,4 +1,4 @@
-// ./FrontDip/MessengerApp/Views/Contact/SearchView.swift
+// ./FrontDip/MessengerApp/Views/Common/SearchView.swift
 import SwiftUI
 
 struct SearchView: View {
@@ -27,7 +27,6 @@ struct SearchView: View {
                 }
                 .padding()
                 
-                // Результаты поиска
                 if viewModel.isLoading {
                     Spacer()
                     ProgressView()
@@ -67,14 +66,8 @@ struct SearchResultRow: View {
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: user.userId)) {
             HStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.3))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(user.nickName.prefix(1).uppercased())
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                    )
+                // ✅ ИСПРАВЛЕНО: используем AvatarView вместо Circle с текстом
+                AvatarView(urlString: user.avatarUrl, size: 40)
                 
                 VStack(alignment: .leading) {
                     Text(user.nickName)
@@ -104,8 +97,8 @@ struct SearchResultRow: View {
             }
         }
         .buttonStyle(PlainButtonStyle())
-                .swipeActions {
-                    Button("Добавить") { onAdd() }
-                }
+        .swipeActions {
+            Button("Добавить") { onAdd() }
+        }
     }
 }

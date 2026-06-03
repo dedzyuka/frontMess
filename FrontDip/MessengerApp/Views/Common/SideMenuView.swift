@@ -122,10 +122,7 @@ struct SideMenuView: View {
     }
 }
 
-// MARK: - AvatarView (вынесена для переиспользования)
-// AvatarView.swift (обновить)
-// ./FrontDip/MessengerApp/Views/Common/AvatarView.swift
-import SwiftUI
+// AvatarView.swift – полный код с исправлениями
 
 import SwiftUI
 
@@ -135,14 +132,13 @@ struct AvatarView: View {
     @State private var image: UIImage?
     
     private var fullURL: URL? {
-        guard let urlString, !urlString.isEmpty else { return nil }
-        // 🔧 Приводим путь к нижнему регистру
-        let lowercasedPath = urlString.lowercased()
-        if lowercasedPath.hasPrefix("http") {
-            return URL(string: lowercasedPath)
+        guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
+        if urlString.lowercased().hasPrefix("http") {
+            return URL(string: urlString)
         }
         let base = AppConfig.baseURL
-        return URL(string: base + "/media/" + lowercasedPath)
+        let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
+        return URL(string: base + "/media/" + path)
     }
     
     var body: some View {

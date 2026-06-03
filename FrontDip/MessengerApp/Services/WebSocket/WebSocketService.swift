@@ -117,6 +117,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         case "chat.created":
             handleChatCreated(json)
         case "typing.start", "typing.stop":
+            let payload = json["payload"] as? [String: Any] ?? [:]  // <-- добавить эту строку
+            print("📢 Received typing event: \(event), payload: \(payload)")
             handleTyping(json, event: event)
         case "message.ack":
             handleAck(json)

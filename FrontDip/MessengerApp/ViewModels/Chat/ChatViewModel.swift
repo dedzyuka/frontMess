@@ -10,6 +10,7 @@ class ChatViewModel: ObservableObject {
     @Published var reactionsDict: [Int64: [Reaction]] = [:]
     @Published var otherUser: User?
     @Published var isOtherUserOnline: Bool = false
+    @Published var isSomeoneTyping: Bool = false
     
     
     let chat: Chat
@@ -112,6 +113,33 @@ class ChatViewModel: ObservableObject {
                     self.isOtherUserOnline = isOnline
                     self.otherUser?.isOnline = isOnline
                 }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .typingStarted)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      chatId == self.chat.id,
+                      let userId = notification.userInfo?["userId"] as? UUID,
+                      userId != self.currentUserId else { return }
+                self.isSomeoneTyping = true
+                // Авто-сброс через 3 секунды, если не пришёл typing.stop
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    if self?.isSomeoneTyping == true {
+                        self?.isSomeoneTyping = false
+                    }
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .typingStopped)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self,
+                      let chatId = notification.userInfo?["chatId"] as? UUID,
+                      chatId == self.chat.id else { return }
+                self.isSomeoneTyping = false
             }
             .store(in: &cancellables)
     }
