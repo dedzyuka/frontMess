@@ -127,36 +127,55 @@ struct SideMenuView: View {
 // ./FrontDip/MessengerApp/Views/Common/AvatarView.swift
 import SwiftUI
 
+import SwiftUI
+
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
+    @State private var image: UIImage?
     
     private var fullURL: URL? {
         guard let urlString, !urlString.isEmpty else { return nil }
-        if urlString.hasPrefix("http") {
-            return URL(string: urlString)
+        // 🔧 Приводим путь к нижнему регистру
+        let lowercasedPath = urlString.lowercased()
+        if lowercasedPath.hasPrefix("http") {
+            return URL(string: lowercasedPath)
         }
-        // Базовый URL для аватаров (настраивается в AppConfig)
         let base = AppConfig.baseURL
-        return URL(string: base + "/media/" + urlString)
+        return URL(string: base + "/media/" + lowercasedPath)
     }
     
     var body: some View {
-        if let url = fullURL {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable()
-                } else if phase.error != nil {
-                    placeholderView
-                } else {
-                    ProgressView()
-                }
+        Group {
+            if let image = image {
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                placeholderView
+                    .onAppear {
+                        loadImage()
+                    }
             }
-            .frame(width: size, height: size)
-            .clipShape(Circle())
-        } else {
-            placeholderView
         }
+    }
+    
+    private func loadImage() {
+        guard let url = fullURL else { return }
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            if let error = error {
+                print("❌ Avatar load error: \(error)")
+                return
+            }
+            guard let data = data, let uiImage = UIImage(data: data) else {
+                print("❌ Invalid image data")
+                return
+            }
+            DispatchQueue.main.async {
+                self.image = uiImage
+            }
+        }.resume()
     }
     
     private var placeholderView: some View {
