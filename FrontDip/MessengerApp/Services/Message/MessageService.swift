@@ -75,7 +75,7 @@ class MessageService: ObservableObject {
             if database.messageExists(messageId) { continue }
             _ = database.saveMessage(message)
             if let attachments = message.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: messageId)
+                _ = database.saveAttachments(attachments, for: messageId, messageCreatedAt: message.createdAt)
             }
             sendMessageAck(for: message)
             NotificationCenter.default.post(name: .newMessageReceived, object: message)

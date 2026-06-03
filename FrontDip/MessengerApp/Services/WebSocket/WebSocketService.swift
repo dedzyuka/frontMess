@@ -163,7 +163,8 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                         fileSize: attDict["file_size"] as? Int,
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
-                        uploadedAt: Date()
+                        uploadedAt: Date(),
+                        messageCreatedAt: createdAt
                     )
                     attachments.append(attachment)
                 }
@@ -175,13 +176,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             replyToId: nil, content: content, type: "text",
             createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil,
-            reactions: nil, attachments: attachments.isEmpty ? nil : attachments
+            reactions: nil, attachments: attachments
         )
-        
+
         if !LocalDatabase.shared.messageExists(messageId) {
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
-                _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId)
+                _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
             }
         }
         

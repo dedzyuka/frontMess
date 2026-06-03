@@ -544,13 +544,26 @@ struct Tokens: Decodable {
 }
 
 
+// Models.swift (фрагмент)
+// Models.swift (только структура Attachment, остальное без изменений)
 struct Attachment: Codable {
     let attachmentId: UUID
     let fileName: String
     let fileSize: Int?
     let mimeType: String?
     let storagePath: String
-    let uploadedAt: Date?   // добавьте это поле
+    let uploadedAt: Date?
+    let messageCreatedAt: Date?      // новое поле
+    
+    enum CodingKeys: String, CodingKey {
+        case attachmentId
+        case fileName
+        case fileSize
+        case mimeType
+        case storagePath
+        case uploadedAt
+        case messageCreatedAt = "message_created_at"
+    }
 }
 
 struct GetMessageResponse: Decodable {

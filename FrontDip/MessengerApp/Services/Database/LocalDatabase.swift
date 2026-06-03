@@ -72,6 +72,7 @@ class LocalDatabase {
     private let attMimeType = Expression<String?>("mime_type")
     private let attStoragePath = Expression<String>("storage_path")
     private let attUploadedAt = Expression<Date?>("uploaded_at")
+    private let attMessageCreatedAt = Expression<Date?>("message_created_at")
     
     // === Message Statuses columns ===
     private let msMessageId = Expression<Int64>("message_id")
@@ -154,6 +155,7 @@ class LocalDatabase {
                 t.column(attMimeType)
                 t.column(attStoragePath)
                 t.column(attUploadedAt)
+                t.column(attMessageCreatedAt)
                 t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
             })
             
@@ -389,19 +391,21 @@ class LocalDatabase {
     }
     
     // MARK: - Attachments
-    func saveAttachments(_ attachments: [Attachment], for messageId: Int64) -> Bool {
+    func saveAttachments(_ attachments: [Attachment], for messageId: Int64, messageCreatedAt: Date) -> Bool {
         guard let db = db else { return false }
         do {
+            // Удаляем старые вложения
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
                 try db.run(attachmentsTable.insert(
                     attId <- att.attachmentId,
                     attMessageId <- messageId,
+                    attMessageCreatedAt <- messageCreatedAt,
                     attFileName <- att.fileName,
                     attFileSize <- att.fileSize,
                     attMimeType <- att.mimeType,
                     attStoragePath <- att.storagePath,
-                    attUploadedAt <- att.uploadedAt
+                    attUploadedAt <- att.uploadedAt ?? Date()
                 ))
             }
             return true
@@ -423,7 +427,8 @@ class LocalDatabase {
                     fileSize: row[attFileSize],
                     mimeType: row[attMimeType],
                     storagePath: row[attStoragePath],
-                    uploadedAt: row[attUploadedAt]
+                    uploadedAt: row[attUploadedAt],
+                    messageCreatedAt: row[attMessageCreatedAt]
                 )
                 attachments.append(att)
             }

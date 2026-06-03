@@ -130,9 +130,10 @@ class ChatViewModel: ObservableObject {
             // 2. Загружаем свежие данные с сервера – ПОЛНОСТЬЮ ЗАМЕНЯЕМ
             do {
                 let freshMessages = try await fetchMessagesFromServer()
+                let sortedFresh = freshMessages.sorted { $0.createdAt < $1.createdAt }
                 await MainActor.run {
                     // Заменяем массив, не сливая
-                    self.messages = freshMessages
+                    self.messages = sortedFresh
                     // Перезаписываем БД актуальными данными
                     self.saveMessagesToDatabase(freshMessages)
                     self.objectWillChange.send()
@@ -183,20 +184,17 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
-        for msg in messages {
-            // Используем saveMessage (он проверяет существование)
-            _ = database.saveMessage(msg)
-            if let attachments = msg.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: msg.messageId)
-            }
-            if let reactions = msg.reactions {
-                for reaction in reactions {
-                    _ = database.saveReaction(reaction)
+            for msg in messages {
+                _ = database.saveMessage(msg)
+                if let attachments = msg.attachments, !attachments.isEmpty {
+                    _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
+                }
+                if let reactions = msg.reactions {
+                    for reaction in reactions { _ = database.saveReaction(reaction) }
                 }
             }
+            return messages
         }
-        return messages
-    }
     
     private func mergeMessages(current: [Message], new: [Message]) -> [Message] {
         var dict = Dictionary(uniqueKeysWithValues: current.map { ($0.messageId, $0) })
@@ -210,12 +208,10 @@ class ChatViewModel: ObservableObject {
         for msg in messages {
             _ = database.saveMessage(msg)
             if let attachments = msg.attachments, !attachments.isEmpty {
-                _ = database.saveAttachments(attachments, for: msg.messageId)
+                _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
             }
             if let reactions = msg.reactions {
-                for reaction in reactions {
-                    _ = database.saveReaction(reaction)
-                }
+                for reaction in reactions { _ = database.saveReaction(reaction) }
             }
         }
     }
@@ -481,7 +477,8 @@ class ChatViewModel: ObservableObject {
                 fileSize: fileSize,
                 mimeType: mimeType,
                 storagePath: storage,
-                uploadedAt: Date()
+                uploadedAt: Date(),
+                messageCreatedAt: nil 
             )
             var msgWithAtt = tempMessage
             msgWithAtt.attachments = [localAttachment!]
@@ -516,7 +513,7 @@ class ChatViewModel: ObservableObject {
                     self.messages[index] = realMsg
                     _ = self.database.saveMessage(realMsg)
                     if let attachments = realMsg.attachments, !attachments.isEmpty {
-                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId)
+                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
                     }
                     self.objectWillChange.send()
                 }
@@ -690,7 +687,7 @@ class ChatViewModel: ObservableObject {
                 self.messages = newMessages
                 _ = self.database.saveMessage(message)
                 if let attachments = message.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: message.messageId)
+                    _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
                 }
                 if let reactions = message.reactions {
                     for reaction in reactions {
