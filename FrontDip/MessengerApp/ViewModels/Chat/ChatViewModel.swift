@@ -103,16 +103,16 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
         
         NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 guard let self = self,
                       let info = notification.object as? [String: Any],
                       let userId = info["userId"] as? UUID,
                       let isOnline = info["is_online"] as? Bool,
                       userId == self.otherUser?.userId else { return }
-                DispatchQueue.main.async {
-                    self.isOtherUserOnline = isOnline
-                    self.otherUser?.isOnline = isOnline
-                }
+                self.isOtherUserOnline = isOnline
+                self.otherUser?.isOnline = isOnline
+                self.objectWillChange.send()
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .typingStarted)
@@ -142,6 +142,8 @@ class ChatViewModel: ObservableObject {
                 self.isSomeoneTyping = false
             }
             .store(in: &cancellables)
+        
+        
     }
     
     // MARK: - Загрузка сообщений (кэш + сеть)
@@ -734,6 +736,19 @@ class ChatViewModel: ObservableObject {
     private func sendDeliveredIfNeeded(for message: Message) {
         guard message.senderId != currentUserId else { return }
         WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
+    }
+    func refreshOtherUserStatus() async {
+        guard let otherUser = otherUser else { return }
+        do {
+            let updatedUser = try await UserService.shared.getUser(userId: otherUser.userId)
+            await MainActor.run {
+                self.otherUser = updatedUser
+                self.isOtherUserOnline = updatedUser.isOnline ?? false
+                self.objectWillChange.send()
+            }
+        } catch {
+            print("Failed to refresh user status: \(error)")
+        }
     }
 }
 

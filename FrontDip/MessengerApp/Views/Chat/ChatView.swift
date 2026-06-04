@@ -221,6 +221,9 @@ struct ChatView: View {
         )
         .onAppear {
             NotificationCenter.default.post(name: .chatOpened, object: chat.id)
+            Task {
+                    await viewModel.refreshOtherUserStatus()
+                }
         }
     }
     
