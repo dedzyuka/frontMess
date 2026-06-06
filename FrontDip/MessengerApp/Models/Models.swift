@@ -101,17 +101,16 @@ struct Reaction: Identifiable, Codable {
 
 struct Chat: Identifiable, Codable {
     let chatId: UUID
-    let chatType: String   // "1" = private, "2" = group, "3" = channel
+    let chatType: String
     let name: String?
     let description: String?
     let avatarUrl: String?
     let creatorId: UUID?
     let isPublic: Bool
     let maxMembers: Int
-    let createdAt: Date
+    let createdAt: Date?          // ← изменили на опциональный
     let membersCount: Int
     var lastMessage: String?
-    
     var lastMessagePreview: MessagePreview?
     var unreadCount: Int = 0
     var lastMessageStatus: MessageStatusType?
@@ -120,19 +119,28 @@ struct Chat: Identifiable, Codable {
     var otherUserAvatarUrl: String?
     var otherUserIsOnline: Bool = false
     var isTyping: Bool = false
+    var myRole: String?
+    var joinPolicy: String?
+    var visibility: String?
     
     var id: UUID { chatId }
     
-    // ⭐️ Добавляем вычисляемое свойство
     var isPrivate: Bool {
         return chatType == "1" || chatType.lowercased() == "private"
     }
     
-    var lastActivityDate: Date {
-        return lastMessagePreview?.createdAt ?? createdAt
+    var isGroup: Bool {
+        return chatType == "2" || chatType.lowercased() == "group"
     }
     
-    // Остальные CodingKeys и декодеры остаются без изменений
+    var isChannel: Bool {
+        return chatType == "3" || chatType.lowercased() == "channel"
+    }
+    
+    var lastActivityDate: Date {
+        return lastMessagePreview?.createdAt ?? (createdAt ?? Date.distantPast)
+    }
+    
     enum CodingKeys: String, CodingKey {
         case chatId, chatType, name, description, avatarUrl, creatorId, isPublic, maxMembers, createdAt, membersCount, lastMessage, lastMessagePreview
     }
@@ -176,12 +184,19 @@ struct Message: Identifiable, Codable {
 }
 
 
-// MARK: - ChatMember
-struct ChatMemberItem: Decodable {
-    let userId: UUID
-    let nickName: String
-    let avatarUrl: String?
-    let isOnline: Bool
+struct ChatMemberItem: Decodable, Identifiable {
+    let user: User
+    let role: String?
+    let status: String?
+    let joinedAt: Date
+    let leftAt: Date?
+    let bannedUntil: Date?
+    
+    var id: UUID { user.userId }
+    var userId: UUID { user.userId }
+    var nickName: String { user.nickName }
+    var avatarUrl: String? { user.avatarUrl }
+    var isOnline: Bool { user.isOnline ?? false }
 }
 
 // MARK: - Contact
@@ -221,3 +236,78 @@ struct UserPublicResponse: Identifiable, Codable {
     var id: UUID { userId }
 }
 
+struct UpdateChatMemberResponse: Decodable {
+    let chat: UpdateChatMemberWrapper
+}
+struct UpdateChatMemberWrapper: Decodable {
+    let updateChatMember: Bool
+}
+struct ChatMemberResult: Decodable {
+    let userId: UUID
+    let role: String
+    let status: String
+}
+
+// MARK: - Kick/Ban/Unban Response
+struct KickMemberResponse: Decodable {
+    let chat: KickMemberWrapper
+}
+struct KickMemberWrapper: Decodable {
+    let kickMember: Bool
+}
+
+struct UnbanMemberResponse: Decodable {
+    let chat: UnbanMemberWrapper
+}
+struct UnbanMemberWrapper: Decodable {
+    let unbanMember: Bool
+}
+
+// MARK: - Leave Chat Response
+struct LeaveChatResponse: Decodable {
+    let chat: LeaveChatWrapper
+}
+struct LeaveChatWrapper: Decodable {
+    let leaveChat: Bool
+}
+
+// MARK: - Join Chat Response
+struct JoinChatResponse: Decodable {
+    let chat: JoinChatWrapper
+}
+struct JoinChatWrapper: Decodable {
+    let joinChat: Bool
+}
+struct ChatMemberJoined: Decodable {
+    let userId: UUID
+    let role: String
+    let joinedAt: Date
+}
+
+// MARK: - Invite Link Response
+struct InviteLinkResponse: Decodable {
+    let chat: InviteLinkWrapper
+}
+struct InviteLinkWrapper: Decodable {
+    let generateInviteLink: String   // теперь просто строка
+}
+struct InviteLink: Decodable {
+    let inviteKey: String
+    let expireAt: Date?
+}
+
+// MARK: - Update Chat Response
+struct UpdateChatResponse: Decodable {
+    let chat: UpdateChatWrapper
+}
+struct UpdateChatWrapper: Decodable {
+    let update: Chat
+}
+
+// MARK: - Delete Chat Response
+struct DeleteChatResponse: Decodable {
+    let chat: DeleteChatWrapper
+}
+struct DeleteChatWrapper: Decodable {
+    let delete: Bool
+}

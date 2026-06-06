@@ -166,7 +166,7 @@ struct AttachmentView: View {
     
     private func loadImageURL() {
         let base = AppConfig.baseURL
-        let path = attachment.storagePath
+        let path = attachment.storagePath.lowercased()
         let urlString = base + "/media/" + path
         if let url = URL(string: urlString) {
             print("Attachment URL: \(urlString)")
@@ -180,19 +180,16 @@ struct AttachmentView: View {
             showSaveError = true
             return
         }
-        
         Task {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 guard let image = UIImage(data: data) else {
                     throw NSError(domain: "ImageError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Не удалось создать изображение"])
                 }
-                
                 let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
                 guard status == .authorized else {
-                    throw NSError(domain: "PhotoLibrary", code: -3, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к галерее. Разрешите доступ в настройках."])
+                    throw NSError(domain: "PhotoLibrary", code: -3, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к галерее"])
                 }
-                
                 await MainActor.run {
                     UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
                     showSaveSuccess = true
@@ -228,7 +225,7 @@ struct AttachmentView: View {
     private func saveFile() {
         if let url = tempFileURL {
             showShareSheet = true
-        } else if fileData != nil {
+        } else if let data = fileData {
             createTempFileAndShare()
         } else {
             Task {
@@ -237,19 +234,26 @@ struct AttachmentView: View {
         }
     }
     
+
+
     private func downloadAndShare() async {
         isDownloading = true
-        guard let url = imageURL else { return }
+        guard let url = imageURL else {
+            await MainActor.run { isDownloading = false }
+            return
+        }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             await MainActor.run {
                 fileData = data
                 isDownloading = false
-                createTempFileAndShare()
+                createTempFileAndShare()   // ← добавлено
             }
         } catch {
             await MainActor.run {
                 isDownloading = false
+                saveErrorMessage = "Не удалось загрузить файл: \(error.localizedDescription)"
+                showSaveError = true
             }
         }
     }

@@ -68,8 +68,9 @@ struct CreatedChat: Decodable {
     let chatType: String
     let name: String?
     let createdAt: Date
-    let updatedAt: Date
+    let updatedAt: Date?
     let membersCount: Int
+    
 }
 
 // MARK: - Chat Members Response

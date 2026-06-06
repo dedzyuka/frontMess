@@ -126,6 +126,7 @@ struct SideMenuView: View {
 
 import SwiftUI
 
+
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
@@ -133,11 +134,12 @@ struct AvatarView: View {
     
     private var fullURL: URL? {
         guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
-        if urlString.lowercased().hasPrefix("http") {
-            return URL(string: urlString)
+        let lowerPath = urlString.lowercased()
+        if lowerPath.lowercased().hasPrefix("http") {
+            return URL(string: lowerPath)
         }
         let base = AppConfig.baseURL
-        let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
+        let path = lowerPath.hasPrefix("/") ? String(lowerPath.dropFirst()) : lowerPath
         return URL(string: base + "/media/" + path)
     }
     
@@ -150,9 +152,7 @@ struct AvatarView: View {
                     .clipShape(Circle())
             } else {
                 placeholderView
-                    .onAppear {
-                        loadImage()
-                    }
+                    .onAppear { loadImage() }
             }
         }
     }
@@ -164,10 +164,7 @@ struct AvatarView: View {
                 print("❌ Avatar load error: \(error)")
                 return
             }
-            guard let data = data, let uiImage = UIImage(data: data) else {
-                print("❌ Invalid image data")
-                return
-            }
+            guard let data = data, let uiImage = UIImage(data: data) else { return }
             DispatchQueue.main.async {
                 self.image = uiImage
             }

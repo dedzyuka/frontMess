@@ -1,10 +1,10 @@
 import SwiftUI
 
 struct MessageBubbleView: View {
-    let message: Message
+    var message: Message
     let isCurrentUser: Bool
     let senderUser: User?
-    let viewModel: ChatViewModel
+    @ObservedObject var viewModel: ChatViewModel
     let onEdit: (() -> Void)?
     let onDelete: (() -> Void)?
     
@@ -139,14 +139,15 @@ struct MessageBubbleView: View {
                     .foregroundColor(isCurrentUser ? .white : .primary)
                     .cornerRadius(18)
             }
-        }
+        }.id("\(message.messageId)_\(viewModel.reactionsDict[message.messageId]?.count ?? 0)")
     }
     
     private var reactionRow: some View {
         HStack(spacing: 4) {
             ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
-                let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
-                let isCurrentUserReaction = currentUserReactionEmoji == emoji
+                let reactions = viewModel.reactionsDict[message.messageId] ?? [].filter { $0.emoji == emoji }
+                let count = reactions.count
+                let isCurrentUserReaction = reactions.contains(where: { $0.userId == AppState.shared.currentUser?.userId })
                 HStack(spacing: 2) {
                     Text(emoji)
                         .font(.caption)
@@ -164,6 +165,7 @@ struct MessageBubbleView: View {
         }
         .padding(.top, 2)
     }
+
     
     private func toggleReaction(emoji: String) {
         Task {

@@ -172,8 +172,9 @@ struct CreatedChat: Decodable {
     let chatType: String
     let name: String?
     let createdAt: Date
-    let updatedAt: Date
+    let updatedAt: Date?
     let membersCount: Int
+    
 }
 
 // MARK: - Chat Members Response
@@ -611,6 +612,8 @@ struct Reaction: Identifiable, Codable {
     let emoji: String
     let createdAt: Date
 }
+// ./FrontDip/MessengerApp/Models/Models.swift (фрагмент)
+
 struct Chat: Identifiable, Codable {
     let chatId: UUID
     let chatType: String
@@ -620,11 +623,9 @@ struct Chat: Identifiable, Codable {
     let creatorId: UUID?
     let isPublic: Bool
     let maxMembers: Int
-    let createdAt: Date
+    let createdAt: Date?          // ← изменили на опциональный
     let membersCount: Int
     var lastMessage: String?
-    
-    // НОВЫЕ ПОЛЯ
     var lastMessagePreview: MessagePreview?
     var unreadCount: Int = 0
     var lastMessageStatus: MessageStatusType?
@@ -633,15 +634,28 @@ struct Chat: Identifiable, Codable {
     var otherUserAvatarUrl: String?
     var otherUserIsOnline: Bool = false
     var isTyping: Bool = false
+    var myRole: String?
+    var joinPolicy: String?
+    var visibility: String?
     
     var id: UUID { chatId }
     
-    // Вычисляемое свойство для сортировки
-    var lastActivityDate: Date {
-        return lastMessagePreview?.createdAt ?? createdAt
+    var isPrivate: Bool {
+        return chatType == "1" || chatType.lowercased() == "private"
     }
     
-    // Кастомный декодер, чтобы поддерживать новые поля (если они приходят с сервера)
+    var isGroup: Bool {
+        return chatType == "2" || chatType.lowercased() == "group"
+    }
+    
+    var isChannel: Bool {
+        return chatType == "3" || chatType.lowercased() == "channel"
+    }
+    
+    var lastActivityDate: Date {
+        return lastMessagePreview?.createdAt ?? (createdAt ?? Date.distantPast)
+    }
+    
     enum CodingKeys: String, CodingKey {
         case chatId, chatType, name, description, avatarUrl, creatorId, isPublic, maxMembers, createdAt, membersCount, lastMessage, lastMessagePreview
     }
@@ -685,12 +699,19 @@ struct Message: Identifiable, Codable {
 }
 
 
-// MARK: - ChatMember
-struct ChatMemberItem: Decodable {
-    let userId: UUID
-    let nickName: String
-    let avatarUrl: String?
-    let isOnline: Bool
+struct ChatMemberItem: Decodable, Identifiable {
+    let user: User
+    let role: String?
+    let status: String?
+    let joinedAt: Date
+    let leftAt: Date?
+    let bannedUntil: Date?
+    
+    var id: UUID { user.userId }
+    var userId: UUID { user.userId }
+    var nickName: String { user.nickName }
+    var avatarUrl: String? { user.avatarUrl }
+    var isOnline: Bool { user.isOnline ?? false }
 }
 
 // MARK: - Contact
@@ -730,12 +751,89 @@ struct UserPublicResponse: Identifiable, Codable {
     var id: UUID { userId }
 }
 
+struct UpdateChatMemberResponse: Decodable {
+    let chat: UpdateChatMemberWrapper
+}
+struct UpdateChatMemberWrapper: Decodable {
+    let updateChatMember: Bool
+}
+struct ChatMemberResult: Decodable {
+    let userId: UUID
+    let role: String
+    let status: String
+}
+
+// MARK: - Kick/Ban/Unban Response
+struct KickMemberResponse: Decodable {
+    let chat: KickMemberWrapper
+}
+struct KickMemberWrapper: Decodable {
+    let kickMember: Bool
+}
+
+struct UnbanMemberResponse: Decodable {
+    let chat: UnbanMemberWrapper
+}
+struct UnbanMemberWrapper: Decodable {
+    let unbanMember: Bool
+}
+
+// MARK: - Leave Chat Response
+struct LeaveChatResponse: Decodable {
+    let chat: LeaveChatWrapper
+}
+struct LeaveChatWrapper: Decodable {
+    let leaveChat: Bool
+}
+
+// MARK: - Join Chat Response
+struct JoinChatResponse: Decodable {
+    let chat: JoinChatWrapper
+}
+struct JoinChatWrapper: Decodable {
+    let joinChat: Bool
+}
+struct ChatMemberJoined: Decodable {
+    let userId: UUID
+    let role: String
+    let joinedAt: Date
+}
+
+// MARK: - Invite Link Response
+struct InviteLinkResponse: Decodable {
+    let chat: InviteLinkWrapper
+}
+struct InviteLinkWrapper: Decodable {
+    let generateInviteLink: String   // теперь просто строка
+}
+struct InviteLink: Decodable {
+    let inviteKey: String
+    let expireAt: Date?
+}
+
+// MARK: - Update Chat Response
+struct UpdateChatResponse: Decodable {
+    let chat: UpdateChatWrapper
+}
+struct UpdateChatWrapper: Decodable {
+    let update: Chat
+}
+
+// MARK: - Delete Chat Response
+struct DeleteChatResponse: Decodable {
+    let chat: DeleteChatWrapper
+}
+struct DeleteChatWrapper: Decodable {
+    let delete: Bool
+}
 
 ./FrontDip/MessengerApp/Models/Operations.swift
 
 import Foundation
 
 import Foundation
+
+
 
 struct GraphQLQueries {
     // MARK: - Auth
@@ -790,7 +888,7 @@ struct GraphQLQueries {
     }
     """
     
-    // MARK: - Chats
+    // MARK: - Chats (исправленный listChats – без updatedAt)
     static let listChats = """
     query ListChats {
       chat {
@@ -818,6 +916,7 @@ struct GraphQLQueries {
       }
     }
     """
+    
     static let markAsRead = """
     mutation MarkAsRead($messageId: Int!, $chatId: String!) {
         message {
@@ -1065,25 +1164,34 @@ struct GraphQLQueries {
         }
     }
     """
+    
     static let getChatMembers = """
     query GetChatMembers($chatId: String!) {
         chat {
             members(chatId: $chatId) {
-                userId
-                nickName
-                avatarUrl
-                isOnline
+                user {
+                    userId
+                    nickName
+                    avatarUrl
+                    isOnline
+                }
+                role
+                status
+                joinedAt
+                leftAt
+                bannedUntil
             }
         }
     }
     """
 
-    // Для случаев, когда нужны только ID
     static let getChatMemberIds = """
     query GetChatMemberIds($chatId: String!) {
         chat {
             members(chatId: $chatId) {
-                userId
+                user {
+                    userId
+                }
             }
         }
     }
@@ -1237,6 +1345,77 @@ struct GraphQLQueries {
     }
     """
     
+    static let updateChat = """
+    mutation UpdateChat($chatId: String!, $name: String, $description: String, $avatarUrl: String, $isPublic: Boolean, $maxMembers: Int) {
+        chat {
+            update(chatId: $chatId, name: $name, description: $description, avatarUrl: $avatarUrl, isPublic: $isPublic, maxMembers: $maxMembers) {
+                chatId
+                chatType
+                name
+                description
+                avatarUrl
+                isPublic
+                maxMembers
+                membersCount
+            }
+        }
+    }
+    """
+
+    static let deleteChat = """
+    mutation DeleteChat($chatId: String!) {
+        chat { delete(chatId: $chatId) }
+    }
+    """
+
+    // Исправленный запрос – возвращает Boolean, без выбора полей
+    static let updateChatMember = """
+    mutation UpdateChatMember($chatId: String!, $userId: String!, $role: String) {
+        chat {
+            updateChatMember(chatId: $chatId, userId: $userId, role: $role)
+        }
+    }
+    """
+
+    static let kickMember = """
+    mutation KickMember($chatId: String!, $userId: String!) {
+        chat { kickMember(chatId: $chatId, userId: $userId) }
+    }
+    """
+
+    static let banMember = """
+    mutation BanMember($chatId: String!, $userId: String!, $bannedUntil: String) {
+        chat { banMember(chatId: $chatId, userId: $userId, bannedUntil: $bannedUntil) }
+    }
+    """
+
+    static let unbanMember = """
+    mutation UnbanMember($chatId: String!, $userId: String!) {
+        chat { unbanMember(chatId: $chatId, userId: $userId) }
+    }
+    """
+
+    static let leaveChat = """
+    mutation LeaveChat($chatId: String!) {
+        chat { leaveChat(chatId: $chatId) }
+    }
+    """
+
+    static let joinChatWithToken = """
+    mutation JoinChatWithToken($inviteToken: String!) {
+        chat {
+            joinChat(inviteToken: $inviteToken)
+        }
+    }
+    """
+
+    static let generateInviteLink = """
+    query GenerateInviteLink($chatId: String!) {
+        chat {
+            generateInviteLink(chatId: $chatId)
+        }
+    }
+    """
 }
 
 struct UpdateMessageResponse: Decodable {
@@ -1260,10 +1439,15 @@ struct ChatMemberIdsWrapper: Decodable {
     let members: [ChatMemberIdItem]
 }
 struct ChatMemberIdItem: Decodable {
-    let userId: UUID
+    let user: UserIdWrapper
+    
+    var userId: UUID {
+        user.userId
+    }
 }
-struct MembersIdWrapper: Decodable {
-    let members: [String]
+
+struct UserIdWrapper: Decodable {
+    let userId: UUID
 }
 
 struct Tokens: Decodable {
@@ -1306,6 +1490,13 @@ struct GetMessageResponse: Decodable {
 }
 struct GetMessageWrapper: Decodable {
     let getMessage: Message
+}
+
+struct BanMemberResponse: Decodable {
+    let chat: BanMemberWrapper
+}
+struct BanMemberWrapper: Decodable {
+    let banMember: Bool
 }
 
 ./FrontDip/MessengerApp/Models/User/User.swift
@@ -1700,7 +1891,7 @@ class LocalDatabase {
                     chatCreatorId <- chat.creatorId,
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
-                    chatCreatedAt <- chat.createdAt,
+                    chatCreatedAt <- chat.createdAt ?? Date(),
                     chatMembersCount <- chat.membersCount,
                     chatLastMessage <- chat.lastMessage
                 ))
@@ -1714,7 +1905,7 @@ class LocalDatabase {
                     chatCreatorId <- chat.creatorId,
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
-                    chatCreatedAt <- chat.createdAt,
+                    chatCreatedAt <- chat.createdAt ?? Date(),
                     chatMembersCount <- chat.membersCount,
                     chatLastMessage <- chat.lastMessage
                 ))
@@ -2375,6 +2566,156 @@ class MessageService: ObservableObject {
 
 ./FrontDip/MessengerApp/Services/Network/APIEndpoints.swift
 
+
+./FrontDip/MessengerApp/Services/Network/ChatService.swift
+
+import Foundation
+
+class ChatService {
+    static let shared = ChatService()
+    private let graphQL = GraphQLClient.shared
+    private init() {}
+    
+    // MARK: - Update Chat
+    func updateChat(chatId: UUID, name: String?, description: String?, avatarUrl: String?, isPublic: Bool?, maxMembers: Int?) async throws -> Chat {
+        var variables: [String: Any] = ["chatId": chatId.uuidString]
+        if let name = name { variables["name"] = name }
+        if let description = description { variables["description"] = description }
+        if let avatarUrl = avatarUrl { variables["avatarUrl"] = avatarUrl }
+        if let isPublic = isPublic { variables["isPublic"] = isPublic }
+        if let maxMembers = maxMembers { variables["maxMembers"] = maxMembers }
+        let response: UpdateChatResponse = try await graphQL.perform(
+            query: GraphQLQueries.updateChat,
+            variables: variables,
+            responseType: UpdateChatResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.chat.update
+    }
+    
+    // MARK: - Delete Chat
+    func deleteChat(chatId: UUID) async throws -> Bool {
+        let response: DeleteChatResponse = try await graphQL.perform(
+            query: GraphQLQueries.deleteChat,
+            variables: ["chatId": chatId.uuidString],
+            responseType: DeleteChatResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.chat.delete
+    }
+    
+    // MARK: - Update Member Role (исправлен тип ответа)
+    func updateMemberRole(chatId: UUID, userId: UUID, role: String) async throws {
+        let variables: [String: Any] = ["chatId": chatId.uuidString, "userId": userId.uuidString, "role": role]
+        // Ответ теперь просто Boolean, обёрнутый в структуру
+        struct BoolResponse: Decodable {
+            let chat: BoolWrapper
+        }
+        struct BoolWrapper: Decodable {
+            let unbanMember: Bool?   // может быть kickMember или unbanMember
+            let kickMember: Bool?
+            
+            enum CodingKeys: String, CodingKey {
+                case unbanMember
+                case kickMember
+            }
+        }
+        let _: BoolResponse = try await graphQL.perform(
+            query: GraphQLQueries.updateChatMember,
+            variables: variables,
+            responseType: BoolResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Kick Member
+    func kickMember(chatId: UUID, userId: UUID) async throws {
+        let variables: [String: Any] = ["chatId": chatId.uuidString, "userId": userId.uuidString]
+        let _: KickMemberResponse = try await graphQL.perform(
+            query: GraphQLQueries.kickMember,
+            variables: variables,
+            responseType: KickMemberResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    func addChatMember(chatId: UUID, userId: UUID, role: String = "member") async throws {
+        let variables: [String: Any] = [
+            "chatId": chatId.uuidString,
+            "userId": userId.uuidString,
+            "role": role
+        ]
+        let _: AddChatMemberResponse = try await graphQL.perform(
+            query: GraphQLQueries.addChatMember,
+            variables: variables,
+            responseType: AddChatMemberResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Ban Member
+    func banMember(chatId: UUID, userId: UUID, bannedUntil: Date? = nil) async throws {
+        var variables: [String: Any] = ["chatId": chatId.uuidString, "userId": userId.uuidString]
+        if let until = bannedUntil {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            variables["bannedUntil"] = formatter.string(from: until)
+        }
+        let _: BanMemberResponse = try await graphQL.perform(
+            query: GraphQLQueries.banMember,
+            variables: variables,
+            responseType: BanMemberResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Unban Member
+    func unbanMember(chatId: UUID, userId: UUID) async throws {
+        let variables: [String: Any] = ["chatId": chatId.uuidString, "userId": userId.uuidString]
+        let _: UnbanMemberResponse = try await graphQL.perform(
+            query: GraphQLQueries.unbanMember,
+            variables: variables,
+            responseType: UnbanMemberResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Leave Chat
+    func leaveChat(chatId: UUID) async throws {
+        let variables = ["chatId": chatId.uuidString]
+        let _: LeaveChatResponse = try await graphQL.perform(
+            query: GraphQLQueries.leaveChat,
+            variables: variables,
+            responseType: LeaveChatResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Join Chat by invite token
+    func joinChat(inviteToken: String) async throws {
+        let variables = ["inviteToken": inviteToken]
+        let _: JoinChatResponse = try await graphQL.perform(
+            query: GraphQLQueries.joinChatWithToken,
+            variables: variables,
+            responseType: JoinChatResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+    }
+    
+    // MARK: - Generate Invite Link
+    func generateInviteLink(chatId: UUID) async throws -> String {
+        let variables = ["chatId": chatId.uuidString]
+        let response: InviteLinkResponse = try await graphQL.perform(
+            query: GraphQLQueries.generateInviteLink,
+            variables: variables,
+            responseType: InviteLinkResponse.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        return response.chat.generateInviteLink
+    }
+}
+
+// Остальные структуры ответов оставляем без изменений
 
 ./FrontDip/MessengerApp/Services/Network/ContactService.swift
 
@@ -3672,6 +4013,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             "isEdited": isEdited
         ]
         NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
+        
     }
     
     private func handleMessageDelete(_ json: [String: Any]) {
@@ -3724,8 +4066,16 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
-              let userId = UUID(uuidString: userIdString) else { return }
-        _ = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Failed to parse reaction.remove payload")
+            return
+        }
+        let deleted = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+        if deleted {
+            print("✅ Deleted reaction for msg \(messageId)")
+        } else {
+            print("⚠️ Reaction not found for deletion")
+        }
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
@@ -4439,7 +4789,7 @@ class ChatListViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // НОВАЯ ПОДПИСКА: обновление онлайн-статуса для приватных чатов
+        // Обновление онлайн-статуса для приватных чатов
         NotificationCenter.default.publisher(for: .statusUpdated)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4449,9 +4799,12 @@ class ChatListViewModel: ObservableObject {
                       let isOnline = info["is_online"] as? Bool else { return }
                 for i in 0..<self.chats.count where self.chats[i].otherUserId == userId {
                     self.chats[i].otherUserIsOnline = isOnline
+                    self.objectWillChange.send()
                 }
             }
             .store(in: &cancellables)
+        
+        // Индикатор печати (тайпинг)
         NotificationCenter.default.publisher(for: .typingStarted)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -4504,7 +4857,6 @@ class ChatListViewModel: ObservableObject {
                 self.chats = updatedChats.sorted { $0.lastActivityDate > $1.lastActivityDate }
                 self.isLoading = false
                 self.errorMessage = nil
-                // Запускаем фоновую загрузку данных о собеседниках
                 Task { await self.enrichPrivateChats() }
             }
         } catch {
@@ -4517,9 +4869,8 @@ class ChatListViewModel: ObservableObject {
 
     private func enrichPrivateChats() async {
         guard let currentUserId = currentUserId else { return }
-        for i in 0..<chats.count where chats[i].chatType.lowercased() == "private" {
+        for i in 0..<chats.count where chats[i].isPrivate {   // ← изменено
             let chatId = chats[i].id
-            // Пропускаем уже загруженные
             if chats[i].otherUserId != nil { continue }
             let memberIds = await getChatMemberIds(for: chatId)
             let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -4527,13 +4878,11 @@ class ChatListViewModel: ObservableObject {
             do {
                 let otherUser = try await UserService.shared.getUser(userId: otherId)
                 await MainActor.run {
-                    // Ищем актуальный индекс (массив мог измениться)
                     if let idx = self.chats.firstIndex(where: { $0.id == chatId }) {
                         self.chats[idx].otherUserId = otherId
                         self.chats[idx].otherUserNickname = otherUser.nickName
                         self.chats[idx].otherUserAvatarUrl = otherUser.avatarUrl
                         self.chats[idx].otherUserIsOnline = otherUser.isOnline ?? false
-                        // Принудительно обновляем UI
                         self.objectWillChange.send()
                     }
                 }
@@ -4559,7 +4908,6 @@ class ChatListViewModel: ObservableObject {
         }
     }
     
-
     private func handleNewMessage(_ message: Message) {
         guard let index = chats.firstIndex(where: { $0.id == message.chatId }) else {
             Task { await loadChats() }
@@ -4586,6 +4934,7 @@ class ChatListViewModel: ObservableObject {
         
         chats[index] = updatedChat
         chats.sort { $0.lastActivityDate > $1.lastActivityDate }
+        objectWillChange.send()
     }
     
     private func handleMessageUpdated(chatId: UUID, messageId: Int64, newContent: String) {
@@ -4604,6 +4953,7 @@ class ChatListViewModel: ObservableObject {
         updatedChat.lastMessagePreview = updatedPreview
         chats[index] = updatedChat
         chats.sort { $0.lastActivityDate > $1.lastActivityDate }
+        objectWillChange.send()
     }
 
     private func handleMessageDeleted(chatId: UUID, messageId: Int64) {
@@ -4614,8 +4964,8 @@ class ChatListViewModel: ObservableObject {
             await refreshChat(chatId)
         }
     }
+    
     func refreshChat(_ chatId: UUID) async {
-        // Опционально: сделать запрос одного чата, пока перезагружаем все
         await loadChats()
     }
     
@@ -4635,31 +4985,28 @@ class ChatListViewModel: ObservableObject {
             updatedChat.lastMessageStatus = .sending
         }
         chats[index] = updatedChat
-    }
-    
-    private func refreshLastMessage(for chatId: UUID) async {
-        await loadChats()
+        objectWillChange.send()
     }
     
     private func fetchMessageStatus(for messageId: Int64) -> MessageStatusType? {
-        // Получаем статус из локальной БД для данного сообщения
-        guard let (deliveredAt, readAt) = LocalDatabase.shared.getMessageStatus(for: messageId, userId: currentUserId ?? UUID()) else { return nil }
-        if readAt != nil { return .read }
-        if deliveredAt != nil { return .delivered }
+        guard let currentUserId = currentUserId else { return nil }
+        if let (deliveredAt, readAt) = LocalDatabase.shared.getMessageStatus(for: messageId, userId: currentUserId) {
+            if readAt != nil { return .read }
+            if deliveredAt != nil { return .delivered }
+        }
         return .sending
     }
     
-    // MARK: - Сброс непрочитанных
     func resetUnreadCount(for chatId: UUID) {
         if let index = chats.firstIndex(where: { $0.id == chatId }) {
             var chat = chats[index]
             chat.unreadCount = 0
             chats[index] = chat
             unreadCounts[chatId] = 0
+            objectWillChange.send()
         }
     }
     
-    // MARK: - Существующие методы (без изменений)
     func createChat(name: String) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
@@ -4698,6 +5045,7 @@ class ChatListViewModel: ObservableObject {
             )
             await MainActor.run {
                 self.chats.insert(newChat, at: 0)
+                self.objectWillChange.send()
             }
             return true
         } catch {
@@ -4737,8 +5085,6 @@ class ChatListViewModel: ObservableObject {
             return nil
         }
     }
-
-
 
     private func createPrivateChat(with userId: UUID) async -> Chat? {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return nil }
@@ -4780,6 +5126,7 @@ class ChatListViewModel: ObservableObject {
         DispatchQueue.main.async {
             if !self.chats.contains(where: { $0.id == chat.id }) {
                 self.chats.insert(chat, at: 0)
+                self.objectWillChange.send()
             }
         }
     }
@@ -4865,21 +5212,69 @@ class ChatSelectionViewModel: ObservableObject {
 import Foundation
 import Combine
 
+@MainActor
 class ChatSidebarViewModel: ObservableObject {
-    @Published var members: [ChatMemberItem] = []
+    let chat: Chat
+    @Published var allMembers: [ChatMemberItem] = []      // все участники (кроме left)
+    @Published var currentUserRole: String = "member"
+    @Published var otherUser: User?
+    @Published var isContact = false
     @Published var isLoading = false
     @Published var errorMessage: String?
-    
+    @Published var isDeleting = false
+
+    // Вычисляемые списки
+    var activeMembers: [ChatMemberItem] {
+        allMembers.filter { $0.status == "active" }
+    }
+    var bannedMembers: [ChatMemberItem] {
+        allMembers.filter { $0.status == "banned" }
+    }
+
     private let graphQL = GraphQLClient.shared
-    let chat: Chat
-    
+    private let contactService = ContactService.shared
+    private var cancellables = Set<AnyCancellable>()
+
     init(chat: Chat) {
         self.chat = chat
+        setupBindings()
     }
-    
+
+    private func setupBindings() {
+        contactService.$contacts
+            .sink { [weak self] contacts in
+                guard let self = self, let otherId = self.otherUser?.userId else { return }
+                self.isContact = contacts.contains { $0.contactUserId == otherId }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self = self else { return }
+                guard let info = notification.object as? [String: Any],
+                      let userId = info["userId"] as? UUID,
+                      let isOnline = info["is_online"] as? Bool else { return }
+                
+                // Обновляем только если это наш otherUser
+                if userId == self.otherUser?.userId {
+                    self.otherUser?.isOnline = isOnline
+                    self.objectWillChange.send()
+                }
+                
+                // Также можно обновить статус онлайн для любого участника в списке, но не вызывать loadMembers()
+                if let index = self.activeMembers.firstIndex(where: { $0.userId == userId }) {
+                    // Если нужно обновить статус онлайн в списке активных – но у нас нет поля isOnline в ChatMemberItem,
+                    // оно есть только в User. Поэтому не трогаем.
+                }
+            }
+            .store(in: &cancellables)
+    }
+
     func loadMembers() {
+        guard !isDeleting else { return }
+        isLoading = true
         Task {
-            await MainActor.run { isLoading = true }
             do {
                 let variables = ["chatId": chat.id.uuidString]
                 let response: ChatMembersResponse = try await graphQL.perform(
@@ -4888,9 +5283,20 @@ class ChatSidebarViewModel: ObservableObject {
                     responseType: ChatMembersResponse.self,
                     authToken: TokenManager.shared.accessToken
                 )
+                let fetched = response.chat.members
+                // ❗️ Исключаем статус "left" – таких участников не показываем вообще
                 await MainActor.run {
-                    self.members = response.chat.members
+                    self.allMembers = fetched.filter { $0.status != "left" }
+                    if let currentUserId = AppState.shared.currentUser?.userId,
+                       let current = fetched.first(where: { $0.userId == currentUserId }) {
+                        self.currentUserRole = current.role ?? "member"
+                    } else {
+                        self.currentUserRole = "member"
+                    }
                     self.isLoading = false
+                }
+                if chat.isPrivate {
+                    await loadOtherUser()
                 }
             } catch {
                 await MainActor.run {
@@ -4900,28 +5306,113 @@ class ChatSidebarViewModel: ObservableObject {
             }
         }
     }
-    
+
+    func isUserInChat(_ userId: UUID) -> Bool {
+        return activeMembers.contains(where: { $0.userId == userId })
+    }
+
     func addUserToChat(_ userId: UUID) async -> Bool {
-        let variables: [String: Any] = [
-            "chatId": chat.id.uuidString,
-            "userId": userId.uuidString
-        ]
         do {
-            let _: AddChatMemberResponse = try await graphQL.perform(
-                query: GraphQLQueries.addChatMember,
-                variables: variables,
-                responseType: AddChatMemberResponse.self,
-                authToken: TokenManager.shared.accessToken
-            )
+            try await ChatService.shared.addChatMember(chatId: chat.id, userId: userId)
             await loadMembers()
             return true
         } catch {
+            errorMessage = error.localizedDescription
             return false
         }
     }
-    
-    func isUserInChat(_ userId: UUID) -> Bool {
-        return members.contains(where: { $0.userId == userId })
+
+    private func loadOtherUser() async {
+        guard let currentUserId = AppState.shared.currentUser?.userId else { return }
+        let otherId = activeMembers.first(where: { $0.userId != currentUserId })?.userId
+        guard let otherId = otherId else { return }
+        do {
+            let user = try await UserService.shared.getUser(userId: otherId)
+            await MainActor.run {
+                self.otherUser = user
+                self.isContact = contactService.isContact(userId: otherId)
+            }
+        } catch {
+            print("Failed to load other user: \(error)")
+        }
+    }
+
+    // MARK: - Actions
+    func updateMemberRole(userId: UUID, role: String) async -> Bool {
+        do {
+            try await ChatService.shared.updateMemberRole(chatId: chat.id, userId: userId, role: role)
+            await loadMembers()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func kickMember(userId: UUID) async -> Bool {
+        do {
+            try await ChatService.shared.kickMember(chatId: chat.id, userId: userId)
+            await loadMembers()   // обновляем список
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func banMember(userId: UUID, until: Date?) async -> Bool {
+        do {
+            try await ChatService.shared.banMember(chatId: chat.id, userId: userId, bannedUntil: until)
+            await loadMembers()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func unbanMember(userId: UUID) async -> Bool {
+        do {
+            try await ChatService.shared.unbanMember(chatId: chat.id, userId: userId)
+            await loadMembers()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func leaveChat() async -> Bool {
+        do {
+            try await ChatService.shared.leaveChat(chatId: chat.id)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteChat() async -> Bool {
+        isDeleting = true
+        cancellables.forEach { $0.cancel() }
+        cancellables.removeAll()
+        do {
+            try await ChatService.shared.deleteChat(chatId: chat.id)
+            return true
+        } catch {
+            isDeleting = false
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func generateInviteLink() async -> String? {
+        do {
+            return try await ChatService.shared.generateInviteLink(chatId: chat.id)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 }
 
@@ -4940,6 +5431,7 @@ class ChatViewModel: ObservableObject {
     @Published var otherUser: User?
     @Published var isOtherUserOnline: Bool = false
     @Published var isSomeoneTyping: Bool = false
+    @Published var myRole: String = "member"
     
     
     let chat: Chat
@@ -4955,10 +5447,12 @@ class ChatViewModel: ObservableObject {
     private var chatMemberIds: [UUID] = []  // ID участников чата
     
     init(chat: Chat) {
+        
         self.chat = chat
         print("ChatViewModel initialized for chat: \(chat.id)")
         setupNotifications()
         loadMessages()
+        Task{ await loadMyRole()}
         Task { await loadChatTitle() }
         Task { await loadOtherUserIfNeeded() }
         loadChatMemberIds()
@@ -4999,20 +5493,49 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
         
         NotificationCenter.default.publisher(for: .reactionAdded)
-            .sink { [weak self] notification in
-                if let reaction = notification.object as? Reaction {
-                    self?.addReactionLocally(reaction)
-                }
-            }
-            .store(in: &cancellables)
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] notification in
+                        if let reaction = notification.object as? Reaction {
+                            self?.addReactionLocally(reaction)
+                        }
+                    }
+                    .store(in: &cancellables)
         
         NotificationCenter.default.publisher(for: .reactionRemoved)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
-                if let info = notification.object as? [String: Any],
-                   let messageId = info["messageId"] as? Int64,
-                   let userId = info["userId"] as? String,
-                   let emoji = info["emoji"] as? String {
-                    self?.removeReactionLocally(messageId: messageId, userId: UUID(uuidString: userId)!, emoji: emoji)
+                guard let self = self,
+                      let info = notification.object as? [String: Any],
+                      let messageId = info["messageId"] as? Int64 else { return }
+                
+                // Опционально: сразу удаляем локально для мгновенного отклика (но может не перерисовать UI)
+                if let userIdString = info["userId"] as? String,
+                   let emoji = info["emoji"] as? String,
+                   let userId = UUID(uuidString: userIdString) {
+                    self.removeReactionLocally(messageId: messageId, userId: userId, emoji: emoji)
+                }
+                
+                // Принудительно перезагружаем это сообщение с сервера
+                Task {
+                    if let freshMessage = await self.fetchMessage(byId: messageId) {
+                        await MainActor.run {
+                            if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
+                                // Заменяем старое сообщение свежим
+                                self.messages[index] = freshMessage
+                                // Синхронизируем кэш реакций
+                                self.reactionsDict[messageId] = freshMessage.reactions
+                                // Сохраняем в БД (опционально)
+                                _ = self.database.saveMessage(freshMessage)
+                                if let reactions = freshMessage.reactions {
+                                    for reaction in reactions {
+                                        _ = self.database.saveReaction(reaction)
+                                    }
+                                }
+                                // Принудительно уведомляем SwiftUI о необходимости перерисовать этот элемент
+                                self.objectWillChange.send()
+                            }
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -5032,16 +5555,16 @@ class ChatViewModel: ObservableObject {
             .store(in: &cancellables)
         
         NotificationCenter.default.publisher(for: .statusUpdated)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 guard let self = self,
                       let info = notification.object as? [String: Any],
                       let userId = info["userId"] as? UUID,
                       let isOnline = info["is_online"] as? Bool,
                       userId == self.otherUser?.userId else { return }
-                DispatchQueue.main.async {
-                    self.isOtherUserOnline = isOnline
-                    self.otherUser?.isOnline = isOnline
-                }
+                self.isOtherUserOnline = isOnline
+                self.otherUser?.isOnline = isOnline
+                self.objectWillChange.send()
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .typingStarted)
@@ -5071,6 +5594,32 @@ class ChatViewModel: ObservableObject {
                 self.isSomeoneTyping = false
             }
             .store(in: &cancellables)
+        
+        
+    }
+    private func loadMyRole() async {
+        guard let currentUserId = currentUserId else { return }
+        let membersWithRoles = await getChatMemberIdsWithRoles()
+        if let role = membersWithRoles.first(where: { $0.userId == currentUserId })?.role {
+            await MainActor.run {
+                self.myRole = role ?? "member"
+            }
+        }
+    }
+    private func getChatMemberIdsWithRoles() async -> [(userId: UUID, role: String?)] {
+        let variables = ["chatId": chat.id.uuidString]
+        do {
+            let response: ChatMembersResponse = try await graphQL.perform(
+                query: GraphQLQueries.getChatMembers,
+                variables: variables,
+                responseType: ChatMembersResponse.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            return response.chat.members.map { ($0.userId, $0.role) }  // role уже опциональный
+        } catch {
+            print("Failed to load chat member roles: \(error)")
+            return []
+        }
     }
     
     // MARK: - Загрузка сообщений (кэш + сеть)
@@ -5199,7 +5748,7 @@ class ChatViewModel: ObservableObject {
         objectWillChange.send()
     }
     
-    private func getChatMemberIds() async -> [UUID] {
+    func getChatMemberIds() async -> [UUID] {
         let variables = ["chatId": chat.id.uuidString]
         do {
             let response: ChatMemberIdsResponse = try await graphQL.perform(
@@ -5277,7 +5826,7 @@ class ChatViewModel: ObservableObject {
     func addReaction(to messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         let reaction = Reaction(messageId: messageId, userId: currentUserId, emoji: emoji, createdAt: Date())
-        
+
         await MainActor.run {
             _ = database.saveReaction(reaction)
             if var list = reactionsDict[messageId] {
@@ -5289,17 +5838,17 @@ class ChatViewModel: ObservableObject {
                 reactionsDict[messageId] = [reaction]
             }
             if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
-                var updatedMsg = messages[index]
-                var newReactions = updatedMsg.reactions ?? []
+                var msg = messages[index]
+                var newReactions = msg.reactions ?? []
                 if !newReactions.contains(where: { $0.userId == currentUserId && $0.emoji == emoji }) {
                     newReactions.append(reaction)
-                    updatedMsg.reactions = newReactions
-                    messages[index] = updatedMsg
+                    msg.reactions = newReactions
+                    messages[index] = msg
                 }
             }
             objectWillChange.send()
         }
-        
+
         do {
             let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString, "emoji": emoji]
             let _: AddReactionResponse = try await graphQL.perform(
@@ -5325,7 +5874,7 @@ class ChatViewModel: ObservableObject {
             print("Add reaction failed: \(error)")
         }
     }
-    
+
     func removeReaction(from messageId: Int64, emoji: String) async {
         let currentUserId = AppState.shared.currentUser?.userId ?? UUID()
         await MainActor.run {
@@ -5341,6 +5890,7 @@ class ChatViewModel: ObservableObject {
             }
             objectWillChange.send()
         }
+
         do {
             let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString, "emoji": emoji]
             let _: RemoveReactionResponse = try await graphQL.perform(
@@ -5358,6 +5908,8 @@ class ChatViewModel: ObservableObject {
                         list.append(reaction)
                         reactionsDict[messageId] = list
                     }
+                } else {
+                    reactionsDict[messageId] = [reaction]
                 }
                 if let index = messages.firstIndex(where: { $0.messageId == messageId }) {
                     var msg = messages[index]
@@ -5373,35 +5925,67 @@ class ChatViewModel: ObservableObject {
             print("Remove reaction failed: \(error)")
         }
     }
+    func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
+        return reactionsDict[messageId] ?? []
+    }
+
     
     private func addReactionLocally(_ reaction: Reaction) {
         DispatchQueue.main.async {
+            // 1. Сохраняем в БД
             _ = self.database.saveReaction(reaction)
-            if var list = self.reactionsDict[reaction.messageId] {
-                if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
-                    list.append(reaction)
-                    self.reactionsDict[reaction.messageId] = list
-                }
-            } else {
-                self.reactionsDict[reaction.messageId] = [reaction]
+            
+            // 2. Обновляем словарь
+            var list = self.reactionsDict[reaction.messageId] ?? []
+            if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
+                list.append(reaction)
+                self.reactionsDict[reaction.messageId] = list
             }
+            
+            // 3. Обновляем сообщение в массиве, заменяя элемент
+            if let index = self.messages.firstIndex(where: { $0.messageId == reaction.messageId }) {
+                var msg = self.messages[index]
+                var newReactions = msg.reactions ?? []
+                if !newReactions.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
+                    newReactions.append(reaction)
+                    msg.reactions = newReactions
+                    // Заменяем элемент
+                    self.messages.remove(at: index)
+                    self.messages.insert(msg, at: index)
+                }
+            }
+            
+            // 4. Форсируем обновление (на всякий случай)
+            self.objectWillChange.send()
         }
     }
-    
+
     private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
         DispatchQueue.main.async {
             _ = self.database.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+            
             if var list = self.reactionsDict[messageId] {
                 list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
-                self.reactionsDict[messageId] = list
+                if list.isEmpty {
+                    self.reactionsDict.removeValue(forKey: messageId)
+                } else {
+                    self.reactionsDict[messageId] = list
+                }
             }
+            
+            if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
+                var msg = self.messages[index]
+                msg.reactions?.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
+                self.messages[index] = msg
+            }
+            
+            // ✅ Принудительно уведомляем SwiftUI
+            self.objectWillChange.send()
         }
     }
     
     // MARK: - Helper for reactions display
-    func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
-        return reactionsDict[messageId] ?? []
-    }
+    
     
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.userId
@@ -5495,6 +6079,7 @@ class ChatViewModel: ObservableObject {
 
     // Вспомогательный метод (добавить в конец класса)
     private func fetchMessage(byId messageId: Int64) async -> Message? {
+        print("🔄 [fetchMessage] Запрашиваем сообщение \(messageId) с сервера...")
         let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString]
         do {
             let response: GetMessageResponse = try await graphQL.perform(
@@ -5503,9 +6088,11 @@ class ChatViewModel: ObservableObject {
                 responseType: GetMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.message.getMessage
+            let fetched = response.message.getMessage
+            print("✅ [fetchMessage] Получено сообщение \(messageId), реакций: \(fetched.reactions?.count ?? 0)")
+            return fetched
         } catch {
-            print("Failed to fetch message: \(error)")
+            print("❌ [fetchMessage] Ошибка: \(error)")
             return nil
         }
     }
@@ -5574,7 +6161,7 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - Chat title / other user
     func loadOtherUserIfNeeded() async {
-        guard chat.chatType == "PRIVATE" || chat.chatType.lowercased() == "private" else { return }
+        guard chat.isPrivate else { return }   // ← изменено
         guard let currentUserId = currentUserId else { return }
         let memberIds = await getChatMemberIds()
         let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -5597,6 +6184,10 @@ class ChatViewModel: ObservableObject {
     func loadChatTitle() async {
         if let name = chat.name, !name.isEmpty {
             chatTitle = name
+            return
+        }
+        guard chat.isPrivate else {   // ← изменено
+            chatTitle = "Чат"
             return
         }
         guard let currentUserId = currentUserId else {
@@ -5659,6 +6250,19 @@ class ChatViewModel: ObservableObject {
     private func sendDeliveredIfNeeded(for message: Message) {
         guard message.senderId != currentUserId else { return }
         WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
+    }
+    func refreshOtherUserStatus() async {
+        guard let otherUser = otherUser else { return }
+        do {
+            let updatedUser = try await UserService.shared.getUser(userId: otherUser.userId)
+            await MainActor.run {
+                self.otherUser = updatedUser
+                self.isOtherUserOnline = updatedUser.isOnline ?? false
+                self.objectWillChange.send()
+            }
+        } catch {
+            print("Failed to refresh user status: \(error)")
+        }
     }
 }
 
@@ -6697,6 +7301,7 @@ struct ChatListView: View {
     @StateObject private var viewModel = ChatListViewModel()
     @State private var showMenu = false
     @State private var showCreateChat = false
+    @State private var showJoinChat = false
     @State private var newChatName = ""
     @State private var isCreating = false
     @State private var selectedChat: Chat?
@@ -6717,10 +7322,11 @@ struct ChatListView: View {
                             }
                         }
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button {
-                                showCreateChat = true
+                            Menu {
+                                Button("Новый чат") { showCreateChat = true }
+                                Button("Присоединиться") { showJoinChat = true }
                             } label: {
-                                Image(systemName: "square.and.pencil")
+                                Image(systemName: "plus")
                             }
                         }
                     }
@@ -6732,12 +7338,15 @@ struct ChatListView: View {
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
-            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
-                if let newChat = notification.object as? Chat {
-                    viewModel.addChat(newChat)
-                }
+            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
+                Task { await viewModel.loadChats() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
+                Task { await viewModel.loadChats() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+                print("🚨 .openChat received in ChatListView with object: \(notification.object ?? "nil")")
+                print("🔍 .openChat posted from:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
                 if let chat = notification.object as? Chat {
                     selectedChat = chat
                     showChat = true
@@ -6746,15 +7355,9 @@ struct ChatListView: View {
                     }
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
-                if self.selectedChat == nil {
-                    Task { await viewModel.loadChats() }
-                }
+            .sheet(isPresented: $showJoinChat) {
+                JoinChatView()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            
 
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
@@ -6822,14 +7425,17 @@ struct ChatListView: View {
     }
 }
 
+// MARK: - ChatRow (с аватаркой для групп и каналов)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
     
+    private var isPrivateChat: Bool { chat.isPrivate }
+    
     var body: some View {
         HStack(spacing: 12) {
-            // Аватар
-            if chat.chatType.lowercased() == "private" {
+            // Аватарка: для личных чатов – аватар контакта, для групп/каналов – avatarUrl или плейсхолдер
+            if isPrivateChat {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
                         Circle()
@@ -6838,20 +7444,23 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                Circle()
-                    .fill(Color.blue.opacity(0.2))
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Text((chat.name?.prefix(1).uppercased() ?? "?"))
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.blue)
-                    )
+                // Группа или канал – используем avatarUrl чата
+                if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
+                    AvatarView(urlString: avatarUrl, size: 50)
+                } else {
+                    // Плейсхолдер в зависимости от типа чата
+                    Circle()
+                        .fill(chat.isGroup ? Color.blue.opacity(0.2) : Color.purple.opacity(0.2))
+                        .frame(width: 50, height: 50)
+                        .overlay(
+                            Image(systemName: chat.isGroup ? "person.2.fill" : "megaphone.fill")
+                                .foregroundColor(chat.isGroup ? .blue : .purple)
+                        )
+                }
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                // Название чата
-                if chat.chatType.lowercased() == "private" {
+                if isPrivateChat {
                     Text(chat.otherUserNickname ?? "Загрузка...")
                         .font(.headline)
                 } else {
@@ -6859,15 +7468,14 @@ struct ChatRow: View {
                         .font(.headline)
                 }
                 
-                // Статус печати или последнее сообщение
-                if chat.chatType.lowercased() == "private" && chat.isTyping {
+                if isPrivateChat && chat.isTyping {
                     Text("печатает...")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .italic()
                 } else if let preview = chat.lastMessagePreview {
                     HStack(spacing: 4) {
-                        if chat.chatType.lowercased() == "group" && preview.senderId != currentUserId {
+                        if !isPrivateChat && preview.senderId != currentUserId {
                             (Text(preview.senderNickname ?? "Кто-то")
                                 .font(.caption)
                                 .foregroundColor(.secondary) +
@@ -6925,10 +7533,7 @@ struct ChatRow: View {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
-    
 
-
-// MessageStatusIcon остаётся без изменений
 struct MessageStatusIcon: View {
     let status: MessageStatusType
     var body: some View {
@@ -6949,13 +7554,18 @@ struct MessageStatusIcon: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatSidebarView.swift
 
+//
+//  ChatSidebarView.swift
+//  FrontDip
+//
+
 import SwiftUI
 
+// MARK: - ChatSidebarView
 struct ChatSidebarView: View {
     let chat: Chat
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSidebarViewModel
-    @State private var showingAddContact = false
     
     init(chat: Chat) {
         self.chat = chat
@@ -6964,61 +7574,16 @@ struct ChatSidebarView: View {
     
     var body: some View {
         NavigationView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Заголовок чата
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(chat.name ?? "Чат")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                        .padding(.top, 20)
-                    
-                    HStack {
-                        Label("\(chat.membersCount) участников", systemImage: "person.2")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(formatDate(chat.createdAt))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+            Group {
+                if chat.isPrivate {
+                    privateChatContent
+                } else if chat.isGroup {
+                    groupChatContent
+                } else {
+                    channelContent
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 20)
-                
-                // Участники чата
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Участники")
-                            .font(.headline)
-                        Spacer()
-                        Button(action: { showingAddContact = true }) {
-                            Image(systemName: "person.badge.plus")
-                                .foregroundColor(.blue)
-                        }
-                    }
-                    .padding(.horizontal)
-                    
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if viewModel.members.isEmpty {
-                        Text("Нет участников")
-                            .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollView {
-                            LazyVStack(spacing: 0) {
-                                ForEach(viewModel.members, id: \.userId) { member in
-                                    ChatMemberRow(member: member)
-                                        .padding(.horizontal)
-                                        .padding(.vertical, 8)
-                                }
-                            }
-                        }
-                    }
-                }
-                Spacer()
             }
+            .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -7029,51 +7594,338 @@ struct ChatSidebarView: View {
         .onAppear {
             viewModel.loadMembers()
         }
-        .sheet(isPresented: $showingAddContact) {
-            AddContactToChatView(chat: chat, viewModel: viewModel)
-                .environmentObject(ContactService.shared)
+        .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { notification in
+            if let updatedChat = notification.object as? Chat, updatedChat.id == chat.id {
+                viewModel.loadMembers()
+            }
+        }
+        .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") { viewModel.errorMessage = nil }
+        } message: {
+            Text(viewModel.errorMessage ?? "")
         }
     }
     
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        formatter.locale = Locale(identifier: "ru_RU")
-        return formatter.string(from: date)
-    }
-}
-
-struct ChatMemberRow: View {
-    let member: ChatMemberItem
-    
-    var body: some View {
-        NavigationLink(destination: UserProfileView(userId: member.userId)) {
-            HStack {
-                Circle()
-                    .fill(Color.blue.opacity(0.3))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(member.nickName.prefix(1).uppercased())
-                            .font(.headline)
-                            .foregroundColor(.blue)
-                    )
-                
-                VStack(alignment: .leading) {
-                    Text(member.nickName)
-                        .font(.headline)
+    // MARK: - Личный чат
+    private var privateChatContent: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                if let otherUser = viewModel.otherUser {
+                    AvatarView(urlString: otherUser.avatarUrl, size: 100)
+                        .padding(.top, 20)
+                    
+                    Text(otherUser.nickName)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    
+                    if let bio = otherUser.bio, !bio.isEmpty {
+                        Text(bio)
+                            .font(.body)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    
                     HStack {
                         Circle()
-                            .fill(member.isOnline ? Color.green : Color.gray)
-                            .frame(width: 8, height: 8)
-                        Text(member.isOnline ? "онлайн" : "офлайн")
+                            .fill(otherUser.isOnline == true ? Color.green : Color.gray)
+                            .frame(width: 10, height: 10)
+                        Text(otherUser.isOnline == true ? "онлайн" : "офлайн")
+                            .font(.subheadline)
+                    }
+                    
+                    if let lastSeen = otherUser.lastSeen {
+                        Text("Был(а) \(relativeDate(lastSeen))")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    
+                    Button("Написать") {
+                        dismiss()
+                        NotificationCenter.default.post(name: .openChat, object: chat)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    
+                    if viewModel.isContact {
+                        Button("Удалить из контактов", role: .destructive) {
+                            Task {
+                                do {
+                                    try await ContactService.shared.removeContact(userId: otherUser.userId.uuidString)
+                                    viewModel.isContact = false
+                                    NotificationService.shared.showInfo("Контакт удалён")
+                                } catch {
+                                    NotificationService.shared.showError(error.localizedDescription)
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Добавить в контакты") {
+                            Task {
+                                do {
+                                    _ = try await ContactService.shared.sendContactRequest(to: otherUser.userId.uuidString)
+                                    viewModel.isContact = true
+                                    NotificationService.shared.showSuccess("Запрос отправлен")
+                                } catch {
+                                    NotificationService.shared.showError(error.localizedDescription)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ProgressView()
                 }
                 Spacer()
             }
-            .padding(.vertical, 8)
+            .padding()
+        }
+    }
+    
+    // MARK: - Группа (и канал – общий UI)
+    private var groupChatContent: some View {
+        VStack {
+            // Аватар и название
+            if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
+                AvatarView(urlString: avatarUrl, size: 100)
+                    .padding(.top, 20)
+            } else {
+                Circle()
+                    .fill(Color.blue.opacity(0.2))
+                    .frame(width: 100, height: 100)
+                    .overlay(
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.blue)
+                    )
+                    .padding(.top, 20)
+            }
+            
+            Text(chat.name ?? "Группа")
+                .font(.title2)
+                .fontWeight(.bold)
+            
+            if let description = chat.description, !description.isEmpty {
+                Text(description)
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+            
+            // Кнопки управления
+            HStack {
+                if viewModel.currentUserRole == "owner" || viewModel.currentUserRole == "admin" {
+                    Button("Редактировать") {
+                        let editView = EditChatView(chat: chat)
+                        present(editView)
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button("Пригласить") {
+                        Task {
+                            if let link = await viewModel.generateInviteLink() {
+                                shareLink(link)
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Spacer()
+            }
+            .padding(.horizontal)
+            
+            // Список участников с секциями
+            List {
+                if !viewModel.activeMembers.isEmpty {
+                    Section(header: Text("Участники (\(viewModel.activeMembers.count))")) {
+                        ForEach(viewModel.activeMembers) { member in
+                            MemberRow(
+                                member: member,
+                                currentUserRole: viewModel.currentUserRole,
+                                onRoleChange: { userId, newRole in
+                                    Task { await viewModel.updateMemberRole(userId: userId, role: newRole) }
+                                },
+                                onKick: { userId in
+                                    Task { await viewModel.kickMember(userId: userId) }
+                                },
+                                onBan: { userId, until in
+                                    Task { await viewModel.banMember(userId: userId, until: until) }
+                                },
+                                onUnban: { userId in
+                                    Task { await viewModel.unbanMember(userId: userId) }
+                                }
+                            )
+                        }
+                    }
+                }
+                
+                if !viewModel.bannedMembers.isEmpty {
+                    Section(header: Text("Забаненные (\(viewModel.bannedMembers.count))")) {
+                        ForEach(viewModel.bannedMembers) { member in
+                            MemberRow(
+                                member: member,
+                                currentUserRole: viewModel.currentUserRole,
+                                onRoleChange: { userId, newRole in
+                                    Task { await viewModel.updateMemberRole(userId: userId, role: newRole) }
+                                },
+                                onKick: { userId in
+                                    Task { await viewModel.kickMember(userId: userId) }
+                                },
+                                onBan: { userId, until in
+                                    Task { await viewModel.banMember(userId: userId, until: until) }
+                                },
+                                onUnban: { userId in
+                                    Task { await viewModel.unbanMember(userId: userId) }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            .listStyle(InsetGroupedListStyle())
+            
+            // Кнопки выхода/удаления
+            VStack(spacing: 12) {
+                if viewModel.currentUserRole == "owner" {
+                    Button("Удалить чат", role: .destructive) {
+                        confirmDelete()
+                    }
+                } else {
+                    Button("Выйти из группы", role: .destructive) {
+                        confirmLeave()
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+    
+    private var channelContent: some View {
+        groupChatContent
+    }
+    
+    // MARK: - Вспомогательные функции
+    private func present(_ view: some View) {
+        let vc = UIHostingController(rootView: view)
+        UIApplication.shared.windows.first?.rootViewController?.present(vc, animated: true)
+    }
+    
+    private func shareLink(_ link: String) {
+        let fullLink = "https://yourapp.com/join/\(link)"
+        let av = UIActivityViewController(activityItems: [fullLink], applicationActivities: nil)
+        UIApplication.shared.windows.first?.rootViewController?.present(av, animated: true)
+    }
+    
+    private func confirmDelete() {
+        let alert = UIAlertController(title: "Удалить чат", message: "Чат будет удалён для всех участников. Отменить нельзя.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { _ in
+            Task {
+                await MainActor.run { self.dismiss() }
+                if await self.viewModel.deleteChat() {
+                    NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
+                }
+            }
+        })
+        UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true)
+    }
+    
+    private func confirmLeave() {
+        let alert = UIAlertController(title: "Выйти из чата", message: "Вы покинете чат и не сможете писать в него.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Выйти", style: .destructive) { _ in
+            Task {
+                if await self.viewModel.leaveChat() {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
+                        self.dismiss()
+                    }
+                }
+            }
+        })
+        UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true)
+    }
+    
+    private func relativeDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - MemberRow (компонент строки участника)
+struct MemberRow: View {
+    let member: ChatMemberItem
+    let currentUserRole: String   // "owner", "admin", "member"
+    let onRoleChange: (UUID, String) -> Void
+    let onKick: (UUID) -> Void
+    let onBan: (UUID, Date?) -> Void
+    let onUnban: (UUID) -> Void
+
+    var body: some View {
+        HStack {
+            AvatarView(urlString: member.avatarUrl, size: 40)
+            VStack(alignment: .leading) {
+                Text(member.nickName)
+                    .font(.headline)
+                Text({
+                    switch member.role ?? "member" {
+                    case "owner": return "Владелец"
+                    case "admin": return "Администратор"
+                    default: return "Участник"
+                    }
+                }())
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+            Spacer()
+
+            if member.status == "banned" {
+                Text("Забанен")
+                    .font(.caption)
+                    .foregroundColor(.red)
+                // Разбанить могут только owner/admin
+                if currentUserRole == "owner" || currentUserRole == "admin" {
+                    Button("Разбанить") {
+                        onUnban(member.userId)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else {
+                // Активный участник
+                if currentUserRole == "owner" || (currentUserRole == "admin" && member.role != "owner") {
+                    Menu {
+                        if currentUserRole == "owner" && member.role != "owner" {
+                            let newRole = (member.role == "admin") ? "member" : "admin"
+                            Button(newRole == "admin" ? "Назначить админом" : "Снять админа") {
+                                onRoleChange(member.userId, newRole)
+                            }
+                        }
+                        if currentUserRole == "owner" || currentUserRole == "admin" {
+                            if member.role != "owner" {
+                                Button("Исключить", role: .destructive) { onKick(member.userId) }
+                                Button("Забанить", role: .destructive) { onBan(member.userId, nil) }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+// MARK: - Расширение уведомлений
+extension Notification.Name {
+    static let chatDeleted = Notification.Name("chatDeleted")
+}
+extension ChatMemberItem {
+    var roleDisplay: String {
+        switch role {
+        case "owner": return "Владелец"
+        case "admin": return "Администратор"
+        default: return "Участник"
         }
     }
 }
@@ -7092,7 +7944,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
     
-    // Вложения
+    // Вложения и остальные состояния...
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -7102,17 +7954,20 @@ struct ChatView: View {
     @State private var isUploading = false
     @State private var isSending = false
     
-    // Редактирование/удаление/реакции
     @State private var selectedMessage: Message?
     @State private var editText = ""
     @State private var showEditAlert = false
     @State private var showDeleteConfirmation = false
-    @State private var showReactionPicker = false
-    @State private var reactionEmoji = ""
     
-    // Typing
     @State private var typingTimer: Timer?
     @State private var isTyping = false
+    
+    private var canSendMessage: Bool {
+        if chat.isChannel {
+            return viewModel.myRole == "owner" || viewModel.myRole == "admin"
+        }
+        return true
+    }
     
     init(chat: Chat) {
         self.chat = chat
@@ -7121,7 +7976,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок (исправленный)
+            // Заголовок (шапка) с аватаркой
             HStack(spacing: 12) {
                 Button {
                     presentationMode.wrappedValue.dismiss()
@@ -7132,8 +7987,7 @@ struct ChatView: View {
                 }
                 .frame(width: 44, height: 44)
                 
-                if viewModel.chat.chatType.lowercased() == "private", let otherUser = viewModel.otherUser {
-                    // Кликабельный блок: аватарка + имя + статус
+                if chat.isPrivate, let otherUser = viewModel.otherUser {
                     Button {
                         let profileView = UserProfileView(userId: otherUser.userId)
                         let hosting = UIHostingController(rootView: profileView)
@@ -7164,14 +8018,29 @@ struct ChatView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 } else {
-                    Text(viewModel.chatTitle)
-                        .font(.headline)
-                        .lineLimit(1)
-                    if viewModel.isSomeoneTyping {
-                        Text("печатает...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.leading, 8)
+                    // Группа или канал – показываем аватарку чата и название
+                    HStack(spacing: 8) {
+                        if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
+                            AvatarView(urlString: avatarUrl, size: 40)
+                        } else {
+                            Circle()
+                                .fill(chat.isGroup ? Color.blue.opacity(0.2) : Color.purple.opacity(0.2))
+                                .frame(width: 40, height: 40)
+                                .overlay(
+                                    Image(systemName: chat.isGroup ? "person.2.fill" : "megaphone.fill")
+                                        .foregroundColor(chat.isGroup ? .blue : .purple)
+                                )
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(viewModel.chatTitle)
+                                .font(.headline)
+                                .lineLimit(1)
+                            if viewModel.isSomeoneTyping {
+                                Text("печатает...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
                 }
                 
@@ -7188,7 +8057,7 @@ struct ChatView: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground))
             
-            // Список сообщений
+            // Список сообщений (остаётся без изменений)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -7222,38 +8091,40 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода
-            HStack(spacing: 12) {
-                Button { showingActionSheet = true } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(.blue)
-                }
-                
-                TextField("Сообщение", text: $viewModel.newMessageText)
-                    .padding(12)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(25)
-                    .disabled(isSending)
-                    .onChange(of: viewModel.newMessageText) { newValue in
-                        handleTyping(newValue)
-                    }
-                
-                if isUploading || isSending {
-                    ProgressView().frame(width: 32, height: 32)
-                } else {
-                    Button {
-                        sendMessageWithAttachment()
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill")
+            // Поле ввода (остаётся без изменений)
+            if canSendMessage {
+                HStack(spacing: 12) {
+                    Button { showingActionSheet = true } label: {
+                        Image(systemName: "plus.circle.fill")
                             .font(.system(size: 32))
-                            .foregroundColor((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) ? .gray : .blue)
+                            .foregroundColor(.blue)
                     }
-                    .disabled((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) || isSending)
+                    
+                    TextField("Сообщение", text: $viewModel.newMessageText)
+                        .padding(12)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(25)
+                        .disabled(isSending)
+                        .onChange(of: viewModel.newMessageText) { newValue in
+                            handleTyping(newValue)
+                        }
+                    
+                    if isUploading || isSending {
+                        ProgressView().frame(width: 32, height: 32)
+                    } else {
+                        Button {
+                            sendMessageWithAttachment()
+                        } label: {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) ? .gray : .blue)
+                        }
+                        .disabled((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) || isSending)
+                    }
                 }
+                .padding()
+                .background(Color(.systemBackground))
             }
-            .padding()
-            .background(Color(.systemBackground))
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
@@ -7299,10 +8170,13 @@ struct ChatView: View {
         )
         .onAppear {
             NotificationCenter.default.post(name: .chatOpened, object: chat.id)
+            Task {
+                await viewModel.refreshOtherUserStatus()
+            }
         }
     }
     
-    // MARK: - Отправка с вложением
+    // MARK: - Отправка с вложением (остаётся без изменений)
     private func sendMessageWithAttachment() {
         Task {
             isSending = true
@@ -7379,7 +8253,7 @@ struct ChatView: View {
     
     // MARK: - Typing indicator
     private func handleTyping(_ text: String) {
-        if !text.isEmpty && !isTyping {
+        if !text.isEmpty && !isTyping && canSendMessage {
             isTyping = true
             WebSocketService.shared.sendTyping(chatId: chat.id, isTyping: true)
         }
@@ -7393,6 +8267,139 @@ struct ChatView: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Chat/EditChatView.swift
+
+import SwiftUI
+
+struct EditChatView: View {
+    let chat: Chat
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var viewModel: EditChatViewModel
+    @State private var showingImagePicker = false
+    @State private var selectedImage: UIImage?
+    
+    init(chat: Chat) {
+        self.chat = chat
+        _viewModel = StateObject(wrappedValue: EditChatViewModel(chat: chat))
+    }
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    HStack {
+                        AvatarView(urlString: viewModel.avatarUrl, size: 60)
+                        Button("Изменить") { showingImagePicker = true }
+                    }
+                }
+                Section {
+                    TextField("Название", text: $viewModel.name)
+                    TextField("Описание", text: $viewModel.description)
+                }
+                Section {
+                    Toggle("Публичный чат", isOn: $viewModel.isPublic)
+                    if viewModel.isPublic {
+                        HStack {
+                            Text("Макс. участников:")
+                            TextField("от 2 до 500", value: $viewModel.maxMembers, formatter: NumberFormatter())
+                                .keyboardType(.numberPad)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .frame(width: 80)
+                            Stepper("", value: $viewModel.maxMembers, in: 2...500)
+                                .labelsHidden()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Редактировать чат")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Сохранить") {
+                        Task {
+                            await viewModel.save(avatarData: selectedImage?.jpegData(compressionQuality: 0.8))
+                            dismiss()
+                        }
+                    }
+                    .disabled(viewModel.isLoading)
+                }
+            }
+            .overlay { if viewModel.isLoading { ProgressView() } }
+            .sheet(isPresented: $showingImagePicker) {
+                ImagePicker(selectedImage: $selectedImage)
+            }
+            .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") { viewModel.errorMessage = nil }
+            } message: { Text(viewModel.errorMessage ?? "") }
+        }
+    }
+}
+
+import SwiftUI
+
+@MainActor
+class EditChatViewModel: ObservableObject {
+    @Published var name: String
+    @Published var description: String
+    @Published var avatarUrl: String?
+    @Published var isPublic: Bool
+    @Published var maxMembers: Int
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let chat: Chat
+    
+    init(chat: Chat) {
+        self.chat = chat
+        self.name = chat.name ?? ""
+        self.description = chat.description ?? ""
+        self.avatarUrl = chat.avatarUrl
+        self.isPublic = chat.isPublic
+        self.maxMembers = chat.maxMembers
+    }
+    
+    func save(avatarData: Data?) async {
+        isLoading = true
+        defer { isLoading = false }
+        
+        var newAvatarUrl = avatarUrl
+        if let data = avatarData {
+            do {
+                let (_, storagePath) = try await AttachmentUploader.shared.uploadImage(UIImage(data: data)!)
+                newAvatarUrl = storagePath
+                print("✅ Avatar uploaded: \(storagePath)")
+            } catch {
+                errorMessage = "Ошибка загрузки аватара: \(error.localizedDescription)"
+                return
+            }
+        }
+        
+        do {
+            let updated = try await ChatService.shared.updateChat(
+                chatId: chat.id,
+                name: name.isEmpty ? nil : name,
+                description: description.isEmpty ? nil : description,
+                avatarUrl: newAvatarUrl,
+                isPublic: isPublic,
+                maxMembers: maxMembers
+            )
+            await MainActor.run {
+                self.avatarUrl = updated.avatarUrl
+                self.objectWillChange.send()
+                NotificationCenter.default.post(name: .chatUpdated, object: updated)
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Ошибка сохранения: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    static let chatUpdated = Notification.Name("chatUpdated")
+}
 
 ./FrontDip/MessengerApp/Views/Chat/InviteShareView.swift
 
@@ -7473,6 +8480,61 @@ struct InviteShareView: View {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let rootVC = windowScene.windows.first?.rootViewController {
             rootVC.present(activityVC, animated: true)
+        }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Chat/JoinChatView.swift
+
+import SwiftUI
+
+struct JoinChatView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var inviteKey = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Пригласительная ссылка или ключ")) {
+                    TextField("Вставьте ссылку или ключ", text: $inviteKey)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+                Section {
+                    Button("Вступить") {
+                        Task { await join() }
+                    }
+                    .disabled(inviteKey.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
+                }
+            }
+            .navigationTitle("Присоединиться")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { dismiss() }
+                }
+            }
+            .overlay { if isLoading { ProgressView() } }
+            .alert("Ошибка", isPresented: .constant(errorMessage != nil)) {
+                Button("OK") { errorMessage = nil }
+            } message: { Text(errorMessage ?? "") }
+        }
+    }
+    
+    private func join() async {
+        isLoading = true
+        defer { isLoading = false }
+        
+        let key = inviteKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = key.split(separator: "/").last.map(String.init) ?? key
+        do {
+            try await ChatService.shared.joinChat(inviteToken: token)
+            NotificationCenter.default.post(name: .chatCreated, object: nil) // обновить список чатов
+            dismiss()
+        } catch {
+            errorMessage = "Не удалось вступить: \(error.localizedDescription)"
         }
     }
 }
@@ -7647,7 +8709,7 @@ struct AttachmentView: View {
     
     private func loadImageURL() {
         let base = AppConfig.baseURL
-        let path = attachment.storagePath
+        let path = attachment.storagePath.lowercased()
         let urlString = base + "/media/" + path
         if let url = URL(string: urlString) {
             print("Attachment URL: \(urlString)")
@@ -7661,19 +8723,16 @@ struct AttachmentView: View {
             showSaveError = true
             return
         }
-        
         Task {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 guard let image = UIImage(data: data) else {
                     throw NSError(domain: "ImageError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Не удалось создать изображение"])
                 }
-                
                 let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
                 guard status == .authorized else {
-                    throw NSError(domain: "PhotoLibrary", code: -3, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к галерее. Разрешите доступ в настройках."])
+                    throw NSError(domain: "PhotoLibrary", code: -3, userInfo: [NSLocalizedDescriptionKey: "Нет доступа к галерее"])
                 }
-                
                 await MainActor.run {
                     UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
                     showSaveSuccess = true
@@ -7709,7 +8768,7 @@ struct AttachmentView: View {
     private func saveFile() {
         if let url = tempFileURL {
             showShareSheet = true
-        } else if fileData != nil {
+        } else if let data = fileData {
             createTempFileAndShare()
         } else {
             Task {
@@ -7718,19 +8777,26 @@ struct AttachmentView: View {
         }
     }
     
+
+
     private func downloadAndShare() async {
         isDownloading = true
-        guard let url = imageURL else { return }
+        guard let url = imageURL else {
+            await MainActor.run { isDownloading = false }
+            return
+        }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             await MainActor.run {
                 fileData = data
                 isDownloading = false
-                createTempFileAndShare()
+                createTempFileAndShare()   // ← добавлено
             }
         } catch {
             await MainActor.run {
                 isDownloading = false
+                saveErrorMessage = "Не удалось загрузить файл: \(error.localizedDescription)"
+                showSaveError = true
             }
         }
     }
@@ -8082,6 +9148,7 @@ struct SideMenuView: View {
 
 import SwiftUI
 
+
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
@@ -8089,11 +9156,12 @@ struct AvatarView: View {
     
     private var fullURL: URL? {
         guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
-        if urlString.lowercased().hasPrefix("http") {
-            return URL(string: urlString)
+        let lowerPath = urlString.lowercased()
+        if lowerPath.lowercased().hasPrefix("http") {
+            return URL(string: lowerPath)
         }
         let base = AppConfig.baseURL
-        let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
+        let path = lowerPath.hasPrefix("/") ? String(lowerPath.dropFirst()) : lowerPath
         return URL(string: base + "/media/" + path)
     }
     
@@ -8106,9 +9174,7 @@ struct AvatarView: View {
                     .clipShape(Circle())
             } else {
                 placeholderView
-                    .onAppear {
-                        loadImage()
-                    }
+                    .onAppear { loadImage() }
             }
         }
     }
@@ -8120,10 +9186,7 @@ struct AvatarView: View {
                 print("❌ Avatar load error: \(error)")
                 return
             }
-            guard let data = data, let uiImage = UIImage(data: data) else {
-                print("❌ Invalid image data")
-                return
-            }
+            guard let data = data, let uiImage = UIImage(data: data) else { return }
             DispatchQueue.main.async {
                 self.image = uiImage
             }
@@ -8534,10 +9597,10 @@ struct ContactRow: View {
 import SwiftUI
 
 struct MessageBubbleView: View {
-    let message: Message
+    var message: Message
     let isCurrentUser: Bool
     let senderUser: User?
-    let viewModel: ChatViewModel
+    @ObservedObject var viewModel: ChatViewModel
     let onEdit: (() -> Void)?
     let onDelete: (() -> Void)?
     
@@ -8672,14 +9735,15 @@ struct MessageBubbleView: View {
                     .foregroundColor(isCurrentUser ? .white : .primary)
                     .cornerRadius(18)
             }
-        }
+        }.id("\(message.messageId)_\(viewModel.reactionsDict[message.messageId]?.count ?? 0)")
     }
     
     private var reactionRow: some View {
         HStack(spacing: 4) {
             ForEach(Array(Set(viewModel.reactionsForMessage(message.messageId).map { $0.emoji })), id: \.self) { emoji in
-                let count = viewModel.reactionsForMessage(message.messageId).filter { $0.emoji == emoji }.count
-                let isCurrentUserReaction = currentUserReactionEmoji == emoji
+                let reactions = viewModel.reactionsDict[message.messageId] ?? [].filter { $0.emoji == emoji }
+                let count = reactions.count
+                let isCurrentUserReaction = reactions.contains(where: { $0.userId == AppState.shared.currentUser?.userId })
                 HStack(spacing: 2) {
                     Text(emoji)
                         .font(.caption)
@@ -8697,6 +9761,7 @@ struct MessageBubbleView: View {
         }
         .padding(.top, 2)
     }
+
     
     private func toggleReaction(emoji: String) {
         Task {
@@ -9071,19 +10136,20 @@ struct EditProfileView: View {
 
 ./FrontDip/MessengerApp/Views/Profile/PrivacySettingsView.swift
 
-// ./FrontDip/MessengerApp/Views/Profile/PrivacySettingsView.swift
 import SwiftUI
 
 struct PrivacySettingsView: View {
     @StateObject private var viewModel = PrivacySettingsViewModel()
     @Environment(\.dismiss) var dismiss
+
+    // Локальные переменные теперь привязаны к viewModel, а не к @State
     @State private var selectedWriteMe = "everyone"
     @State private var selectedAddToGroups = "everyone"
     @State private var selectedSeePhone = "contacts"
     @State private var selectedSeeLastSeen = "everyone"
-    
+
     let options = ["everyone", "contacts", "nobody"]
-    
+
     var body: some View {
         NavigationView {
             Form {
@@ -9124,6 +10190,8 @@ struct PrivacySettingsView: View {
                                 whoCanSeeLastSeen: selectedSeeLastSeen
                             )
                             if success {
+                                // После успешного сохранения перезагружаем настройки
+                                await viewModel.loadSettings()
                                 dismiss()
                             }
                         }
@@ -9132,11 +10200,14 @@ struct PrivacySettingsView: View {
             }
             .onAppear {
                 viewModel.loadSettings()
-                if let settings = viewModel.settings {
-                    selectedWriteMe = settings.whoCanWriteMe
-                    selectedAddToGroups = settings.whoCanAddToGroups
-                    selectedSeePhone = settings.whoCanSeePhone
-                    selectedSeeLastSeen = settings.whoCanSeeLastSeen
+            }
+            .onReceive(viewModel.$settings) { newSettings in
+                // Обновляем локальные переменные, когда меняются данные в viewModel
+                if let s = newSettings {
+                    selectedWriteMe = s.whoCanWriteMe
+                    selectedAddToGroups = s.whoCanAddToGroups
+                    selectedSeePhone = s.whoCanSeePhone
+                    selectedSeeLastSeen = s.whoCanSeeLastSeen
                 }
             }
             .overlay {

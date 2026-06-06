@@ -190,7 +190,7 @@ class LocalDatabase {
                     chatCreatorId <- chat.creatorId,
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
-                    chatCreatedAt <- chat.createdAt,
+                    chatCreatedAt <- chat.createdAt ?? Date(),
                     chatMembersCount <- chat.membersCount,
                     chatLastMessage <- chat.lastMessage
                 ))
@@ -204,7 +204,7 @@ class LocalDatabase {
                     chatCreatorId <- chat.creatorId,
                     chatIsPublic <- chat.isPublic,
                     chatMaxMembers <- chat.maxMembers,
-                    chatCreatedAt <- chat.createdAt,
+                    chatCreatedAt <- chat.createdAt ?? Date(),
                     chatMembersCount <- chat.membersCount,
                     chatLastMessage <- chat.lastMessage
                 ))

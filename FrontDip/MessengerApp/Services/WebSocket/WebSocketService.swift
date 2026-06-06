@@ -232,6 +232,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             "isEdited": isEdited
         ]
         NotificationCenter.default.post(name: .messageUpdated, object: updateInfo)
+        
     }
     
     private func handleMessageDelete(_ json: [String: Any]) {
@@ -284,8 +285,16 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let messageId = payload["message_id"] as? Int64,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
-              let userId = UUID(uuidString: userIdString) else { return }
-        _ = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+              let userId = UUID(uuidString: userIdString) else {
+            print("❌ Failed to parse reaction.remove payload")
+            return
+        }
+        let deleted = LocalDatabase.shared.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
+        if deleted {
+            print("✅ Deleted reaction for msg \(messageId)")
+        } else {
+            print("⚠️ Reaction not found for deletion")
+        }
         let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }

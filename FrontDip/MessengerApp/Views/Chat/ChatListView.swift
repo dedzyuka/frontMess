@@ -9,6 +9,7 @@ struct ChatListView: View {
     @StateObject private var viewModel = ChatListViewModel()
     @State private var showMenu = false
     @State private var showCreateChat = false
+    @State private var showJoinChat = false
     @State private var newChatName = ""
     @State private var isCreating = false
     @State private var selectedChat: Chat?
@@ -29,10 +30,11 @@ struct ChatListView: View {
                             }
                         }
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button {
-                                showCreateChat = true
+                            Menu {
+                                Button("Новый чат") { showCreateChat = true }
+                                Button("Присоединиться") { showJoinChat = true }
                             } label: {
-                                Image(systemName: "square.and.pencil")
+                                Image(systemName: "plus")
                             }
                         }
                     }
@@ -44,12 +46,14 @@ struct ChatListView: View {
             }
             .disabled(showMenu)
             .blur(radius: showMenu ? 5 : 0)
-            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { notification in
-                if let newChat = notification.object as? Chat {
-                    viewModel.addChat(newChat)
-                }
+            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
+                Task { await viewModel.loadChats() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
+                Task { await viewModel.loadChats() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+                guard !AppState.shared.isSidebarOpen else { return }
                 if let chat = notification.object as? Chat {
                     selectedChat = chat
                     showChat = true
@@ -58,15 +62,9 @@ struct ChatListView: View {
                     }
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .newMessageReceived)) { _ in
-                if self.selectedChat == nil {
-                    Task { await viewModel.loadChats() }
-                }
+            .sheet(isPresented: $showJoinChat) {
+                JoinChatView()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .messageUpdated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            
 
             SideMenuView(isShowing: $showMenu)
                 .environmentObject(viewModel)
@@ -97,6 +95,9 @@ struct ChatListView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
+        .onChange(of: showChat) { newValue in
+            print("🟢 showChat changed to \(newValue)")
+        }
     }
 
     @ViewBuilder
@@ -121,9 +122,14 @@ struct ChatListView: View {
             }
         } else {
             List(viewModel.chats) { chat in
-                NavigationLink(destination: ChatView(chat: chat)) {
-                    ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
-                }
+                ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
+                        .onTapGesture {
+                            // Открываем чат только если сайдбар НЕ открыт
+                            if !AppState.shared.isSidebarOpen {
+                                selectedChat = chat
+                                showChat = true
+                            }
+                        }
                 .id(chat.id)
             }
             .listStyle(PlainListStyle())
@@ -134,19 +140,16 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - ChatRow
+// MARK: - ChatRow (с аватаркой для групп и каналов)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
     
-    // Вычисляемое свойство для проверки приватного чата
-    private var isPrivateChat: Bool {
-        chat.chatType == "1" || chat.chatType.lowercased() == "private"
-    }
+    private var isPrivateChat: Bool { chat.isPrivate }
     
     var body: some View {
         HStack(spacing: 12) {
-            // Аватар для приватного чата
+            // Аватарка: для личных чатов – аватар контакта, для групп/каналов – avatarUrl или плейсхолдер
             if isPrivateChat {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
@@ -156,19 +159,22 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                Circle()
-                    .fill(Color.blue.opacity(0.2))
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Text((chat.name?.prefix(1).uppercased() ?? "?"))
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.blue)
-                    )
+                // Группа или канал – используем avatarUrl чата
+                if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
+                    AvatarView(urlString: avatarUrl, size: 50)
+                } else {
+                    // Плейсхолдер в зависимости от типа чата
+                    Circle()
+                        .fill(chat.isGroup ? Color.blue.opacity(0.2) : Color.purple.opacity(0.2))
+                        .frame(width: 50, height: 50)
+                        .overlay(
+                            Image(systemName: chat.isGroup ? "person.2.fill" : "megaphone.fill")
+                                .foregroundColor(chat.isGroup ? .blue : .purple)
+                        )
+                }
             }
             
             VStack(alignment: .leading, spacing: 4) {
-                // Имя собеседника или название группы
                 if isPrivateChat {
                     Text(chat.otherUserNickname ?? "Загрузка...")
                         .font(.headline)
@@ -177,7 +183,6 @@ struct ChatRow: View {
                         .font(.headline)
                 }
                 
-                // Статус печати или последнее сообщение
                 if isPrivateChat && chat.isTyping {
                     Text("печатает...")
                         .font(.caption)

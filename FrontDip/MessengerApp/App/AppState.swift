@@ -9,6 +9,7 @@ class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
+    @Published var isSidebarOpen = false
     
     private init() {}
     

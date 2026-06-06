@@ -2,6 +2,8 @@ import Foundation
 
 import Foundation
 
+
+
 struct GraphQLQueries {
     // MARK: - Auth
     static let login = """
@@ -55,7 +57,7 @@ struct GraphQLQueries {
     }
     """
     
-    // MARK: - Chats
+    // MARK: - Chats (исправленный listChats – без updatedAt)
     static let listChats = """
     query ListChats {
       chat {
@@ -83,6 +85,7 @@ struct GraphQLQueries {
       }
     }
     """
+    
     static let markAsRead = """
     mutation MarkAsRead($messageId: Int!, $chatId: String!) {
         message {
@@ -330,25 +333,34 @@ struct GraphQLQueries {
         }
     }
     """
+    
     static let getChatMembers = """
     query GetChatMembers($chatId: String!) {
         chat {
             members(chatId: $chatId) {
-                userId
-                nickName
-                avatarUrl
-                isOnline
+                user {
+                    userId
+                    nickName
+                    avatarUrl
+                    isOnline
+                }
+                role
+                status
+                joinedAt
+                leftAt
+                bannedUntil
             }
         }
     }
     """
 
-    // Для случаев, когда нужны только ID
     static let getChatMemberIds = """
     query GetChatMemberIds($chatId: String!) {
         chat {
             members(chatId: $chatId) {
-                userId
+                user {
+                    userId
+                }
             }
         }
     }
@@ -502,6 +514,77 @@ struct GraphQLQueries {
     }
     """
     
+    static let updateChat = """
+    mutation UpdateChat($chatId: String!, $name: String, $description: String, $avatarUrl: String, $isPublic: Boolean, $maxMembers: Int) {
+        chat {
+            update(chatId: $chatId, name: $name, description: $description, avatarUrl: $avatarUrl, isPublic: $isPublic, maxMembers: $maxMembers) {
+                chatId
+                chatType
+                name
+                description
+                avatarUrl
+                isPublic
+                maxMembers
+                membersCount
+            }
+        }
+    }
+    """
+
+    static let deleteChat = """
+    mutation DeleteChat($chatId: String!) {
+        chat { delete(chatId: $chatId) }
+    }
+    """
+
+    // Исправленный запрос – возвращает Boolean, без выбора полей
+    static let updateChatMember = """
+    mutation UpdateChatMember($chatId: String!, $userId: String!, $role: String) {
+        chat {
+            updateChatMember(chatId: $chatId, userId: $userId, role: $role)
+        }
+    }
+    """
+
+    static let kickMember = """
+    mutation KickMember($chatId: String!, $userId: String!) {
+        chat { kickMember(chatId: $chatId, userId: $userId) }
+    }
+    """
+
+    static let banMember = """
+    mutation BanMember($chatId: String!, $userId: String!, $bannedUntil: String) {
+        chat { banMember(chatId: $chatId, userId: $userId, bannedUntil: $bannedUntil) }
+    }
+    """
+
+    static let unbanMember = """
+    mutation UnbanMember($chatId: String!, $userId: String!) {
+        chat { unbanMember(chatId: $chatId, userId: $userId) }
+    }
+    """
+
+    static let leaveChat = """
+    mutation LeaveChat($chatId: String!) {
+        chat { leaveChat(chatId: $chatId) }
+    }
+    """
+
+    static let joinChatWithToken = """
+    mutation JoinChatWithToken($inviteToken: String!) {
+        chat {
+            joinChat(inviteToken: $inviteToken)
+        }
+    }
+    """
+
+    static let generateInviteLink = """
+    query GenerateInviteLink($chatId: String!) {
+        chat {
+            generateInviteLink(chatId: $chatId)
+        }
+    }
+    """
 }
 
 struct UpdateMessageResponse: Decodable {
@@ -525,10 +608,15 @@ struct ChatMemberIdsWrapper: Decodable {
     let members: [ChatMemberIdItem]
 }
 struct ChatMemberIdItem: Decodable {
-    let userId: UUID
+    let user: UserIdWrapper
+    
+    var userId: UUID {
+        user.userId
+    }
 }
-struct MembersIdWrapper: Decodable {
-    let members: [String]
+
+struct UserIdWrapper: Decodable {
+    let userId: UUID
 }
 
 struct Tokens: Decodable {
@@ -571,4 +659,11 @@ struct GetMessageResponse: Decodable {
 }
 struct GetMessageWrapper: Decodable {
     let getMessage: Message
+}
+
+struct BanMemberResponse: Decodable {
+    let chat: BanMemberWrapper
+}
+struct BanMemberWrapper: Decodable {
+    let banMember: Bool
 }

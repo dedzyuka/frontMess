@@ -1,16 +1,17 @@
-// ./FrontDip/MessengerApp/Views/Profile/PrivacySettingsView.swift
 import SwiftUI
 
 struct PrivacySettingsView: View {
     @StateObject private var viewModel = PrivacySettingsViewModel()
     @Environment(\.dismiss) var dismiss
+
+    // Локальные переменные теперь привязаны к viewModel, а не к @State
     @State private var selectedWriteMe = "everyone"
     @State private var selectedAddToGroups = "everyone"
     @State private var selectedSeePhone = "contacts"
     @State private var selectedSeeLastSeen = "everyone"
-    
+
     let options = ["everyone", "contacts", "nobody"]
-    
+
     var body: some View {
         NavigationView {
             Form {
@@ -51,6 +52,8 @@ struct PrivacySettingsView: View {
                                 whoCanSeeLastSeen: selectedSeeLastSeen
                             )
                             if success {
+                                // После успешного сохранения перезагружаем настройки
+                                await viewModel.loadSettings()
                                 dismiss()
                             }
                         }
@@ -59,11 +62,14 @@ struct PrivacySettingsView: View {
             }
             .onAppear {
                 viewModel.loadSettings()
-                if let settings = viewModel.settings {
-                    selectedWriteMe = settings.whoCanWriteMe
-                    selectedAddToGroups = settings.whoCanAddToGroups
-                    selectedSeePhone = settings.whoCanSeePhone
-                    selectedSeeLastSeen = settings.whoCanSeeLastSeen
+            }
+            .onReceive(viewModel.$settings) { newSettings in
+                // Обновляем локальные переменные, когда меняются данные в viewModel
+                if let s = newSettings {
+                    selectedWriteMe = s.whoCanWriteMe
+                    selectedAddToGroups = s.whoCanAddToGroups
+                    selectedSeePhone = s.whoCanSeePhone
+                    selectedSeeLastSeen = s.whoCanSeeLastSeen
                 }
             }
             .overlay {
