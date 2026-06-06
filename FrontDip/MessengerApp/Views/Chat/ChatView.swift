@@ -119,6 +119,10 @@ struct ChatView: View {
         .onDisappear {
             viewModel.clearPendingForward()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .scrollToMessage)) { notification in
+            guard let messageId = notification.userInfo?["messageId"] as? Int64 else { return }
+            viewModel.scrollToMessage(messageId: messageId) { }
+        }
     }
     
     // MARK: - Subviews
@@ -192,7 +196,7 @@ struct ChatView: View {
             
             Spacer()
             
-            NavigationLink(destination: ChatSidebarView(chat: chat)) {
+            NavigationLink(destination: ChatSidebarView(chat: chat, chatViewModel: viewModel)) {
                 Image(systemName: "info.circle")
                     .font(.title2)
                     .foregroundColor(.blue)
@@ -244,11 +248,8 @@ struct ChatView: View {
                             }
                         )
                         .id(message.messageId)
-                        .background(
-                            highlightedMessageId == message.messageId ?
-                            Color.yellow.opacity(0.3) : Color.clear
-                        )
-                        .animation(.easeInOut(duration: 0.3), value: highlightedMessageId)
+                        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
+                        .animation(.easeInOut(duration: 0.3), value: viewModel.highlightMessageId)
                     }
                 }
                 .padding(.horizontal)
@@ -257,6 +258,19 @@ struct ChatView: View {
             .onChange(of: viewModel.messages.count) { _ in
                 if let last = viewModel.messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+            .onChange(of: viewModel.scrollToMessageId) { messageId in
+                if let messageId = messageId {
+                    withAnimation {
+                        proxy.scrollTo(messageId, anchor: .center)
+                    }
+                    viewModel.highlightMessage(messageId)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        if viewModel.scrollToMessageId == messageId {
+                            viewModel.scrollToMessageId = nil
+                        }
+                    }
                 }
             }
         }

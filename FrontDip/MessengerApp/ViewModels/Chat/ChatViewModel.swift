@@ -17,6 +17,11 @@ class ChatViewModel: ObservableObject {
     @Published var isOtherUserOnline: Bool = false
     @Published var isSomeoneTyping: Bool = false
     @Published var myRole: String = "member"
+    @Published var searchQuery = ""
+    @Published var searchResults: [Message] = []
+    @Published var isSearching = false
+    @Published var highlightMessageId: Int64?
+    @Published var scrollToMessageId: Int64?
     var pendingForward: PendingForward?
     
     // MARK: - Pending Forward Data
@@ -302,6 +307,14 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+    func highlightMessage(_ id: Int64, duration: TimeInterval = 1.0) {
+        highlightMessageId = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            if self?.highlightMessageId == id {
+                self?.highlightMessageId = nil
+            }
+        }
+    }
     
     private func loadMessagesFromDatabase() async -> [Message] {
         let dbMessages = database.getMessages(for: chat.id)
@@ -348,6 +361,47 @@ class ChatViewModel: ObservableObject {
             }
         }
         return messages
+    }
+    func searchMessages() {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            DispatchQueue.main.async {
+                self.searchResults = []
+            }
+            return
+        }
+        isSearching = true
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "chatId": chat.id.uuidString,
+                    "query": trimmed,
+                    "page": 1,
+                    "pageSize": 50
+                ]
+                let response: SearchMessagesResponse = try await graphQL.perform(
+                    query: GraphQLQueries.searchMessages,
+                    variables: variables,
+                    responseType: SearchMessagesResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                await MainActor.run {
+                    self.searchResults = response.message.searchMessages
+                    self.isSearching = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.isSearching = false
+                    print("Search error: \(error)")
+                }
+            }
+        }
+    }
+    
+    func clearSearch() {
+        searchQuery = ""
+        searchResults = []
+        isSearching = false
     }
     
     private func mergeMessages(current: [Message], new: [Message]) -> [Message] {
@@ -726,9 +780,10 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Scroll to message
+
     func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
         if messages.contains(where: { $0.messageId == messageId }) {
+            scrollToMessageId = messageId
             completion()
             return
         }
@@ -738,6 +793,7 @@ class ChatViewModel: ObservableObject {
                 self.messages.append(message)
                 self.messages.sort { $0.createdAt < $1.createdAt }
                 self.objectWillChange.send()
+                self.scrollToMessageId = messageId
                 completion()
             }
             return
@@ -752,6 +808,7 @@ class ChatViewModel: ObservableObject {
                         _ = self.database.saveMessage(message)
                         self.objectWillChange.send()
                     }
+                    self.scrollToMessageId = messageId
                     completion()
                 }
             }

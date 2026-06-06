@@ -9,23 +9,78 @@ import SwiftUI
 
 struct ChatSidebarView: View {
     let chat: Chat
+    @ObservedObject var chatViewModel: ChatViewModel   // <-- добавлено
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSidebarViewModel
     
-    init(chat: Chat) {
+    init(chat: Chat, chatViewModel: ChatViewModel) {   // <-- изменён инициализатор
         self.chat = chat
+        self.chatViewModel = chatViewModel
         _viewModel = StateObject(wrappedValue: ChatSidebarViewModel(chat: chat))
     }
     
     var body: some View {
         NavigationView {
             Group {
-                if chat.isPrivate {
-                    privateChatContent
-                } else if chat.isGroup {
-                    groupChatContent
-                } else {
-                    channelContent
+                VStack(alignment: .leading, spacing: 0) {
+                    // Поле поиска
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .onSubmit {
+                                chatViewModel.searchMessages()
+                            }
+                        if !chatViewModel.searchQuery.isEmpty {
+                            Button(action: {
+                                chatViewModel.clearSearch()
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    
+                    if !chatViewModel.searchQuery.isEmpty {
+                        // Результаты поиска
+                        if chatViewModel.isSearching {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if chatViewModel.searchResults.isEmpty {
+                            Text("Сообщения не найдены")
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            List(chatViewModel.searchResults) { message in
+                                SearchMessResultRow(message: message, chatViewModel: chatViewModel)
+                                    .onTapGesture {
+                                        AppState.shared.isSidebarOpen = false
+                                        dismiss()
+                                        // Даём время на закрытие сайдбара и появление чата
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                            chatViewModel.scrollToMessage(messageId: message.messageId) { }
+                                        }
+                                    }
+                            }
+                            .listStyle(PlainListStyle())
+                        }
+                    } else {
+                        // Обычное содержимое (личный чат / группа / канал)
+                        if chat.isPrivate {
+                            privateChatContent
+                        } else if chat.isGroup {
+                            groupChatContent
+                        } else {
+                            channelContent
+                        }
+                    }
                 }
             }
             .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
@@ -376,5 +431,44 @@ extension ChatMemberItem {
         case "admin": return "Администратор"
         default: return "Участник"
         }
+    }
+}
+struct SearchMessResultRow: View {
+    let message: Message
+    let chatViewModel: ChatViewModel
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(chatViewModel.getUserNickname(for: message.senderId))
+                .font(.headline)
+            Text(message.content ?? "")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+            Text(formatDate(message.createdAt))
+                .font(.caption2)
+                .foregroundColor(.gray)
+        }
+        .padding(.vertical, 4)
+        .onTapGesture {
+            // Закрыть сайдбар
+            AppState.shared.isSidebarOpen = false
+            dismiss()
+            // Через небольшую задержку отправить уведомление о прокрутке
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                NotificationCenter.default.post(
+                    name: .scrollToMessage,
+                    object: nil,
+                    userInfo: ["messageId": message.messageId]
+                )
+            }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yy HH:mm"
+        return formatter.string(from: date)
     }
 }

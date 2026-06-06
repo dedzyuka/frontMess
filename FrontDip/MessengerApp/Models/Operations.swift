@@ -172,6 +172,35 @@ struct GraphQLQueries {
         }
     }
     """
+    static let searchMessages = """
+    query SearchMessages($chatId: String!, $query: String!, $page: Int, $pageSize: Int) {
+        message {
+            searchMessages(chatId: $chatId, query: $query, page: $page, pageSize: $pageSize) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                createdAt
+                updatedAt
+                isEdited
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
+                reactions {
+                    messageId
+                    userId
+                    emoji
+                    createdAt
+                }
+            }
+        }
+    }
+    """
     
 
     static let sendMessage = """

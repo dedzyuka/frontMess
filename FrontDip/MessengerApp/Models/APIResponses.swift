@@ -1,6 +1,12 @@
 import Foundation
 
 // MARK: - Login Response
+struct SearchMessagesResponse: Decodable {
+    let message: SearchMessagesWrapper
+}
+struct SearchMessagesWrapper: Decodable {
+    let searchMessages: [Message]
+}
 struct LoginResponse: Decodable {
     let auth: AuthLogin
 }

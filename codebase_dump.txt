@@ -107,6 +107,12 @@ struct ContentView: View {
 import Foundation
 
 // MARK: - Login Response
+struct SearchMessagesResponse: Decodable {
+    let message: SearchMessagesWrapper
+}
+struct SearchMessagesWrapper: Decodable {
+    let searchMessages: [Message]
+}
 struct LoginResponse: Decodable {
     let auth: AuthLogin
 }
@@ -1027,6 +1033,37 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                forwardedFromUserId
+                forwardedFromNickname
+                attachments {
+                    attachmentId
+                    fileName
+                    fileSize
+                    mimeType
+                    storagePath
+                }
+                reactions {
+                    messageId
+                    userId
+                    emoji
+                    createdAt
+                }
+            }
+        }
+    }
+    """
+    static let searchMessages = """
+    query SearchMessages($chatId: String!, $query: String!, $page: Int, $pageSize: Int) {
+        message {
+            searchMessages(chatId: $chatId, query: $query, page: $page, pageSize: $pageSize) {
+                messageId
+                chatId
+                senderId
+                content
+                type
+                createdAt
+                updatedAt
+                isEdited
                 attachments {
                     attachmentId
                     fileName
@@ -1761,7 +1798,7 @@ class LocalDatabase {
     private let contactRequestsTable = Table("contact_requests")
     private let reactionsTable = Table("reactions")
     private let attachmentsTable = Table("attachments")
-    private let messageStatusesTable = Table("message_statuses")  // новая
+    private let messageStatusesTable = Table("message_statuses")
     
     // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
@@ -1789,6 +1826,9 @@ class LocalDatabase {
     private let msgIsEdited = Expression<Bool>("is_edited")
     private let msgDeliveredAt = Expression<Date?>("delivered_at")
     private let msgReadAt = Expression<Date?>("read_at")
+    // НОВЫЕ ПОЛЯ ДЛЯ ПЕРЕСЫЛКИ
+    private let msgForwardedFromUserId = Expression<String?>("forwarded_from_user_id")
+    private let msgForwardedFromNickname = Expression<String?>("forwarded_from_nickname")
     
     // === Contacts columns ===
     private let contactUserId = Expression<UUID>("user_id")
@@ -1866,6 +1906,9 @@ class LocalDatabase {
                 t.column(msgIsEdited)
                 t.column(msgDeliveredAt)
                 t.column(msgReadAt)
+                // НОВЫЕ КОЛОНКИ ДЛЯ ПЕРЕСЫЛКИ
+                t.column(msgForwardedFromUserId)
+                t.column(msgForwardedFromNickname)
             })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
@@ -1917,13 +1960,29 @@ class LocalDatabase {
                 t.foreignKey(msMessageId, references: messagesTable, msgId, delete: .cascade)
             })
             
-            print("✅ All tables created")
+            // Миграция: добавить колонки, если они отсутствуют
+            if let db = db {
+                let tableInfo = try db.prepare("PRAGMA table_info(messages)")
+                let columnNames = tableInfo.compactMap { row in
+                    row[1] as? String  // второй столбец - name
+                }
+                if !columnNames.contains("forwarded_from_user_id") {
+                    try db.run("ALTER TABLE messages ADD COLUMN forwarded_from_user_id TEXT")
+                    print("✅ Added column forwarded_from_user_id")
+                }
+                if !columnNames.contains("forwarded_from_nickname") {
+                    try db.run("ALTER TABLE messages ADD COLUMN forwarded_from_nickname TEXT")
+                    print("✅ Added column forwarded_from_nickname")
+                }
+            }
+            
+            print("✅ All tables created/updated")
         } catch {
             print("❌ DB setup error: \(error)")
         }
     }
     
-    // MARK: - Chat operations
+    // MARK: - Chat operations (без изменений)
     func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         do {
@@ -1996,7 +2055,7 @@ class LocalDatabase {
         do { try db.run(chatsTable.delete()) } catch { print(error) }
     }
     
-    // MARK: - Message operations
+    // MARK: - Message operations with forward fields
     func saveMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
@@ -2016,7 +2075,9 @@ class LocalDatabase {
                 msgDeletedAt <- message.deletedAt,
                 msgIsEdited <- message.isEdited,
                 msgDeliveredAt <- message.deliveredAt,
-                msgReadAt <- message.readAt
+                msgReadAt <- message.readAt,
+                msgForwardedFromUserId <- message.forwardedFromUserId?.uuidString,
+                msgForwardedFromNickname <- message.forwardedFromNickname
             ))
             return true
         } catch {
@@ -2024,25 +2085,13 @@ class LocalDatabase {
             return false
         }
     }
+    
     func getMessage(byId messageId: Int64, chatId: UUID) -> Message? {
         guard let db = db else { return nil }
         let query = messagesTable.filter(msgId == messageId && msgChatId == chatId)
         do {
             if let row = try db.pluck(query) {
-                return Message(
-                    messageId: row[msgId],
-                    chatId: row[msgChatId],
-                    senderId: row[msgSenderId],
-                    replyToId: row[msgReplyToId],
-                    content: row[msgContent],
-                    type: row[msgType],
-                    createdAt: row[msgCreatedAt],
-                    updatedAt: row[msgUpdatedAt],
-                    deletedAt: row[msgDeletedAt],
-                    isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
-                )
+                return messageFromRow(row)
             }
         } catch {
             print("❌ getMessage error: \(error)")
@@ -2064,7 +2113,9 @@ class LocalDatabase {
                 msgUpdatedAt <- message.updatedAt,
                 msgIsEdited <- message.isEdited,
                 msgDeliveredAt <- message.deliveredAt,
-                msgReadAt <- message.readAt
+                msgReadAt <- message.readAt,
+                msgForwardedFromUserId <- message.forwardedFromUserId?.uuidString,
+                msgForwardedFromNickname <- message.forwardedFromNickname
             ))
             return true
         } catch {
@@ -2079,27 +2130,42 @@ class LocalDatabase {
         do {
             var messages: [Message] = []
             for row in try db.prepare(query) {
-                let msg = Message(
-                    messageId: row[msgId],
-                    chatId: row[msgChatId],
-                    senderId: row[msgSenderId],
-                    replyToId: row[msgReplyToId],
-                    content: row[msgContent],
-                    type: row[msgType],
-                    createdAt: row[msgCreatedAt],
-                    updatedAt: row[msgUpdatedAt],
-                    deletedAt: row[msgDeletedAt],
-                    isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
-                )
-                messages.append(msg)
+                messages.append(messageFromRow(row))
             }
             return messages
         } catch {
             print("❌ getMessages error: \(error)")
             return []
         }
+    }
+    
+    private func messageFromRow(_ row: Row) -> Message {
+        let forwardedUserIdString = row[msgForwardedFromUserId]
+        let forwardedFromUserId = forwardedUserIdString.flatMap(UUID.init)
+        
+        let forwardedFromNickname = row[msgForwardedFromNickname]
+        
+        return Message(
+            messageId: row[msgId],
+            chatId: row[msgChatId],
+            senderId: row[msgSenderId],
+            replyToId: row[msgReplyToId],
+            content: row[msgContent],
+            type: row[msgType],
+            createdAt: row[msgCreatedAt],
+            updatedAt: row[msgUpdatedAt],
+            deletedAt: row[msgDeletedAt],
+            isEdited: row[msgIsEdited],
+            deliveredAt: row[msgDeliveredAt],
+            readAt: row[msgReadAt],
+            reactions: nil,
+            attachments: nil,
+            forwardedFromUserId: forwardedFromUserId,
+            forwardedFromNickname: forwardedFromNickname,
+            senderNickname: nil,
+            replyToSenderName: nil,
+            replyToContent: nil
+        )
     }
     
     func deleteMessages(for chatId: UUID) -> Bool {
@@ -2123,7 +2189,22 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Message Statuses
+    func deleteMessage(_ messageId: Int64) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
+            try db.run(reactionsTable.filter(reactionMessageId == messageId).delete())
+            try db.run(messageStatusesTable.filter(msMessageId == messageId).delete())
+            try db.run(messagesTable.filter(msgId == messageId).delete())
+            print("✅ Message \(messageId) deleted from local DB")
+            return true
+        } catch {
+            print("❌ deleteMessage error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Message Statuses (без изменений)
     func saveMessageStatus(messageId: Int64, userId: UUID, deliveredAt: Date?, readAt: Date?) -> Bool {
         guard let db = db else { return false }
         do {
@@ -2163,11 +2244,10 @@ class LocalDatabase {
         return nil
     }
     
-    // MARK: - Attachments
+    // MARK: - Attachments (без изменений)
     func saveAttachments(_ attachments: [Attachment], for messageId: Int64, messageCreatedAt: Date) -> Bool {
         guard let db = db else { return false }
         do {
-            // Удаляем старые вложения
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
                 try db.run(attachmentsTable.insert(
@@ -2223,7 +2303,7 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Reactions
+    // MARK: - Reactions (без изменений)
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
@@ -2234,7 +2314,6 @@ class LocalDatabase {
             )
             if try db.scalar(query.count) > 0 {
                 try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
-                print("✅ Updated reaction for msg \(reaction.messageId)")
             } else {
                 try db.run(reactionsTable.insert(
                     reactionMessageId <- reaction.messageId,
@@ -2242,7 +2321,6 @@ class LocalDatabase {
                     reactionEmoji <- reaction.emoji,
                     reactionCreatedAt <- reaction.createdAt
                 ))
-                print("✅ Inserted reaction for msg \(reaction.messageId)")
             }
             return true
         } catch {
@@ -2293,7 +2371,7 @@ class LocalDatabase {
         do { try db.run(reactionsTable.delete()) } catch { print(error) }
     }
     
-    // MARK: - Contacts
+    // MARK: - Contacts (без изменений)
     func saveContact(_ contact: Contact) -> Bool {
         guard let db = db else { return false }
         do {
@@ -2370,7 +2448,7 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Contact Requests
+    // MARK: - Contact Requests (без изменений)
     func saveContactRequest(_ request: ContactRequest) -> Bool {
         guard let db = db else { return false }
         do {
@@ -2467,26 +2545,11 @@ class LocalDatabase {
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
     }
+    
     // Для совместимости со старым кодом
     func updateMessageStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return false }
         return saveMessageStatus(messageId: messageId, userId: currentUserId, deliveredAt: deliveredAt, readAt: readAt)
-    }
-    func deleteMessage(_ messageId: Int64) -> Bool {
-        guard let db = db else { return false }
-        do {
-            // Удаляем зависимые записи (foreign keys не настроены каскадно, делаем вручную)
-            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
-            try db.run(reactionsTable.filter(reactionMessageId == messageId).delete())
-            try db.run(messageStatusesTable.filter(msMessageId == messageId).delete())
-            // Удаляем само сообщение
-            try db.run(messagesTable.filter(msgId == messageId).delete())
-            print("✅ Message \(messageId) deleted from local DB")
-            return true
-        } catch {
-            print("❌ deleteMessage error: \(error)")
-            return false
-        }
     }
 }
 
@@ -5492,6 +5555,11 @@ class ChatSidebarViewModel: ObservableObject {
 
 ./FrontDip/MessengerApp/ViewModels/Chat/ChatViewModel.swift
 
+//
+//  ChatViewModel.swift
+//  MessengerApp
+//
+
 import Foundation
 import Combine
 
@@ -5506,6 +5574,19 @@ class ChatViewModel: ObservableObject {
     @Published var isOtherUserOnline: Bool = false
     @Published var isSomeoneTyping: Bool = false
     @Published var myRole: String = "member"
+    @Published var searchQuery = ""
+    @Published var searchResults: [Message] = []
+    @Published var isSearching = false
+    @Published var highlightMessageId: Int64?
+    var pendingForward: PendingForward?
+    
+    // MARK: - Pending Forward Data
+    struct PendingForward {
+        let originalContent: String
+        let forwardedFromUserId: UUID
+        let forwardedFromNickname: String
+        let attachmentId: UUID?
+    }
     
     let chat: Chat
     private let graphQL = GraphQLClient.shared
@@ -5530,6 +5611,10 @@ class ChatViewModel: ObservableObject {
         Task { await loadOtherUserIfNeeded() }
         loadChatMemberIds()
     }
+    func clearPendingForward() {
+            pendingForward = nil
+        }
+    
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
             .receive(on: DispatchQueue.main)
@@ -5580,30 +5665,24 @@ class ChatViewModel: ObservableObject {
                       let info = notification.object as? [String: Any],
                       let messageId = info["messageId"] as? Int64 else { return }
                 
-                // Опционально: сразу удаляем локально для мгновенного отклика (но может не перерисовать UI)
                 if let userIdString = info["userId"] as? String,
                    let emoji = info["emoji"] as? String,
                    let userId = UUID(uuidString: userIdString) {
                     self.removeReactionLocally(messageId: messageId, userId: userId, emoji: emoji)
                 }
                 
-                // Принудительно перезагружаем это сообщение с сервера
                 Task {
                     if let freshMessage = await self.fetchMessage(byId: messageId) {
                         await MainActor.run {
                             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
-                                // Заменяем старое сообщение свежим
                                 self.messages[index] = freshMessage
-                                // Синхронизируем кэш реакций
                                 self.reactionsDict[messageId] = freshMessage.reactions
-                                // Сохраняем в БД (опционально)
                                 _ = self.database.saveMessage(freshMessage)
                                 if let reactions = freshMessage.reactions {
                                     for reaction in reactions {
                                         _ = self.database.saveReaction(reaction)
                                     }
                                 }
-                                // Принудительно уведомляем SwiftUI о необходимости перерисовать этот элемент
                                 self.objectWillChange.send()
                             }
                         }
@@ -5648,7 +5727,6 @@ class ChatViewModel: ObservableObject {
                       let userId = notification.userInfo?["userId"] as? UUID,
                       userId != self.currentUserId else { return }
                 self.isSomeoneTyping = true
-                // Авто-сброс через 3 секунды, если не пришёл typing.stop
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                     if self?.isSomeoneTyping == true {
                         self?.isSomeoneTyping = false
@@ -5666,9 +5744,10 @@ class ChatViewModel: ObservableObject {
                 self.isSomeoneTyping = false
             }
             .store(in: &cancellables)
-        
-        
     }
+    
+
+    
     private func loadMyRole() async {
         guard let currentUserId = currentUserId else { return }
         let membersWithRoles = await getChatMemberIdsWithRoles()
@@ -5678,6 +5757,7 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+    
     func sendForwardMessage(_ original: Message, forwardedFromUserId: UUID, forwardedFromNickname: String) async -> Bool {
         var attachmentId: UUID? = nil
         if let attachments = original.attachments, let first = attachments.first {
@@ -5692,9 +5772,10 @@ class ChatViewModel: ObservableObject {
             replyToId: nil,
             forwardedFromUserId: forwardedFromUserId,
             forwardedFromNickname: forwardedFromNickname,
-            customContent: original.content ?? ""  // ← customContent последним
+            customContent: original.content ?? ""
         )
     }
+    
     private func getChatMemberIdsWithRoles() async -> [(userId: UUID, role: String?)] {
         let variables = ["chatId": chat.id.uuidString]
         do {
@@ -5704,17 +5785,55 @@ class ChatViewModel: ObservableObject {
                 responseType: ChatMembersResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.map { ($0.userId, $0.role) }  // role уже опциональный
+            return response.chat.members.map { ($0.userId, $0.role) }
         } catch {
             print("Failed to load chat member roles: \(error)")
             return []
         }
     }
+    
+    func getUserNickname(for userId: UUID) -> String {
+        if userId == currentUserId {
+            return AppState.shared.currentUser?.nickName ?? "Вы"
+        }
+        if let user = usersCache[userId] {
+            return user.nickName
+        }
+        // Пробуем загрузить асинхронно (но для отображения нужно вернуть что-то сейчас)
+        Task {
+            if let user = try? await UserService.shared.getUser(userId: userId) {
+                await MainActor.run {
+                    self.usersCache[userId] = user
+                    self.objectWillChange.send()
+                }
+            }
+        }
+        return "Пользователь"
+    }
+    func getNicknameForForward(for userId: UUID) -> String {
+        if userId == AppState.shared.currentUser?.userId {
+            return AppState.shared.currentUser?.nickName ?? "Вы"
+        }
+        return usersCache[userId]?.nickName ?? "Пользователь"
+    }
+    private func loadUserIfNeeded(_ userId: UUID) {
+        guard usersCache[userId] == nil, userId != currentUserId else { return }
+        Task {
+            if let user = try? await UserService.shared.getUser(userId: userId) {
+                await MainActor.run {
+                    self.usersCache[userId] = user
+                    self.objectWillChange.send()
+                }
+            }
+        }
+    }
+    
     private func removeDuplicateMessages(_ messages: [Message]) -> [Message] {
         var seen = Set<Int64>()
         return messages.filter { seen.insert($0.messageId).inserted }
     }
-    // MARK: - Загрузка сообщений (кэш + сеть)
+    
+    // MARK: - Загрузка сообщений
     func loadMessages() {
         Task {
             let cached = await loadMessagesFromDatabase()
@@ -5744,6 +5863,14 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+    func highlightMessage(_ id: Int64, duration: TimeInterval = 1.0) {
+        highlightMessageId = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            if self?.highlightMessageId == id {
+                self?.highlightMessageId = nil
+            }
+        }
+    }
     
     private func loadMessagesFromDatabase() async -> [Message] {
         let dbMessages = database.getMessages(for: chat.id)
@@ -5757,14 +5884,12 @@ class ChatViewModel: ObservableObject {
             if !msgReactions.isEmpty {
                 reactions[msg.messageId] = msgReactions
             }
-            // Статусы: для чужих сообщений – мой статус
             if let currentId = currentUserId, msg.senderId != currentId {
                 if let (deliveredAt, readAt) = database.getMessageStatus(for: msg.messageId, userId: currentId) {
                     msg.deliveredAt = deliveredAt
                     msg.readAt = readAt
                 }
             }
-            // для своих сообщений readAt пока не трогаем – обновим после загрузки участников
             result.append(msg)
         }
         await MainActor.run {
@@ -5782,17 +5907,58 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
-            for msg in messages {
-                _ = database.saveMessage(msg)
-                if let attachments = msg.attachments, !attachments.isEmpty {
-                    _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
+        for msg in messages {
+            _ = database.saveMessage(msg)
+            if let attachments = msg.attachments, !attachments.isEmpty {
+                _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
+            }
+            if let reactions = msg.reactions {
+                for reaction in reactions { _ = database.saveReaction(reaction) }
+            }
+        }
+        return messages
+    }
+    func searchMessages() {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            DispatchQueue.main.async {
+                self.searchResults = []
+            }
+            return
+        }
+        isSearching = true
+        Task {
+            do {
+                let variables: [String: Any] = [
+                    "chatId": chat.id.uuidString,
+                    "query": trimmed,
+                    "page": 1,
+                    "pageSize": 50
+                ]
+                let response: SearchMessagesResponse = try await graphQL.perform(
+                    query: GraphQLQueries.searchMessages,
+                    variables: variables,
+                    responseType: SearchMessagesResponse.self,
+                    authToken: TokenManager.shared.accessToken
+                )
+                await MainActor.run {
+                    self.searchResults = response.message.searchMessages
+                    self.isSearching = false
                 }
-                if let reactions = msg.reactions {
-                    for reaction in reactions { _ = database.saveReaction(reaction) }
+            } catch {
+                await MainActor.run {
+                    self.isSearching = false
+                    print("Search error: \(error)")
                 }
             }
-            return messages
         }
+    }
+    
+    func clearSearch() {
+        searchQuery = ""
+        searchResults = []
+        isSearching = false
+    }
     
     private func mergeMessages(current: [Message], new: [Message]) -> [Message] {
         var dict = Dictionary(uniqueKeysWithValues: current.map { ($0.messageId, $0) })
@@ -5814,7 +5980,7 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Участники чата и статусы отправленных сообщений
+    // MARK: - Участники и статусы
     private func loadChatMemberIds() {
         Task {
             let ids = await getChatMemberIds()
@@ -5856,7 +6022,7 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Read status delivery
+    // MARK: - Read status
     func markVisibleMessagesAsRead() {
         guard let currentId = currentUserId else { return }
         for message in messages where message.senderId != currentId && message.readAt == nil {
@@ -5899,11 +6065,9 @@ class ChatViewModel: ObservableObject {
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
                 if userId == self.currentUserId {
-                    // Чужое сообщение: статус текущего пользователя
                     if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
                     if let readAt = readAt { msg.readAt = readAt }
                 } else {
-                    // Моё сообщение: статус получателя – показываем две галочки
                     if let readAt = readAt, readAt != nil {
                         msg.readAt = readAt
                     }
@@ -6017,37 +6181,29 @@ class ChatViewModel: ObservableObject {
             print("Remove reaction failed: \(error)")
         }
     }
+    
     func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
         return reactionsDict[messageId] ?? []
     }
-
     
     private func addReactionLocally(_ reaction: Reaction) {
         DispatchQueue.main.async {
-            // 1. Сохраняем в БД
             _ = self.database.saveReaction(reaction)
-            
-            // 2. Обновляем словарь
             var list = self.reactionsDict[reaction.messageId] ?? []
             if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
                 list.append(reaction)
                 self.reactionsDict[reaction.messageId] = list
             }
-            
-            // 3. Обновляем сообщение в массиве, заменяя элемент
             if let index = self.messages.firstIndex(where: { $0.messageId == reaction.messageId }) {
                 var msg = self.messages[index]
                 var newReactions = msg.reactions ?? []
                 if !newReactions.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
                     newReactions.append(reaction)
                     msg.reactions = newReactions
-                    // Заменяем элемент
                     self.messages.remove(at: index)
                     self.messages.insert(msg, at: index)
                 }
             }
-            
-            // 4. Форсируем обновление (на всякий случай)
             self.objectWillChange.send()
         }
     }
@@ -6055,7 +6211,6 @@ class ChatViewModel: ObservableObject {
     private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
         DispatchQueue.main.async {
             _ = self.database.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
-            
             if var list = self.reactionsDict[messageId] {
                 list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
                 if list.isEmpty {
@@ -6064,20 +6219,14 @@ class ChatViewModel: ObservableObject {
                     self.reactionsDict[messageId] = list
                 }
             }
-            
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
                 msg.reactions?.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
                 self.messages[index] = msg
             }
-            
-            // ✅ Принудительно уведомляем SwiftUI
             self.objectWillChange.send()
         }
     }
-    
-    // MARK: - Helper for reactions display
-    
     
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.userId
@@ -6087,10 +6236,7 @@ class ChatViewModel: ObservableObject {
         return usersCache[senderId]
     }
     
-    // MARK: - Send message
-    // ChatViewModel.swift – исправленный метод sendMessage
-    // Остальная часть класса не изменяется
-
+    // MARK: - Send message (с поддержкой pending forward)
     func sendMessage(attachmentId: UUID? = nil,
                      storagePath: String? = nil,
                      fileName: String? = nil,
@@ -6116,7 +6262,6 @@ class ChatViewModel: ObservableObject {
         tempMessage.forwardedFromUserId = forwardedFromUserId
         tempMessage.forwardedFromNickname = forwardedFromNickname
         
-        // Временное вложение для локального отображения
         if let aid = attachmentId, let fname = fileName, let storage = storagePath {
             let localAttachment = Attachment(
                 attachmentId: aid,
@@ -6168,7 +6313,6 @@ class ChatViewModel: ObservableObject {
             let realMsg = response.message.sendMessage
             
             await MainActor.run {
-                // Удаляем временное и добавляем реальное
                 self.messages.removeAll { $0.messageId == tempId }
                 self.messages.append(realMsg)
                 self.messages.sort { $0.createdAt < $1.createdAt }
@@ -6179,6 +6323,7 @@ class ChatViewModel: ObservableObject {
                 }
                 self.objectWillChange.send()
                 self.enrichMessageWithReplyIfNeeded(realMsg)
+                self.newMessageText = ""
             }
             return true
         } catch {
@@ -6190,7 +6335,8 @@ class ChatViewModel: ObservableObject {
             return false
         }
     }
-    // MARK: - Scroll to message with highlight
+    
+    // MARK: - Scroll to message
     func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
         if messages.contains(where: { $0.messageId == messageId }) {
             completion()
@@ -6222,7 +6368,7 @@ class ChatViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Enrich messages with reply data
+    // MARK: - Enrich messages with replies
     private func enrichMessagesWithReplies() {
         var dict = [Int64: Message]()
         for msg in messages {
@@ -6275,8 +6421,7 @@ class ChatViewModel: ObservableObject {
         messages[index].replyToContent = parent.content ?? (parent.attachments != nil ? "[Вложение]" : "")
         objectWillChange.send()
     }
-
-    // Вспомогательный метод (добавить в конец класса)
+    
     func fetchMessage(byId messageId: Int64) async -> Message? {
         print("🔄 [fetchMessage] Запрашиваем сообщение \(messageId) с сервера...")
         let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString]
@@ -6295,9 +6440,6 @@ class ChatViewModel: ObservableObject {
             return nil
         }
     }
-
-    // Вспомогательный метод для получения полного сообщения
-    
     
     // MARK: - Edit / Delete
     func editMessage(_ message: Message, newContent: String) async -> Bool {
@@ -6360,7 +6502,7 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - Chat title / other user
     func loadOtherUserIfNeeded() async {
-        guard chat.isPrivate else { return }   // ← изменено
+        guard chat.isPrivate else { return }
         guard let currentUserId = currentUserId else { return }
         let memberIds = await getChatMemberIds()
         let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -6385,7 +6527,7 @@ class ChatViewModel: ObservableObject {
             chatTitle = name
             return
         }
-        guard chat.isPrivate else {   // ← изменено
+        guard chat.isPrivate else {
             chatTitle = "Чат"
             return
         }
@@ -6420,7 +6562,7 @@ class ChatViewModel: ObservableObject {
     private func deleteMessageLocally(messageId: Int64) {
         DispatchQueue.main.async {
             self.messages.removeAll(where: { $0.messageId == messageId })
-            _ = self.database.deleteMessage(messageId)   // полное удаление
+            _ = self.database.deleteMessage(messageId)
             self.objectWillChange.send()
         }
     }
@@ -6428,25 +6570,23 @@ class ChatViewModel: ObservableObject {
     private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
             guard !self.messages.contains(where: { $0.messageId == message.messageId }) else {
-                        print("⚠️ Duplicate message \(message.messageId) ignored")
-                        return
-                    }
-            if !self.messages.contains(where: { $0.messageId == message.messageId }) {
-                var newMessages = self.messages
-                newMessages.append(message)
-                newMessages.sort(by: { $0.createdAt < $1.createdAt })
-                self.messages = newMessages
-                self.enrichMessagesWithReplies()
-                _ = self.database.saveMessage(message)
-                if let attachments = message.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
-                }
-                if let reactions = message.reactions {
-                    for reaction in reactions { _ = self.database.saveReaction(reaction) }
-                }
-                self.objectWillChange.send()
-                self.enrichMessageWithReplyIfNeeded(message)
+                print("⚠️ Duplicate message \(message.messageId) ignored")
+                return
             }
+            var newMessages = self.messages
+            newMessages.append(message)
+            newMessages.sort(by: { $0.createdAt < $1.createdAt })
+            self.messages = newMessages
+            self.enrichMessagesWithReplies()
+            _ = self.database.saveMessage(message)
+            if let attachments = message.attachments, !attachments.isEmpty {
+                _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
+            }
+            if let reactions = message.reactions {
+                for reaction in reactions { _ = self.database.saveReaction(reaction) }
+            }
+            self.objectWillChange.send()
+            self.enrichMessageWithReplyIfNeeded(message)
         }
     }
     
@@ -6454,6 +6594,7 @@ class ChatViewModel: ObservableObject {
         guard message.senderId != currentUserId else { return }
         WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
     }
+    
     func refreshOtherUserStatus() async {
         guard let otherUser = otherUser else { return }
         do {
@@ -6467,7 +6608,6 @@ class ChatViewModel: ObservableObject {
             print("Failed to refresh user status: \(error)")
         }
     }
-   
 }
 
 private struct EmptyResponse: Decodable {}
@@ -7766,23 +7906,79 @@ import SwiftUI
 
 struct ChatSidebarView: View {
     let chat: Chat
+    @ObservedObject var chatViewModel: ChatViewModel   // <-- добавлено
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSidebarViewModel
     
-    init(chat: Chat) {
+    init(chat: Chat, chatViewModel: ChatViewModel) {   // <-- изменён инициализатор
         self.chat = chat
+        self.chatViewModel = chatViewModel
         _viewModel = StateObject(wrappedValue: ChatSidebarViewModel(chat: chat))
     }
     
     var body: some View {
         NavigationView {
             Group {
-                if chat.isPrivate {
-                    privateChatContent
-                } else if chat.isGroup {
-                    groupChatContent
-                } else {
-                    channelContent
+                VStack(alignment: .leading, spacing: 0) {
+                    // Поле поиска
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .onSubmit {
+                                chatViewModel.searchMessages()
+                            }
+                        if !chatViewModel.searchQuery.isEmpty {
+                            Button(action: {
+                                chatViewModel.clearSearch()
+                            }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    
+                    if !chatViewModel.searchQuery.isEmpty {
+                        // Результаты поиска
+                        if chatViewModel.isSearching {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if chatViewModel.searchResults.isEmpty {
+                            Text("Сообщения не найдены")
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            List(chatViewModel.searchResults) { message in
+                                SearchMessResultRow(message: message, chatViewModel: chatViewModel)
+                                    .onTapGesture {
+                                        AppState.shared.isSidebarOpen = false
+                                        dismiss()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [chatViewModel] in
+                                            chatViewModel.scrollToMessage(messageId: message.messageId) {
+                                                chatViewModel.highlightMessage(message.messageId)
+                                            }
+                                        }
+                                    }
+                            }
+                            .listStyle(PlainListStyle())
+                        }
+                    } else {
+                        // Обычное содержимое (личный чат / группа / канал)
+                        if chat.isPrivate {
+                            privateChatContent
+                        } else if chat.isGroup {
+                            groupChatContent
+                        } else {
+                            channelContent
+                        }
+                    }
                 }
             }
             .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
@@ -8135,26 +8331,51 @@ extension ChatMemberItem {
         }
     }
 }
+struct SearchMessResultRow: View {
+    let message: Message
+    let chatViewModel: ChatViewModel
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(chatViewModel.getUserNickname(for: message.senderId))
+                .font(.headline)
+            Text(message.content ?? "")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+            Text(formatDate(message.createdAt))
+                .font(.caption2)
+                .foregroundColor(.gray)
+        }
+        .padding(.vertical, 4)
+        .onTapGesture {
+            AppState.shared.isSidebarOpen = false
+            dismiss()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                chatViewModel.scrollToMessage(messageId: message.messageId) {
+                    chatViewModel.highlightMessage(message.messageId)
+                }
+            }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd.MM.yy HH:mm"
+        return formatter.string(from: date)
+    }
+}
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
-//
-//  ChatView.swift
-//  MessengerApp
-//
-
 import SwiftUI
-
-extension Notification.Name {
-    static let forwardMessageData = Notification.Name("forwardMessageData")
-}
 
 struct ChatView: View {
     let chat: Chat
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
     
-    // Вложения
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -8174,10 +8395,7 @@ struct ChatView: View {
     @State private var highlightedMessageId: Int64?
     @State private var highlightTimer: Timer?
     
-    // Reply state
     @State private var replyingToMessage: Message?
-    
-    // Пересылка
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
@@ -8259,9 +8477,18 @@ struct ChatView: View {
             Task {
                 await viewModel.refreshOtherUserStatus()
             }
+            if let pending = PendingForwardManager.shared.consumePendingForward(for: chat.id) {
+                viewModel.pendingForward = ChatViewModel.PendingForward(
+                    originalContent: pending.content,
+                    forwardedFromUserId: pending.fromUserId,
+                    forwardedFromNickname: pending.fromNickname,
+                    attachmentId: pending.attachmentId
+                )
+                viewModel.newMessageText = pending.content
+            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .forwardMessageData)) { notification in
-            handleForwardMessageData(notification)
+        .onDisappear {
+            viewModel.clearPendingForward()
         }
     }
     
@@ -8336,7 +8563,7 @@ struct ChatView: View {
             
             Spacer()
             
-            NavigationLink(destination: ChatSidebarView(chat: chat)) {
+            NavigationLink(destination: ChatSidebarView(chat: chat, chatViewModel: viewModel)) {
                 Image(systemName: "info.circle")
                     .font(.title2)
                     .foregroundColor(.blue)
@@ -8388,10 +8615,8 @@ struct ChatView: View {
                             }
                         )
                         .id(message.messageId)
-                        .background(
-                            highlightedMessageId == message.messageId ?
-                            Color.yellow.opacity(0.3) : Color.clear
-                        )
+                        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
+                        
                         .animation(.easeInOut(duration: 0.3), value: highlightedMessageId)
                     }
                 }
@@ -8474,54 +8699,60 @@ struct ChatView: View {
         Task {
             isSending = true
             isUploading = true
+            
             var attachmentId: UUID? = nil
             var storagePath: String? = nil
             var fileName: String? = nil
             var fileSize: Int? = nil
             var mimeType: String? = nil
             
-            if let image = selectedImage {
-                do {
-                    let result = try await AttachmentUploader.shared.uploadImage(image)
-                    attachmentId = result.attachmentId
-                    storagePath = result.storagePath
-                    fileName = "image.jpg"
-                    if let data = image.jpegData(compressionQuality: 0.8) { fileSize = data.count }
-                    mimeType = "image/jpeg"
-                } catch {
-                    print("Upload failed: \(error)")
-                    await MainActor.run { isSending = false; isUploading = false }
-                    return
-                }
-            } else if let videoURL = selectedVideoURL {
-                do {
-                    let result = try await AttachmentUploader.shared.uploadFile(url: videoURL)
-                    attachmentId = result.attachmentId
-                    storagePath = result.storagePath
-                    fileName = videoURL.lastPathComponent
-                    let attributes = try FileManager.default.attributesOfItem(atPath: videoURL.path)
-                    fileSize = attributes[.size] as? Int
-                    mimeType = "video/mp4"
-                } catch {
-                    print("Upload failed: \(error)")
-                    await MainActor.run { isSending = false; isUploading = false }
-                    return
-                }
-            } else if let documentURL = selectedDocumentURL {
-                do {
-                    let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
-                    attachmentId = result.attachmentId
-                    storagePath = result.storagePath
-                    fileName = documentURL.lastPathComponent
-                    let attributes = try FileManager.default.attributesOfItem(atPath: documentURL.path)
-                    fileSize = attributes[.size] as? Int
-                    mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
-                } catch {
-                    print("Upload failed: \(error)")
-                    await MainActor.run { isSending = false; isUploading = false }
-                    return
+            if let pending = viewModel.pendingForward, let pendingAttachId = pending.attachmentId {
+                attachmentId = pendingAttachId
+            } else {
+                if let image = selectedImage {
+                    do {
+                        let result = try await AttachmentUploader.shared.uploadImage(image)
+                        attachmentId = result.attachmentId
+                        storagePath = result.storagePath
+                        fileName = "image.jpg"
+                        if let data = image.jpegData(compressionQuality: 0.8) { fileSize = data.count }
+                        mimeType = "image/jpeg"
+                    } catch {
+                        await MainActor.run { isSending = false; isUploading = false }
+                        return
+                    }
+                } else if let videoURL = selectedVideoURL {
+                    do {
+                        let result = try await AttachmentUploader.shared.uploadFile(url: videoURL)
+                        attachmentId = result.attachmentId
+                        storagePath = result.storagePath
+                        fileName = videoURL.lastPathComponent
+                        let attributes = try FileManager.default.attributesOfItem(atPath: videoURL.path)
+                        fileSize = attributes[.size] as? Int
+                        mimeType = "video/mp4"
+                    } catch {
+                        await MainActor.run { isSending = false; isUploading = false }
+                        return
+                    }
+                } else if let documentURL = selectedDocumentURL {
+                    do {
+                        let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
+                        attachmentId = result.attachmentId
+                        storagePath = result.storagePath
+                        fileName = documentURL.lastPathComponent
+                        let attributes = try FileManager.default.attributesOfItem(atPath: documentURL.path)
+                        fileSize = attributes[.size] as? Int
+                        mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
+                    } catch {
+                        await MainActor.run { isSending = false; isUploading = false }
+                        return
+                    }
                 }
             }
+            
+            let contentToSend = viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let forwardUserId = viewModel.pendingForward?.forwardedFromUserId
+            let forwardNickname = viewModel.pendingForward?.forwardedFromNickname
             
             let success = await viewModel.sendMessage(
                 attachmentId: attachmentId,
@@ -8529,18 +8760,25 @@ struct ChatView: View {
                 fileName: fileName,
                 fileSize: fileSize,
                 mimeType: mimeType,
-                replyToId: replyToId
+                replyToId: replyToId,
+                forwardedFromUserId: forwardUserId,
+                forwardedFromNickname: forwardNickname,
+                customContent: contentToSend
             )
             
             await MainActor.run {
+                viewModel.pendingForward = nil
                 isSending = false
                 isUploading = false
                 selectedImage = nil
                 selectedVideoURL = nil
                 selectedDocumentURL = nil
-                if !success {
-                    NotificationService.shared.showError("Не удалось отправить сообщение")
-                }
+                if success {
+                        // ✅ Очищаем поле ввода после успешной отправки
+                        viewModel.newMessageText = ""
+                    } else {
+                        NotificationService.shared.showError("Не удалось отправить сообщение")
+                    }
             }
         }
     }
@@ -8563,54 +8801,24 @@ struct ChatView: View {
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
         
-        // Получаем никнейм отправителя (из кэша или из сообщения)
-        let senderNick = message.senderNickname ?? viewModel.getUser(for: message.senderId)?.nickName ?? "неизвестный"
+        // Получаем реальный никнейм отправителя через viewModel
+        let senderNick = viewModel.getNicknameForForward(for: message.senderId)
         
         if targetChat.id == chat.id {
-            // Тот же чат – просто копируем оригинальный текст
             viewModel.newMessageText = message.content ?? ""
+            viewModel.pendingForward = nil
         } else {
-            // Закрываем текущий чат и открываем целевой
+            PendingForwardManager.shared.setPendingForward(
+                chatId: targetChat.id,
+                content: message.content ?? "",
+                fromUserId: message.senderId,
+                fromNickname: senderNick,
+                attachmentId: message.attachments?.first?.attachmentId
+            )
             presentationMode.wrappedValue.dismiss()
-            
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: .openChat, object: targetChat)
-                
-                let forwardInfo: [String: Any] = [
-                    "chatId": targetChat.id,
-                    "originalContent": message.content ?? "",
-                    "forwardedFromUserId": message.senderId,
-                    "forwardedFromNickname": senderNick,
-                    "attachmentId": message.attachments?.first?.attachmentId
-                ]
-                NotificationCenter.default.post(name: .forwardMessageData, object: forwardInfo)
             }
-        }
-    }
-    
-    private func handleForwardMessageData(_ notification: Notification) {
-        guard let info = notification.object as? [String: Any],
-              let chatId = info["chatId"] as? UUID,
-              chatId == chat.id,
-              let originalContent = info["originalContent"] as? String,
-              let forwardedFromUserId = info["forwardedFromUserId"] as? UUID,
-              let forwardedFromNickname = info["forwardedFromNickname"] as? String
-        else { return }
-        
-        let attachmentId = info["attachmentId"] as? UUID
-        
-        Task {
-            await viewModel.sendMessage(
-                        attachmentId: attachmentId,           // 1
-                        storagePath: nil,                     // 2
-                        fileName: nil,                        // 3
-                        fileSize: nil,                        // 4
-                        mimeType: nil,                        // 5
-                        replyToId: nil,                       // 6
-                        forwardedFromUserId: forwardedFromUserId,  // 7
-                        forwardedFromNickname: forwardedFromNickname, // 8
-                        customContent: originalContent        // 9 - последний
-                    )
         }
     }
 }
@@ -9397,6 +9605,57 @@ class PendingForward {
     }
 }
 
+./FrontDip/MessengerApp/Views/Common/PendingForwardManager.swift
+
+//
+//  PendingForwardManager.swift
+//  MessengerApp
+//
+
+import Foundation
+
+final class PendingForwardManager {
+    static let shared = PendingForwardManager()
+    
+    struct ForwardData {
+        let originalContent: String
+        let forwardedFromUserId: UUID
+        let forwardedFromNickname: String
+        let attachmentId: UUID?
+        let targetChatId: UUID
+    }
+    
+    private var pendingData: ForwardData?
+    
+    private init() {}
+    
+    func setPendingForward(chatId: UUID,
+                           content: String,
+                           fromUserId: UUID,
+                           fromNickname: String,
+                           attachmentId: UUID?) {
+        pendingData = ForwardData(
+            originalContent: content,
+            forwardedFromUserId: fromUserId,
+            forwardedFromNickname: fromNickname,
+            attachmentId: attachmentId,
+            targetChatId: chatId
+        )
+    }
+    
+    func consumePendingForward(for chatId: UUID) -> (content: String,
+                                                     fromUserId: UUID,
+                                                     fromNickname: String,
+                                                     attachmentId: UUID?)? {
+        guard let data = pendingData, data.targetChatId == chatId else { return nil }
+        pendingData = nil
+        return (data.originalContent,
+                data.forwardedFromUserId,
+                data.forwardedFromNickname,
+                data.attachmentId)
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/SearchView.swift
 
 // ./FrontDip/MessengerApp/Views/Common/SearchView.swift
@@ -10042,7 +10301,7 @@ struct MessageBubbleView: View {
     let onDelete: (() -> Void)?
     let onReply: (() -> Void)?
     let onReplyTap: ((Int64) -> Void)?
-    let onForward: (() -> Void)?       // ← новая кнопка пересылки
+    let onForward: (() -> Void)?
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -10157,7 +10416,7 @@ struct MessageBubbleView: View {
                 Button("Удалить", role: .destructive) { onDelete?() }
             }
             Button("Ответить") { onReply?() }
-            Button("Переслать") { onForward?() }        // ← новая кнопка
+            Button("Переслать") { onForward?() }
             Button("Добавить реакцию") { showReactionPicker = true }
             Button("Отмена", role: .cancel) { }
         }
@@ -10171,16 +10430,25 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            // === Блок "От: ..." для пересланного сообщения ===
-            if let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrowshape.turn.up.right.fill")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("От: \(forwardNick)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            // === Блок "От: ..." для пересланного сообщения (кликабельный) ===
+            // В messageContentView
+            if let forwardUserId = message.forwardedFromUserId, let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
+                Button {
+                    let profileView = UserProfileView(userId: forwardUserId)
+                    let hosting = UIHostingController(rootView: profileView)
+                    UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrowshape.turn.up.right.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("От: \(forwardNick)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .underline()
+                    }
                 }
+                .buttonStyle(PlainButtonStyle())
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
             }
