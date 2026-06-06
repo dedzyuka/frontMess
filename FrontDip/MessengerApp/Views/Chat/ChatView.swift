@@ -1,8 +1,3 @@
-//
-//  ChatView.swift
-//  MessengerApp
-//
-
 import SwiftUI
 
 struct ChatView: View {
@@ -10,7 +5,6 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
     
-    // Вложения
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -30,10 +24,7 @@ struct ChatView: View {
     @State private var highlightedMessageId: Int64?
     @State private var highlightTimer: Timer?
     
-    // Reply state
     @State private var replyingToMessage: Message?
-    
-    // Пересылка
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
@@ -115,7 +106,6 @@ struct ChatView: View {
             Task {
                 await viewModel.refreshOtherUserStatus()
             }
-            // Проверяем, есть ли ожидающие данные пересылки для этого чата
             if let pending = PendingForwardManager.shared.consumePendingForward(for: chat.id) {
                 viewModel.pendingForward = ChatViewModel.PendingForward(
                     originalContent: pending.content,
@@ -347,11 +337,9 @@ struct ChatView: View {
             var fileSize: Int? = nil
             var mimeType: String? = nil
             
-            // Если есть ожидающее пересылаемое вложение – используем его ID без повторной загрузки
             if let pending = viewModel.pendingForward, let pendingAttachId = pending.attachmentId {
                 attachmentId = pendingAttachId
             } else {
-                // Обычная загрузка нового вложения
                 if let image = selectedImage {
                     do {
                         let result = try await AttachmentUploader.shared.uploadImage(image)
@@ -361,7 +349,6 @@ struct ChatView: View {
                         if let data = image.jpegData(compressionQuality: 0.8) { fileSize = data.count }
                         mimeType = "image/jpeg"
                     } catch {
-                        print("Upload failed: \(error)")
                         await MainActor.run { isSending = false; isUploading = false }
                         return
                     }
@@ -375,7 +362,6 @@ struct ChatView: View {
                         fileSize = attributes[.size] as? Int
                         mimeType = "video/mp4"
                     } catch {
-                        print("Upload failed: \(error)")
                         await MainActor.run { isSending = false; isUploading = false }
                         return
                     }
@@ -389,7 +375,6 @@ struct ChatView: View {
                         fileSize = attributes[.size] as? Int
                         mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
                     } catch {
-                        print("Upload failed: \(error)")
                         await MainActor.run { isSending = false; isUploading = false }
                         return
                     }
@@ -440,18 +425,17 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Пересылка сообщения (с использованием менеджера)
+    // MARK: - Пересылка сообщения (исправленная)
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
         
-        let senderNick = message.senderNickname ?? viewModel.getUser(for: message.senderId)?.nickName ?? "неизвестный"
+        // Получаем реальный никнейм отправителя (из кэша или из сообщения)
+        let senderNick = message.senderNickname ?? viewModel.getUser(for: message.senderId)?.nickName ?? "Пользователь"
         
         if targetChat.id == chat.id {
-            // Тот же чат – просто копируем текст
             viewModel.newMessageText = message.content ?? ""
             viewModel.pendingForward = nil
         } else {
-            // Сохраняем данные пересылки в глобальный менеджер
             PendingForwardManager.shared.setPendingForward(
                 chatId: targetChat.id,
                 content: message.content ?? "",
@@ -459,7 +443,6 @@ struct ChatView: View {
                 fromNickname: senderNick,
                 attachmentId: message.attachments?.first?.attachmentId
             )
-            // Закрываем текущий чат и открываем целевой
             presentationMode.wrappedValue.dismiss()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: .openChat, object: targetChat)

@@ -14,7 +14,7 @@ struct MessageBubbleView: View {
     let onDelete: (() -> Void)?
     let onReply: (() -> Void)?
     let onReplyTap: ((Int64) -> Void)?
-    let onForward: (() -> Void)?       // ← новая кнопка пересылки
+    let onForward: (() -> Void)?
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -129,7 +129,7 @@ struct MessageBubbleView: View {
                 Button("Удалить", role: .destructive) { onDelete?() }
             }
             Button("Ответить") { onReply?() }
-            Button("Переслать") { onForward?() }        // ← новая кнопка
+            Button("Переслать") { onForward?() }
             Button("Добавить реакцию") { showReactionPicker = true }
             Button("Отмена", role: .cancel) { }
         }
@@ -143,16 +143,26 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            // === Блок "От: ..." для пересланного сообщения ===
+            // === Блок "От: ..." для пересланного сообщения (кликабельный) ===
             if let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrowshape.turn.up.right.fill")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("От: \(forwardNick)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                Button {
+                    if let userId = message.forwardedFromUserId {
+                        let profileView = UserProfileView(userId: userId)
+                        let hosting = UIHostingController(rootView: profileView)
+                        UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrowshape.turn.up.right.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("От: \(forwardNick)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .underline()
+                    }
                 }
+                .buttonStyle(PlainButtonStyle())
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
             }

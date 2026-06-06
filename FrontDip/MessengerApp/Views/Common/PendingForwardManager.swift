@@ -5,7 +5,6 @@
 
 import Foundation
 
-/// Глобальный менеджер для временного хранения данных пересылки
 final class PendingForwardManager {
     static let shared = PendingForwardManager()
     
@@ -21,7 +20,6 @@ final class PendingForwardManager {
     
     private init() {}
     
-    /// Сохранить данные пересылки для целевого чата
     func setPendingForward(chatId: UUID,
                            content: String,
                            fromUserId: UUID,
@@ -36,7 +34,6 @@ final class PendingForwardManager {
         )
     }
     
-    /// Забрать данные пересылки для указанного чата (если они есть и совпадают)
     func consumePendingForward(for chatId: UUID) -> (content: String,
                                                      fromUserId: UUID,
                                                      fromNickname: String,
