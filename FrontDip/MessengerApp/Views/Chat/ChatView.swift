@@ -404,9 +404,12 @@ struct ChatView: View {
                 selectedImage = nil
                 selectedVideoURL = nil
                 selectedDocumentURL = nil
-                if !success {
-                    NotificationService.shared.showError("Не удалось отправить сообщение")
-                }
+                if success {
+                        // ✅ Очищаем поле ввода после успешной отправки
+                        viewModel.newMessageText = ""
+                    } else {
+                        NotificationService.shared.showError("Не удалось отправить сообщение")
+                    }
             }
         }
     }
@@ -429,8 +432,8 @@ struct ChatView: View {
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
         
-        // Получаем реальный никнейм отправителя (из кэша или из сообщения)
-        let senderNick = message.senderNickname ?? viewModel.getUser(for: message.senderId)?.nickName ?? "Пользователь"
+        // Получаем реальный никнейм отправителя через viewModel
+        let senderNick = viewModel.getNicknameForForward(for: message.senderId)
         
         if targetChat.id == chat.id {
             viewModel.newMessageText = message.content ?? ""

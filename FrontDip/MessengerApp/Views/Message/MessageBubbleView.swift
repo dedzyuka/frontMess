@@ -144,13 +144,12 @@ struct MessageBubbleView: View {
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
             // === Блок "От: ..." для пересланного сообщения (кликабельный) ===
-            if let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
+            // В messageContentView
+            if let forwardUserId = message.forwardedFromUserId, let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
                 Button {
-                    if let userId = message.forwardedFromUserId {
-                        let profileView = UserProfileView(userId: userId)
-                        let hosting = UIHostingController(rootView: profileView)
-                        UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
-                    }
+                    let profileView = UserProfileView(userId: forwardUserId)
+                    let hosting = UIHostingController(rootView: profileView)
+                    UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "arrowshape.turn.up.right.fill")

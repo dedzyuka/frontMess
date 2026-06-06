@@ -231,6 +231,42 @@ class ChatViewModel: ObservableObject {
         }
     }
     
+    func getUserNickname(for userId: UUID) -> String {
+        if userId == currentUserId {
+            return AppState.shared.currentUser?.nickName ?? "Вы"
+        }
+        if let user = usersCache[userId] {
+            return user.nickName
+        }
+        // Пробуем загрузить асинхронно (но для отображения нужно вернуть что-то сейчас)
+        Task {
+            if let user = try? await UserService.shared.getUser(userId: userId) {
+                await MainActor.run {
+                    self.usersCache[userId] = user
+                    self.objectWillChange.send()
+                }
+            }
+        }
+        return "Пользователь"
+    }
+    func getNicknameForForward(for userId: UUID) -> String {
+        if userId == AppState.shared.currentUser?.userId {
+            return AppState.shared.currentUser?.nickName ?? "Вы"
+        }
+        return usersCache[userId]?.nickName ?? "Пользователь"
+    }
+    private func loadUserIfNeeded(_ userId: UUID) {
+        guard usersCache[userId] == nil, userId != currentUserId else { return }
+        Task {
+            if let user = try? await UserService.shared.getUser(userId: userId) {
+                await MainActor.run {
+                    self.usersCache[userId] = user
+                    self.objectWillChange.send()
+                }
+            }
+        }
+    }
+    
     private func removeDuplicateMessages(_ messages: [Message]) -> [Message] {
         var seen = Set<Int64>()
         return messages.filter { seen.insert($0.messageId).inserted }
@@ -677,6 +713,7 @@ class ChatViewModel: ObservableObject {
                 }
                 self.objectWillChange.send()
                 self.enrichMessageWithReplyIfNeeded(realMsg)
+                self.newMessageText = ""
             }
             return true
         } catch {
