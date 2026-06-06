@@ -5,7 +5,8 @@
 
 import SwiftUI
 
-// MARK: - ChatSidebarView
+
+
 struct ChatSidebarView: View {
     let chat: Chat
     @Environment(\.dismiss) var dismiss

@@ -1,4 +1,3 @@
-
 import Foundation
 import Combine
 
@@ -9,7 +8,7 @@ class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
-    @Published var isSidebarOpen = false
+    @Published var isSidebarOpen = false   // 👈 флаг для блокировки навигации
     
     private init() {}
     

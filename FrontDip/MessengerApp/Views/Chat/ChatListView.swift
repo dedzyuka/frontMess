@@ -16,61 +16,54 @@ struct ChatListView: View {
     @State private var showChat = false
 
     var body: some View {
-        ZStack {
-            NavigationView {
-                mainContent
-                    .navigationTitle("Чаты")
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarLeading) {
-                            Button {
-                                withAnimation(.spring()) { showMenu.toggle() }
-                            } label: {
-                                Image(systemName: "line.horizontal.3")
-                                    .font(.title2)
-                            }
-                        }
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Menu {
-                                Button("Новый чат") { showCreateChat = true }
-                                Button("Присоединиться") { showJoinChat = true }
-                            } label: {
-                                Image(systemName: "plus")
-                            }
+        NavigationStack {
+            mainContent
+                .navigationTitle("Чаты")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            withAnimation(.spring()) { showMenu.toggle() }
+                        } label: {
+                            Image(systemName: "line.horizontal.3")
+                                .font(.title2)
                         }
                     }
-                    .background(
-                        NavigationLink(destination: selectedChat.map { ChatView(chat: $0) }, isActive: $showChat) {
-                            EmptyView()
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Menu {
+                            Button("Новый чат") { showCreateChat = true }
+                            Button("Присоединиться") { showJoinChat = true }
+                        } label: {
+                            Image(systemName: "plus")
                         }
-                    )
-            }
-            .disabled(showMenu)
-            .blur(radius: showMenu ? 5 : 0)
-            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-                guard !AppState.shared.isSidebarOpen else { return }
-                if let chat = notification.object as? Chat {
-                    selectedChat = chat
-                    showChat = true
-                    if !viewModel.chats.contains(where: { $0.id == chat.id }) {
-                        viewModel.addChat(chat)
                     }
                 }
-            }
-            .sheet(isPresented: $showJoinChat) {
-                JoinChatView()
-            }
-
-            SideMenuView(isShowing: $showMenu)
-                .environmentObject(viewModel)
+                .navigationDestination(isPresented: $showChat) {
+                    if let chat = selectedChat {
+                        ChatView(chat: chat)
+                    }
+                }
         }
-        .onAppear {
+        .disabled(showMenu)
+        .blur(radius: showMenu ? 5 : 0)
+        .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
             Task { await viewModel.loadChats() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
+            Task { await viewModel.loadChats() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+            // Открываем чат только если сайдбар закрыт
+            guard !AppState.shared.isSidebarOpen else { return }
+            if let chat = notification.object as? Chat {
+                selectedChat = chat
+                showChat = true
+                if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+                    viewModel.addChat(chat)
+                }
+            }
+        }
+        .sheet(isPresented: $showJoinChat) {
+            JoinChatView()
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
             TextField("Название", text: $newChatName)
@@ -95,8 +88,8 @@ struct ChatListView: View {
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .onChange(of: showChat) { newValue in
-            print("🟢 showChat changed to \(newValue)")
+        .onAppear {
+            Task { await viewModel.loadChats() }
         }
     }
 
@@ -123,14 +116,13 @@ struct ChatListView: View {
         } else {
             List(viewModel.chats) { chat in
                 ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
-                        .onTapGesture {
-                            // Открываем чат только если сайдбар НЕ открыт
-                            if !AppState.shared.isSidebarOpen {
-                                selectedChat = chat
-                                showChat = true
-                            }
-                        }
-                .id(chat.id)
+                    .onTapGesture {
+                        // Открываем чат только если сайдбар закрыт
+                        guard !AppState.shared.isSidebarOpen else { return }
+                        selectedChat = chat
+                        showChat = true
+                    }
+                    .id(chat.id)
             }
             .listStyle(PlainListStyle())
             .refreshable {
@@ -140,7 +132,7 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - ChatRow (с аватаркой для групп и каналов)
+// MARK: - ChatRow (без изменений)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -149,7 +141,6 @@ struct ChatRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Аватарка: для личных чатов – аватар контакта, для групп/каналов – avatarUrl или плейсхолдер
             if isPrivateChat {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
@@ -159,11 +150,9 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                // Группа или канал – используем avatarUrl чата
                 if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                     AvatarView(urlString: avatarUrl, size: 50)
                 } else {
-                    // Плейсхолдер в зависимости от типа чата
                     Circle()
                         .fill(chat.isGroup ? Color.blue.opacity(0.2) : Color.purple.opacity(0.2))
                         .frame(width: 50, height: 50)
@@ -263,3 +252,4 @@ struct MessageStatusIcon: View {
         }
     }
 }
+
