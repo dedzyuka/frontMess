@@ -13,7 +13,7 @@ class LocalDatabase {
     private let contactRequestsTable = Table("contact_requests")
     private let reactionsTable = Table("reactions")
     private let attachmentsTable = Table("attachments")
-    private let messageStatusesTable = Table("message_statuses")  // новая
+    private let messageStatusesTable = Table("message_statuses")
     
     // === Chats columns ===
     private let chatId = Expression<UUID>("chat_id")
@@ -41,6 +41,9 @@ class LocalDatabase {
     private let msgIsEdited = Expression<Bool>("is_edited")
     private let msgDeliveredAt = Expression<Date?>("delivered_at")
     private let msgReadAt = Expression<Date?>("read_at")
+    // НОВЫЕ ПОЛЯ ДЛЯ ПЕРЕСЫЛКИ
+    private let msgForwardedFromUserId = Expression<String?>("forwarded_from_user_id")
+    private let msgForwardedFromNickname = Expression<String?>("forwarded_from_nickname")
     
     // === Contacts columns ===
     private let contactUserId = Expression<UUID>("user_id")
@@ -118,6 +121,9 @@ class LocalDatabase {
                 t.column(msgIsEdited)
                 t.column(msgDeliveredAt)
                 t.column(msgReadAt)
+                // НОВЫЕ КОЛОНКИ ДЛЯ ПЕРЕСЫЛКИ
+                t.column(msgForwardedFromUserId)
+                t.column(msgForwardedFromNickname)
             })
             
             try db?.run(contactsTable.create(ifNotExists: true) { t in
@@ -169,13 +175,29 @@ class LocalDatabase {
                 t.foreignKey(msMessageId, references: messagesTable, msgId, delete: .cascade)
             })
             
-            print("✅ All tables created")
+            // Миграция: добавить колонки, если они отсутствуют
+            if let db = db {
+                let tableInfo = try db.prepare("PRAGMA table_info(messages)")
+                let columnNames = tableInfo.compactMap { row in
+                    row[1] as? String  // второй столбец - name
+                }
+                if !columnNames.contains("forwarded_from_user_id") {
+                    try db.run("ALTER TABLE messages ADD COLUMN forwarded_from_user_id TEXT")
+                    print("✅ Added column forwarded_from_user_id")
+                }
+                if !columnNames.contains("forwarded_from_nickname") {
+                    try db.run("ALTER TABLE messages ADD COLUMN forwarded_from_nickname TEXT")
+                    print("✅ Added column forwarded_from_nickname")
+                }
+            }
+            
+            print("✅ All tables created/updated")
         } catch {
             print("❌ DB setup error: \(error)")
         }
     }
     
-    // MARK: - Chat operations
+    // MARK: - Chat operations (без изменений)
     func saveOrUpdateChat(_ chat: Chat) -> Bool {
         guard let db = db else { return false }
         do {
@@ -248,7 +270,7 @@ class LocalDatabase {
         do { try db.run(chatsTable.delete()) } catch { print(error) }
     }
     
-    // MARK: - Message operations
+    // MARK: - Message operations with forward fields
     func saveMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }
         do {
@@ -268,7 +290,9 @@ class LocalDatabase {
                 msgDeletedAt <- message.deletedAt,
                 msgIsEdited <- message.isEdited,
                 msgDeliveredAt <- message.deliveredAt,
-                msgReadAt <- message.readAt
+                msgReadAt <- message.readAt,
+                msgForwardedFromUserId <- message.forwardedFromUserId?.uuidString,
+                msgForwardedFromNickname <- message.forwardedFromNickname
             ))
             return true
         } catch {
@@ -276,25 +300,13 @@ class LocalDatabase {
             return false
         }
     }
+    
     func getMessage(byId messageId: Int64, chatId: UUID) -> Message? {
         guard let db = db else { return nil }
         let query = messagesTable.filter(msgId == messageId && msgChatId == chatId)
         do {
             if let row = try db.pluck(query) {
-                return Message(
-                    messageId: row[msgId],
-                    chatId: row[msgChatId],
-                    senderId: row[msgSenderId],
-                    replyToId: row[msgReplyToId],
-                    content: row[msgContent],
-                    type: row[msgType],
-                    createdAt: row[msgCreatedAt],
-                    updatedAt: row[msgUpdatedAt],
-                    deletedAt: row[msgDeletedAt],
-                    isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
-                )
+                return messageFromRow(row)
             }
         } catch {
             print("❌ getMessage error: \(error)")
@@ -316,7 +328,9 @@ class LocalDatabase {
                 msgUpdatedAt <- message.updatedAt,
                 msgIsEdited <- message.isEdited,
                 msgDeliveredAt <- message.deliveredAt,
-                msgReadAt <- message.readAt
+                msgReadAt <- message.readAt,
+                msgForwardedFromUserId <- message.forwardedFromUserId?.uuidString,
+                msgForwardedFromNickname <- message.forwardedFromNickname
             ))
             return true
         } catch {
@@ -331,27 +345,42 @@ class LocalDatabase {
         do {
             var messages: [Message] = []
             for row in try db.prepare(query) {
-                let msg = Message(
-                    messageId: row[msgId],
-                    chatId: row[msgChatId],
-                    senderId: row[msgSenderId],
-                    replyToId: row[msgReplyToId],
-                    content: row[msgContent],
-                    type: row[msgType],
-                    createdAt: row[msgCreatedAt],
-                    updatedAt: row[msgUpdatedAt],
-                    deletedAt: row[msgDeletedAt],
-                    isEdited: row[msgIsEdited],
-                    deliveredAt: row[msgDeliveredAt],
-                    readAt: row[msgReadAt]
-                )
-                messages.append(msg)
+                messages.append(messageFromRow(row))
             }
             return messages
         } catch {
             print("❌ getMessages error: \(error)")
             return []
         }
+    }
+    
+    private func messageFromRow(_ row: Row) -> Message {
+        let forwardedUserIdString = row[msgForwardedFromUserId]
+        let forwardedFromUserId = forwardedUserIdString.flatMap(UUID.init)
+        
+        let forwardedFromNickname = row[msgForwardedFromNickname]
+        
+        return Message(
+            messageId: row[msgId],
+            chatId: row[msgChatId],
+            senderId: row[msgSenderId],
+            replyToId: row[msgReplyToId],
+            content: row[msgContent],
+            type: row[msgType],
+            createdAt: row[msgCreatedAt],
+            updatedAt: row[msgUpdatedAt],
+            deletedAt: row[msgDeletedAt],
+            isEdited: row[msgIsEdited],
+            deliveredAt: row[msgDeliveredAt],
+            readAt: row[msgReadAt],
+            reactions: nil,
+            attachments: nil,
+            forwardedFromUserId: forwardedFromUserId,
+            forwardedFromNickname: forwardedFromNickname,
+            senderNickname: nil,
+            replyToSenderName: nil,
+            replyToContent: nil
+        )
     }
     
     func deleteMessages(for chatId: UUID) -> Bool {
@@ -375,7 +404,22 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Message Statuses
+    func deleteMessage(_ messageId: Int64) -> Bool {
+        guard let db = db else { return false }
+        do {
+            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
+            try db.run(reactionsTable.filter(reactionMessageId == messageId).delete())
+            try db.run(messageStatusesTable.filter(msMessageId == messageId).delete())
+            try db.run(messagesTable.filter(msgId == messageId).delete())
+            print("✅ Message \(messageId) deleted from local DB")
+            return true
+        } catch {
+            print("❌ deleteMessage error: \(error)")
+            return false
+        }
+    }
+    
+    // MARK: - Message Statuses (без изменений)
     func saveMessageStatus(messageId: Int64, userId: UUID, deliveredAt: Date?, readAt: Date?) -> Bool {
         guard let db = db else { return false }
         do {
@@ -415,11 +459,10 @@ class LocalDatabase {
         return nil
     }
     
-    // MARK: - Attachments
+    // MARK: - Attachments (без изменений)
     func saveAttachments(_ attachments: [Attachment], for messageId: Int64, messageCreatedAt: Date) -> Bool {
         guard let db = db else { return false }
         do {
-            // Удаляем старые вложения
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
                 try db.run(attachmentsTable.insert(
@@ -475,7 +518,7 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Reactions
+    // MARK: - Reactions (без изменений)
     func saveReaction(_ reaction: Reaction) -> Bool {
         guard let db = db else { return false }
         do {
@@ -486,7 +529,6 @@ class LocalDatabase {
             )
             if try db.scalar(query.count) > 0 {
                 try db.run(query.update(reactionCreatedAt <- reaction.createdAt))
-                print("✅ Updated reaction for msg \(reaction.messageId)")
             } else {
                 try db.run(reactionsTable.insert(
                     reactionMessageId <- reaction.messageId,
@@ -494,7 +536,6 @@ class LocalDatabase {
                     reactionEmoji <- reaction.emoji,
                     reactionCreatedAt <- reaction.createdAt
                 ))
-                print("✅ Inserted reaction for msg \(reaction.messageId)")
             }
             return true
         } catch {
@@ -545,7 +586,7 @@ class LocalDatabase {
         do { try db.run(reactionsTable.delete()) } catch { print(error) }
     }
     
-    // MARK: - Contacts
+    // MARK: - Contacts (без изменений)
     func saveContact(_ contact: Contact) -> Bool {
         guard let db = db else { return false }
         do {
@@ -622,7 +663,7 @@ class LocalDatabase {
         }
     }
     
-    // MARK: - Contact Requests
+    // MARK: - Contact Requests (без изменений)
     func saveContactRequest(_ request: ContactRequest) -> Bool {
         guard let db = db else { return false }
         do {
@@ -719,25 +760,10 @@ class LocalDatabase {
         try? FileManager.default.removeItem(atPath: dbPath)
         setupDatabase()
     }
+    
     // Для совместимости со старым кодом
     func updateMessageStatusLocally(messageId: Int64, deliveredAt: Date?, readAt: Date?) -> Bool {
         guard let currentUserId = AppState.shared.currentUser?.userId else { return false }
         return saveMessageStatus(messageId: messageId, userId: currentUserId, deliveredAt: deliveredAt, readAt: readAt)
-    }
-    func deleteMessage(_ messageId: Int64) -> Bool {
-        guard let db = db else { return false }
-        do {
-            // Удаляем зависимые записи (foreign keys не настроены каскадно, делаем вручную)
-            try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
-            try db.run(reactionsTable.filter(reactionMessageId == messageId).delete())
-            try db.run(messageStatusesTable.filter(msMessageId == messageId).delete())
-            // Удаляем само сообщение
-            try db.run(messagesTable.filter(msgId == messageId).delete())
-            print("✅ Message \(messageId) deleted from local DB")
-            return true
-        } catch {
-            print("❌ deleteMessage error: \(error)")
-            return false
-        }
     }
 }

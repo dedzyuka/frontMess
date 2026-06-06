@@ -163,8 +163,6 @@ enum MessageStatusType {
 
 
 
-// MARK: - Message
-// MARK: - Message
 struct Message: Identifiable, Codable {
     let messageId: Int64
     let chatId: UUID
@@ -178,20 +176,31 @@ struct Message: Identifiable, Codable {
     var isEdited: Bool
     var deliveredAt: Date?
     var readAt: Date?
-    var reactions: [Reaction]? = nil
-    var attachments: [Attachment]? = nil
+    var reactions: [Reaction]?
+    var attachments: [Attachment]?
     
-    // UI-поля для отображения ответа (не участвуют в Codable)
-    var replyToSenderName: String? = nil
-    var replyToContent: String? = nil
+    // НОВЫЕ ПОЛЯ ДЛЯ ПЕРЕСЫЛКИ
+    var forwardedFromUserId: UUID?
+    var forwardedFromNickname: String?
+    var senderNickname: String?   // для отображения в пересылке
+    
+    // UI-поля для отображения ответа
+    var replyToSenderName: String?
+    var replyToContent: String?
     
     var id: Int64 { messageId }
     
-    // Добавляем инициализатор с параметрами по умолчанию для convenience
+    enum CodingKeys: String, CodingKey {
+        case messageId, chatId, senderId, replyToId, content, type, createdAt, updatedAt, deletedAt, isEdited, deliveredAt, readAt, reactions, attachments
+        case forwardedFromUserId, forwardedFromNickname, senderNickname
+    }
+    
     init(messageId: Int64, chatId: UUID, senderId: UUID, replyToId: Int64? = nil,
          content: String? = nil, type: String = "text", createdAt: Date, updatedAt: Date,
          deletedAt: Date? = nil, isEdited: Bool = false, deliveredAt: Date? = nil,
          readAt: Date? = nil, reactions: [Reaction]? = nil, attachments: [Attachment]? = nil,
+         forwardedFromUserId: UUID? = nil, forwardedFromNickname: String? = nil,
+         senderNickname: String? = nil,
          replyToSenderName: String? = nil, replyToContent: String? = nil) {
         self.messageId = messageId
         self.chatId = chatId
@@ -207,6 +216,9 @@ struct Message: Identifiable, Codable {
         self.readAt = readAt
         self.reactions = reactions
         self.attachments = attachments
+        self.forwardedFromUserId = forwardedFromUserId
+        self.forwardedFromNickname = forwardedFromNickname
+        self.senderNickname = senderNickname
         self.replyToSenderName = replyToSenderName
         self.replyToContent = replyToContent
     }

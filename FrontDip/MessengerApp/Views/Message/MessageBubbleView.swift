@@ -1,3 +1,8 @@
+//
+//  MessageBubbleView.swift
+//  MessengerApp
+//
+
 import SwiftUI
 
 struct MessageBubbleView: View {
@@ -9,6 +14,7 @@ struct MessageBubbleView: View {
     let onDelete: (() -> Void)?
     let onReply: (() -> Void)?
     let onReplyTap: ((Int64) -> Void)?
+    let onForward: (() -> Void)?       // ← новая кнопка пересылки
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -123,6 +129,7 @@ struct MessageBubbleView: View {
                 Button("Удалить", role: .destructive) { onDelete?() }
             }
             Button("Ответить") { onReply?() }
+            Button("Переслать") { onForward?() }        // ← новая кнопка
             Button("Добавить реакцию") { showReactionPicker = true }
             Button("Отмена", role: .cancel) { }
         }
@@ -136,48 +143,62 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
+            // === Блок "От: ..." для пересланного сообщения ===
+            if let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrowshape.turn.up.right.fill")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("От: \(forwardNick)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+            }
+            
             // Цитата родительского сообщения
             if let replyContent = message.replyToContent, !replyContent.isEmpty {
-                        Button {
-                            if let replyId = message.replyToId {
-                                onReplyTap?(replyId)
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrowshape.turn.up.left.fill")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text(replyContent)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(isCurrentUser ? Color.blue.opacity(0.2) : Color(.systemGray5))
-                            .cornerRadius(8)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .fixedSize(horizontal: true, vertical: false)   // не растягивается по ширине
-                        .padding(.bottom, 2)
+                Button {
+                    if let replyId = message.replyToId {
+                        onReplyTap?(replyId)
                     }
-                        
-                        // Вложения и текст
-                        if let attachments = message.attachments, !attachments.isEmpty {
-                            ForEach(attachments, id: \.attachmentId) { attachment in
-                                AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
-                            }
-                        }
-                        
-                        if let content = message.content, !content.isEmpty {
-                            Text(content)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(isCurrentUser ? Color.blue : Color(.systemGray5))
-                                .foregroundColor(isCurrentUser ? .white : .primary)
-                                .cornerRadius(18)
-                        }
-        }/*.id("\(message.messageId)_\(viewModel.reactionsDict[message.messageId]?.count ?? 0)")*/
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrowshape.turn.up.left.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(replyContent)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(isCurrentUser ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                    .cornerRadius(8)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.bottom, 2)
+            }
+            
+            // Вложения и текст
+            if let attachments = message.attachments, !attachments.isEmpty {
+                ForEach(attachments, id: \.attachmentId) { attachment in
+                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                }
+            }
+            
+            if let content = message.content, !content.isEmpty {
+                Text(content)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                    .foregroundColor(isCurrentUser ? .white : .primary)
+                    .cornerRadius(18)
+            }
+        }
     }
     
     private var reactionRow: some View {

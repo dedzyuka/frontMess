@@ -1,3 +1,8 @@
+//
+//  ChatViewModel.swift
+//  MessengerApp
+//
+
 import Foundation
 import Combine
 
@@ -12,7 +17,15 @@ class ChatViewModel: ObservableObject {
     @Published var isOtherUserOnline: Bool = false
     @Published var isSomeoneTyping: Bool = false
     @Published var myRole: String = "member"
+    var pendingForward: PendingForward?
     
+    // MARK: - Pending Forward Data
+    struct PendingForward {
+        let originalContent: String
+        let forwardedFromUserId: UUID
+        let forwardedFromNickname: String
+        let attachmentId: UUID?
+    }
     
     let chat: Chat
     private let graphQL = GraphQLClient.shared
@@ -24,10 +37,10 @@ class ChatViewModel: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "last_sync_\(chat.id.uuidString)") }
     }
     private var currentUserId: UUID? { AppState.shared.currentUser?.userId }
-    private var chatMemberIds: [UUID] = []  // ID участников чата
+    private var chatMemberIds: [UUID] = []
+    var forwardMessageData: (original: Message, fromUserId: UUID, fromNickname: String)?
     
     init(chat: Chat) {
-        
         self.chat = chat
         print("ChatViewModel initialized for chat: \(chat.id)")
         setupNotifications()
@@ -37,6 +50,9 @@ class ChatViewModel: ObservableObject {
         Task { await loadOtherUserIfNeeded() }
         loadChatMemberIds()
     }
+    func clearPendingForward() {
+            pendingForward = nil
+        }
     
     private func setupNotifications() {
         NotificationCenter.default.publisher(for: .newMessageReceived)
@@ -88,30 +104,24 @@ class ChatViewModel: ObservableObject {
                       let info = notification.object as? [String: Any],
                       let messageId = info["messageId"] as? Int64 else { return }
                 
-                // Опционально: сразу удаляем локально для мгновенного отклика (но может не перерисовать UI)
                 if let userIdString = info["userId"] as? String,
                    let emoji = info["emoji"] as? String,
                    let userId = UUID(uuidString: userIdString) {
                     self.removeReactionLocally(messageId: messageId, userId: userId, emoji: emoji)
                 }
                 
-                // Принудительно перезагружаем это сообщение с сервера
                 Task {
                     if let freshMessage = await self.fetchMessage(byId: messageId) {
                         await MainActor.run {
                             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
-                                // Заменяем старое сообщение свежим
                                 self.messages[index] = freshMessage
-                                // Синхронизируем кэш реакций
                                 self.reactionsDict[messageId] = freshMessage.reactions
-                                // Сохраняем в БД (опционально)
                                 _ = self.database.saveMessage(freshMessage)
                                 if let reactions = freshMessage.reactions {
                                     for reaction in reactions {
                                         _ = self.database.saveReaction(reaction)
                                     }
                                 }
-                                // Принудительно уведомляем SwiftUI о необходимости перерисовать этот элемент
                                 self.objectWillChange.send()
                             }
                         }
@@ -156,7 +166,6 @@ class ChatViewModel: ObservableObject {
                       let userId = notification.userInfo?["userId"] as? UUID,
                       userId != self.currentUserId else { return }
                 self.isSomeoneTyping = true
-                // Авто-сброс через 3 секунды, если не пришёл typing.stop
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                     if self?.isSomeoneTyping == true {
                         self?.isSomeoneTyping = false
@@ -174,9 +183,10 @@ class ChatViewModel: ObservableObject {
                 self.isSomeoneTyping = false
             }
             .store(in: &cancellables)
-        
-        
     }
+    
+
+    
     private func loadMyRole() async {
         guard let currentUserId = currentUserId else { return }
         let membersWithRoles = await getChatMemberIdsWithRoles()
@@ -186,6 +196,25 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+    
+    func sendForwardMessage(_ original: Message, forwardedFromUserId: UUID, forwardedFromNickname: String) async -> Bool {
+        var attachmentId: UUID? = nil
+        if let attachments = original.attachments, let first = attachments.first {
+            attachmentId = first.attachmentId
+        }
+        return await sendMessage(
+            attachmentId: attachmentId,
+            storagePath: nil,
+            fileName: nil,
+            fileSize: nil,
+            mimeType: nil,
+            replyToId: nil,
+            forwardedFromUserId: forwardedFromUserId,
+            forwardedFromNickname: forwardedFromNickname,
+            customContent: original.content ?? ""
+        )
+    }
+    
     private func getChatMemberIdsWithRoles() async -> [(userId: UUID, role: String?)] {
         let variables = ["chatId": chat.id.uuidString]
         do {
@@ -195,17 +224,19 @@ class ChatViewModel: ObservableObject {
                 responseType: ChatMembersResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            return response.chat.members.map { ($0.userId, $0.role) }  // role уже опциональный
+            return response.chat.members.map { ($0.userId, $0.role) }
         } catch {
             print("Failed to load chat member roles: \(error)")
             return []
         }
     }
+    
     private func removeDuplicateMessages(_ messages: [Message]) -> [Message] {
         var seen = Set<Int64>()
         return messages.filter { seen.insert($0.messageId).inserted }
     }
-    // MARK: - Загрузка сообщений (кэш + сеть)
+    
+    // MARK: - Загрузка сообщений
     func loadMessages() {
         Task {
             let cached = await loadMessagesFromDatabase()
@@ -248,14 +279,12 @@ class ChatViewModel: ObservableObject {
             if !msgReactions.isEmpty {
                 reactions[msg.messageId] = msgReactions
             }
-            // Статусы: для чужих сообщений – мой статус
             if let currentId = currentUserId, msg.senderId != currentId {
                 if let (deliveredAt, readAt) = database.getMessageStatus(for: msg.messageId, userId: currentId) {
                     msg.deliveredAt = deliveredAt
                     msg.readAt = readAt
                 }
             }
-            // для своих сообщений readAt пока не трогаем – обновим после загрузки участников
             result.append(msg)
         }
         await MainActor.run {
@@ -273,17 +302,17 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
-            for msg in messages {
-                _ = database.saveMessage(msg)
-                if let attachments = msg.attachments, !attachments.isEmpty {
-                    _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
-                }
-                if let reactions = msg.reactions {
-                    for reaction in reactions { _ = database.saveReaction(reaction) }
-                }
+        for msg in messages {
+            _ = database.saveMessage(msg)
+            if let attachments = msg.attachments, !attachments.isEmpty {
+                _ = database.saveAttachments(attachments, for: msg.messageId, messageCreatedAt: msg.createdAt)
             }
-            return messages
+            if let reactions = msg.reactions {
+                for reaction in reactions { _ = database.saveReaction(reaction) }
+            }
         }
+        return messages
+    }
     
     private func mergeMessages(current: [Message], new: [Message]) -> [Message] {
         var dict = Dictionary(uniqueKeysWithValues: current.map { ($0.messageId, $0) })
@@ -305,7 +334,7 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Участники чата и статусы отправленных сообщений
+    // MARK: - Участники и статусы
     private func loadChatMemberIds() {
         Task {
             let ids = await getChatMemberIds()
@@ -347,7 +376,7 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Read status delivery
+    // MARK: - Read status
     func markVisibleMessagesAsRead() {
         guard let currentId = currentUserId else { return }
         for message in messages where message.senderId != currentId && message.readAt == nil {
@@ -390,11 +419,9 @@ class ChatViewModel: ObservableObject {
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
                 if userId == self.currentUserId {
-                    // Чужое сообщение: статус текущего пользователя
                     if let deliveredAt = deliveredAt { msg.deliveredAt = deliveredAt }
                     if let readAt = readAt { msg.readAt = readAt }
                 } else {
-                    // Моё сообщение: статус получателя – показываем две галочки
                     if let readAt = readAt, readAt != nil {
                         msg.readAt = readAt
                     }
@@ -508,37 +535,29 @@ class ChatViewModel: ObservableObject {
             print("Remove reaction failed: \(error)")
         }
     }
+    
     func reactionsForMessage(_ messageId: Int64) -> [Reaction] {
         return reactionsDict[messageId] ?? []
     }
-
     
     private func addReactionLocally(_ reaction: Reaction) {
         DispatchQueue.main.async {
-            // 1. Сохраняем в БД
             _ = self.database.saveReaction(reaction)
-            
-            // 2. Обновляем словарь
             var list = self.reactionsDict[reaction.messageId] ?? []
             if !list.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
                 list.append(reaction)
                 self.reactionsDict[reaction.messageId] = list
             }
-            
-            // 3. Обновляем сообщение в массиве, заменяя элемент
             if let index = self.messages.firstIndex(where: { $0.messageId == reaction.messageId }) {
                 var msg = self.messages[index]
                 var newReactions = msg.reactions ?? []
                 if !newReactions.contains(where: { $0.userId == reaction.userId && $0.emoji == reaction.emoji }) {
                     newReactions.append(reaction)
                     msg.reactions = newReactions
-                    // Заменяем элемент
                     self.messages.remove(at: index)
                     self.messages.insert(msg, at: index)
                 }
             }
-            
-            // 4. Форсируем обновление (на всякий случай)
             self.objectWillChange.send()
         }
     }
@@ -546,7 +565,6 @@ class ChatViewModel: ObservableObject {
     private func removeReactionLocally(messageId: Int64, userId: UUID, emoji: String) {
         DispatchQueue.main.async {
             _ = self.database.deleteReaction(messageId: messageId, userId: userId, emoji: emoji)
-            
             if var list = self.reactionsDict[messageId] {
                 list.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
                 if list.isEmpty {
@@ -555,20 +573,14 @@ class ChatViewModel: ObservableObject {
                     self.reactionsDict[messageId] = list
                 }
             }
-            
             if let index = self.messages.firstIndex(where: { $0.messageId == messageId }) {
                 var msg = self.messages[index]
                 msg.reactions?.removeAll(where: { $0.userId == userId && $0.emoji == emoji })
                 self.messages[index] = msg
             }
-            
-            // ✅ Принудительно уведомляем SwiftUI
             self.objectWillChange.send()
         }
     }
-    
-    // MARK: - Helper for reactions display
-    
     
     func isCurrentUser(senderId: UUID) -> Bool {
         return senderId == AppState.shared.currentUser?.userId
@@ -578,15 +590,21 @@ class ChatViewModel: ObservableObject {
         return usersCache[senderId]
     }
     
-    // MARK: - Send message
-    // ChatViewModel.swift – исправленный метод sendMessage
-    // Остальная часть класса не изменяется
-
-    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil, replyToId: Int64? = nil) async -> Bool {
-        let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+    // MARK: - Send message (с поддержкой pending forward)
+    func sendMessage(attachmentId: UUID? = nil,
+                     storagePath: String? = nil,
+                     fileName: String? = nil,
+                     fileSize: Int? = nil,
+                     mimeType: String? = nil,
+                     replyToId: Int64? = nil,
+                     forwardedFromUserId: UUID? = nil,
+                     forwardedFromNickname: String? = nil,
+                     customContent: String? = nil) async -> Bool {
+        
+        let content = (customContent ?? newMessageText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
         guard let currentUserId = currentUserId else { return false }
-
+        
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
         var tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
@@ -595,11 +613,11 @@ class ChatViewModel: ObservableObject {
             createdAt: Date(), updatedAt: Date(), deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil
         )
-
-        // Временное вложение для локального отображения
-        var localAttachment: Attachment? = nil
+        tempMessage.forwardedFromUserId = forwardedFromUserId
+        tempMessage.forwardedFromNickname = forwardedFromNickname
+        
         if let aid = attachmentId, let fname = fileName, let storage = storagePath {
-            localAttachment = Attachment(
+            let localAttachment = Attachment(
                 attachmentId: aid,
                 fileName: fname,
                 fileSize: fileSize,
@@ -608,31 +626,38 @@ class ChatViewModel: ObservableObject {
                 uploadedAt: Date(),
                 messageCreatedAt: nil
             )
-            var msgWithAtt = tempMessage
-            msgWithAtt.attachments = [localAttachment!]
+            tempMessage.attachments = [localAttachment]
             await MainActor.run {
-                self.messages.append(msgWithAtt)
-                self.newMessageText = ""
+                self.messages.append(tempMessage)
+                if customContent == nil { self.newMessageText = "" }
                 self.objectWillChange.send()
             }
         } else {
             await MainActor.run {
                 self.messages.append(tempMessage)
-                self.newMessageText = ""
+                if customContent == nil { self.newMessageText = "" }
                 self.objectWillChange.send()
             }
         }
-
+        
         do {
-            var variables: [String: Any] = ["chatId": chat.id.uuidString, "content": content]
+            var variables: [String: Any] = [
+                "chatId": chat.id.uuidString,
+                "content": content
+            ]
             if let aid = attachmentId {
                 variables["attachmentId"] = aid.uuidString
             }
-            // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ – добавляем replyToId
             if let replyId = replyToId {
                 variables["replyToId"] = Int(replyId)
             }
-
+            if let forwardUserId = forwardedFromUserId {
+                variables["forwardedFromUserId"] = forwardUserId.uuidString
+            }
+            if let forwardNick = forwardedFromNickname {
+                variables["forwardedFromNickname"] = forwardNick
+            }
+            
             let response: SendMessageResponse = try await graphQL.perform(
                 query: GraphQLQueries.sendMessage,
                 variables: variables,
@@ -640,30 +665,31 @@ class ChatViewModel: ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let realMsg = response.message.sendMessage
-
+            
             await MainActor.run {
-                if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
-                    self.messages[index] = realMsg
-                    self.enrichMessagesWithReplies()
-                    _ = self.database.saveMessage(realMsg)
-                    if let attachments = realMsg.attachments, !attachments.isEmpty {
-                        _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
-                    }
-                    self.objectWillChange.send()
-                    self.enrichMessageWithReplyIfNeeded(realMsg)
+                self.messages.removeAll { $0.messageId == tempId }
+                self.messages.append(realMsg)
+                self.messages.sort { $0.createdAt < $1.createdAt }
+                self.enrichMessagesWithReplies()
+                _ = self.database.saveMessage(realMsg)
+                if let attachments = realMsg.attachments, !attachments.isEmpty {
+                    _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
                 }
+                self.objectWillChange.send()
+                self.enrichMessageWithReplyIfNeeded(realMsg)
             }
             return true
         } catch {
             await MainActor.run {
-                self.messages.removeAll(where: { $0.messageId == tempId })
+                self.messages.removeAll { $0.messageId == tempId }
                 NotificationService.shared.showError("Не удалось отправить сообщение")
                 self.objectWillChange.send()
             }
             return false
         }
     }
-    // MARK: - Scroll to message with highlight
+    
+    // MARK: - Scroll to message
     func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
         if messages.contains(where: { $0.messageId == messageId }) {
             completion()
@@ -695,7 +721,7 @@ class ChatViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Enrich messages with reply data
+    // MARK: - Enrich messages with replies
     private func enrichMessagesWithReplies() {
         var dict = [Int64: Message]()
         for msg in messages {
@@ -748,9 +774,8 @@ class ChatViewModel: ObservableObject {
         messages[index].replyToContent = parent.content ?? (parent.attachments != nil ? "[Вложение]" : "")
         objectWillChange.send()
     }
-
-    // Вспомогательный метод (добавить в конец класса)
-    private func fetchMessage(byId messageId: Int64) async -> Message? {
+    
+    func fetchMessage(byId messageId: Int64) async -> Message? {
         print("🔄 [fetchMessage] Запрашиваем сообщение \(messageId) с сервера...")
         let variables: [String: Any] = ["messageId": messageId, "chatId": chat.id.uuidString]
         do {
@@ -768,9 +793,6 @@ class ChatViewModel: ObservableObject {
             return nil
         }
     }
-
-    // Вспомогательный метод для получения полного сообщения
-    
     
     // MARK: - Edit / Delete
     func editMessage(_ message: Message, newContent: String) async -> Bool {
@@ -833,7 +855,7 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - Chat title / other user
     func loadOtherUserIfNeeded() async {
-        guard chat.isPrivate else { return }   // ← изменено
+        guard chat.isPrivate else { return }
         guard let currentUserId = currentUserId else { return }
         let memberIds = await getChatMemberIds()
         let otherId = memberIds.first(where: { $0 != currentUserId })
@@ -858,7 +880,7 @@ class ChatViewModel: ObservableObject {
             chatTitle = name
             return
         }
-        guard chat.isPrivate else {   // ← изменено
+        guard chat.isPrivate else {
             chatTitle = "Чат"
             return
         }
@@ -893,7 +915,7 @@ class ChatViewModel: ObservableObject {
     private func deleteMessageLocally(messageId: Int64) {
         DispatchQueue.main.async {
             self.messages.removeAll(where: { $0.messageId == messageId })
-            _ = self.database.deleteMessage(messageId)   // полное удаление
+            _ = self.database.deleteMessage(messageId)
             self.objectWillChange.send()
         }
     }
@@ -901,25 +923,23 @@ class ChatViewModel: ObservableObject {
     private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
             guard !self.messages.contains(where: { $0.messageId == message.messageId }) else {
-                        print("⚠️ Duplicate message \(message.messageId) ignored")
-                        return
-                    }
-            if !self.messages.contains(where: { $0.messageId == message.messageId }) {
-                var newMessages = self.messages
-                newMessages.append(message)
-                newMessages.sort(by: { $0.createdAt < $1.createdAt })
-                self.messages = newMessages
-                self.enrichMessagesWithReplies()
-                _ = self.database.saveMessage(message)
-                if let attachments = message.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
-                }
-                if let reactions = message.reactions {
-                    for reaction in reactions { _ = self.database.saveReaction(reaction) }
-                }
-                self.objectWillChange.send()
-                self.enrichMessageWithReplyIfNeeded(message)
+                print("⚠️ Duplicate message \(message.messageId) ignored")
+                return
             }
+            var newMessages = self.messages
+            newMessages.append(message)
+            newMessages.sort(by: { $0.createdAt < $1.createdAt })
+            self.messages = newMessages
+            self.enrichMessagesWithReplies()
+            _ = self.database.saveMessage(message)
+            if let attachments = message.attachments, !attachments.isEmpty {
+                _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
+            }
+            if let reactions = message.reactions {
+                for reaction in reactions { _ = self.database.saveReaction(reaction) }
+            }
+            self.objectWillChange.send()
+            self.enrichMessageWithReplyIfNeeded(message)
         }
     }
     
@@ -927,6 +947,7 @@ class ChatViewModel: ObservableObject {
         guard message.senderId != currentUserId else { return }
         WebSocketService.shared.sendAck(messageId: message.messageId, chatId: chat.id)
     }
+    
     func refreshOtherUserStatus() async {
         guard let otherUser = otherUser else { return }
         do {
@@ -940,7 +961,6 @@ class ChatViewModel: ObservableObject {
             print("Failed to refresh user status: \(error)")
         }
     }
-   
 }
 
 private struct EmptyResponse: Decodable {}

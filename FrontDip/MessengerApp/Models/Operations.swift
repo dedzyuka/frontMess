@@ -153,6 +153,8 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                forwardedFromUserId
+                forwardedFromNickname
                 attachments {
                     attachmentId
                     fileName
@@ -173,29 +175,31 @@ struct GraphQLQueries {
     
 
     static let sendMessage = """
-    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int) {
-        message {
-            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId) {
-                messageId
-                chatId
-                senderId
-                content
-                type
-                createdAt
-                updatedAt
-                isEdited
-                replyToId
-                attachments {
-                    attachmentId
-                    fileName
-                    fileSize
-                    mimeType
-                    storagePath
+        mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String) {
+            message {
+                sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId, forwardedFromUserId: $forwardedFromUserId, forwardedFromNickname: $forwardedFromNickname) {
+                    messageId
+                    chatId
+                    senderId
+                    content
+                    type
+                    createdAt
+                    updatedAt
+                    isEdited
+                    replyToId
+                    forwardedFromUserId
+                    forwardedFromNickname
+                    attachments {
+                        attachmentId
+                        fileName
+                        fileSize
+                        mimeType
+                        storagePath
+                    }
                 }
             }
         }
-    }
-    """
+        """
     
     // MARK: - Contacts
     static let listContacts = """
