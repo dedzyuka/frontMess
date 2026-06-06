@@ -26,6 +26,7 @@ extension Notification.Name {
     static let messageDeleted = Notification.Name("messageDeleted")
     static let chatOpened = Notification.Name("chatOpened")
     static let scrollToMessage = Notification.Name("scrollToMessage")
+    
 }
 
 class NotificationService {

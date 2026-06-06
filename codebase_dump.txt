@@ -31,6 +31,7 @@ class AppState: ObservableObject {
     @Published var currentUser: User?
     @Published var isSidebarOpen = false
     @Published var pendingForwardText: String? = nil
+    @Published var pendingScrollToMessageId: Int64?
     
     private init() {}
     
@@ -3416,6 +3417,8 @@ extension Notification.Name {
     static let messageUpdated = Notification.Name("messageUpdated")
     static let messageDeleted = Notification.Name("messageDeleted")
     static let chatOpened = Notification.Name("chatOpened")
+    static let scrollToMessage = Notification.Name("scrollToMessage")
+    
 }
 
 class NotificationService {
@@ -5578,6 +5581,7 @@ class ChatViewModel: ObservableObject {
     @Published var searchResults: [Message] = []
     @Published var isSearching = false
     @Published var highlightMessageId: Int64?
+    @Published var scrollToMessageId: Int64?
     var pendingForward: PendingForward?
     
     // MARK: - Pending Forward Data
@@ -6336,24 +6340,31 @@ class ChatViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Scroll to message
+
     func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
+        print("🔵 scrollToMessage вызван для messageId = \(messageId)")
+        
         if messages.contains(where: { $0.messageId == messageId }) {
+            print("✅ сообщение уже есть в массиве, устанавливаю scrollToMessageId")
+            scrollToMessageId = messageId
             completion()
             return
         }
         
         if let message = database.getMessage(byId: messageId, chatId: chat.id) {
+            print("📀 сообщение найдено в БД, добавляю в массив")
             DispatchQueue.main.async {
                 self.messages.append(message)
                 self.messages.sort { $0.createdAt < $1.createdAt }
                 self.objectWillChange.send()
+                self.scrollToMessageId = messageId
                 completion()
             }
             return
         }
         
         Task {
+            print("🌐 загружаем сообщение с сервера")
             if let message = await fetchMessage(byId: messageId) {
                 await MainActor.run {
                     if !self.messages.contains(where: { $0.messageId == message.messageId }) {
@@ -6362,8 +6373,12 @@ class ChatViewModel: ObservableObject {
                         _ = self.database.saveMessage(message)
                         self.objectWillChange.send()
                     }
+                    self.scrollToMessageId = messageId
                     completion()
                 }
+            } else {
+                print("❌ сообщение не найдено нигде")
+                completion()
             }
         }
     }
@@ -7895,22 +7910,15 @@ struct MessageStatusIcon: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatSidebarView.swift
 
-//
-//  ChatSidebarView.swift
-//  FrontDip
-//
-
 import SwiftUI
-
-
 
 struct ChatSidebarView: View {
     let chat: Chat
-    @ObservedObject var chatViewModel: ChatViewModel   // <-- добавлено
+    @ObservedObject var chatViewModel: ChatViewModel
     @Environment(\.dismiss) var dismiss
     @StateObject private var viewModel: ChatSidebarViewModel
     
-    init(chat: Chat, chatViewModel: ChatViewModel) {   // <-- изменён инициализатор
+    init(chat: Chat, chatViewModel: ChatViewModel) {
         self.chat = chat
         self.chatViewModel = chatViewModel
         _viewModel = StateObject(wrappedValue: ChatSidebarViewModel(chat: chat))
@@ -7958,12 +7966,13 @@ struct ChatSidebarView: View {
                             List(chatViewModel.searchResults) { message in
                                 SearchMessResultRow(message: message, chatViewModel: chatViewModel)
                                     .onTapGesture {
+                                        // 1. Принудительно закрыть сайдбар
                                         AppState.shared.isSidebarOpen = false
                                         dismiss()
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [chatViewModel] in
-                                            chatViewModel.scrollToMessage(messageId: message.messageId) {
-                                                chatViewModel.highlightMessage(message.messageId)
-                                            }
+                                        
+                                        // 2. Сохраняем ID в AppState (ждём появления ChatView)
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                            AppState.shared.pendingScrollToMessageId = message.messageId
                                         }
                                     }
                             }
@@ -8008,7 +8017,7 @@ struct ChatSidebarView: View {
         }
     }
     
-    // MARK: - Личный чат
+    // MARK: - Личный чат (сокращён для читаемости – оставьте как у вас)
     private var privateChatContent: some View {
         ScrollView {
             VStack(spacing: 20) {
@@ -8081,10 +8090,9 @@ struct ChatSidebarView: View {
         }
     }
     
-    // MARK: - Группа (и канал – общий UI)
+    // MARK: - Группа (и канал) – сокращён, оставьте ваш полный код
     private var groupChatContent: some View {
         VStack {
-            // Аватар и название
             if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                 AvatarView(urlString: avatarUrl, size: 100)
                     .padding(.top, 20)
@@ -8111,7 +8119,6 @@ struct ChatSidebarView: View {
                     .padding(.horizontal)
             }
             
-            // Кнопки управления
             HStack {
                 if viewModel.currentUserRole == "owner" || viewModel.currentUserRole == "admin" {
                     Button("Редактировать") {
@@ -8133,7 +8140,6 @@ struct ChatSidebarView: View {
             }
             .padding(.horizontal)
             
-            // Список участников с секциями
             List {
                 if !viewModel.activeMembers.isEmpty {
                     Section(header: Text("Участники (\(viewModel.activeMembers.count))")) {
@@ -8183,7 +8189,6 @@ struct ChatSidebarView: View {
             }
             .listStyle(InsetGroupedListStyle())
             
-            // Кнопки выхода/удаления
             VStack(spacing: 12) {
                 if viewModel.currentUserRole == "owner" {
                     Button("Удалить чат", role: .destructive) {
@@ -8251,7 +8256,6 @@ struct ChatSidebarView: View {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
-
 // MARK: - MemberRow (компонент строки участника)
 struct MemberRow: View {
     let member: ChatMemberItem
@@ -8283,7 +8287,6 @@ struct MemberRow: View {
                 Text("Забанен")
                     .font(.caption)
                     .foregroundColor(.red)
-                // Разбанить могут только owner/admin
                 if currentUserRole == "owner" || currentUserRole == "admin" {
                     Button("Разбанить") {
                         onUnban(member.userId)
@@ -8292,7 +8295,6 @@ struct MemberRow: View {
                     .controlSize(.small)
                 }
             } else {
-                // Активный участник
                 if currentUserRole == "owner" || (currentUserRole == "admin" && member.role != "owner") {
                     Menu {
                         if currentUserRole == "owner" && member.role != "owner" {
@@ -8318,19 +8320,6 @@ struct MemberRow: View {
     }
 }
 
-// MARK: - Расширение уведомлений
-extension Notification.Name {
-    static let chatDeleted = Notification.Name("chatDeleted")
-}
-extension ChatMemberItem {
-    var roleDisplay: String {
-        switch role {
-        case "owner": return "Владелец"
-        case "admin": return "Администратор"
-        default: return "Участник"
-        }
-    }
-}
 struct SearchMessResultRow: View {
     let message: Message
     let chatViewModel: ChatViewModel
@@ -8350,12 +8339,11 @@ struct SearchMessResultRow: View {
         }
         .padding(.vertical, 4)
         .onTapGesture {
+            // Закрыть сайдбар и установить ID в AppState
             AppState.shared.isSidebarOpen = false
             dismiss()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                chatViewModel.scrollToMessage(messageId: message.messageId) {
-                    chatViewModel.highlightMessage(message.messageId)
-                }
+                AppState.shared.pendingScrollToMessageId = message.messageId
             }
         }
     }
@@ -8365,6 +8353,10 @@ struct SearchMessResultRow: View {
         formatter.dateFormat = "dd.MM.yy HH:mm"
         return formatter.string(from: date)
     }
+}
+
+extension Notification.Name {
+    static let chatDeleted = Notification.Name("chatDeleted")
 }
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
@@ -8398,6 +8390,9 @@ struct ChatView: View {
     @State private var replyingToMessage: Message?
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
+    
+    // Сохраняем ScrollViewProxy для использования в onReceive
+    @State private var scrollProxy: ScrollViewProxy?
     
     private var canSendMessage: Bool {
         if chat.isChannel {
@@ -8485,6 +8480,22 @@ struct ChatView: View {
                     attachmentId: pending.attachmentId
                 )
                 viewModel.newMessageText = pending.content
+            }
+            
+            // ⭐️ ГЛАВНАЯ ЛОГИКА: прокрутка к сообщению после появления
+            if let pendingId = AppState.shared.pendingScrollToMessageId {
+                AppState.shared.pendingScrollToMessageId = nil
+                // Даём время на отрисовку (ScrollViewReader появится)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    viewModel.scrollToMessage(messageId: pendingId) {
+                        DispatchQueue.main.async {
+                            withAnimation {
+                                self.scrollProxy?.scrollTo(pendingId, anchor: .center)
+                            }
+                            viewModel.highlightMessage(pendingId)
+                        }
+                    }
+                }
             }
         }
         .onDisappear {
@@ -8602,11 +8613,7 @@ struct ChatView: View {
                                     withAnimation {
                                         proxy.scrollTo(replyId, anchor: .center)
                                     }
-                                    highlightedMessageId = replyId
-                                    highlightTimer?.invalidate()
-                                    highlightTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
-                                        highlightedMessageId = nil
-                                    }
+                                    viewModel.highlightMessage(replyId)
                                 }
                             },
                             onForward: {
@@ -8616,12 +8623,16 @@ struct ChatView: View {
                         )
                         .id(message.messageId)
                         .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
-                        
-                        .animation(.easeInOut(duration: 0.3), value: highlightedMessageId)
                     }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 12)
+            }
+            .onAppear {
+                scrollProxy = proxy
+            }
+            .onDisappear {
+                scrollProxy = nil
             }
             .onChange(of: viewModel.messages.count) { _ in
                 if let last = viewModel.messages.last {
@@ -8692,8 +8703,6 @@ struct ChatView: View {
         .padding()
         .background(Color(.systemBackground))
     }
-    
-    // MARK: - Helper Methods
     
     private func sendMessageWithAttachment(replyToId: Int64? = nil) {
         Task {
@@ -8774,11 +8783,10 @@ struct ChatView: View {
                 selectedVideoURL = nil
                 selectedDocumentURL = nil
                 if success {
-                        // ✅ Очищаем поле ввода после успешной отправки
-                        viewModel.newMessageText = ""
-                    } else {
-                        NotificationService.shared.showError("Не удалось отправить сообщение")
-                    }
+                    viewModel.newMessageText = ""
+                } else {
+                    NotificationService.shared.showError("Не удалось отправить сообщение")
+                }
             }
         }
     }
@@ -8797,11 +8805,9 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Пересылка сообщения (исправленная)
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
         
-        // Получаем реальный никнейм отправителя через viewModel
         let senderNick = viewModel.getNicknameForForward(for: message.senderId)
         
         if targetChat.id == chat.id {

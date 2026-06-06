@@ -10,6 +10,7 @@ class AppState: ObservableObject {
     @Published var currentUser: User?
     @Published var isSidebarOpen = false
     @Published var pendingForwardText: String? = nil
+    @Published var pendingScrollToMessageId: Int64?
     
     private init() {}
     

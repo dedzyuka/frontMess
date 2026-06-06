@@ -28,6 +28,9 @@ struct ChatView: View {
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
+    // Сохраняем ScrollViewProxy для использования в onReceive
+    @State private var scrollProxy: ScrollViewProxy?
+    
     private var canSendMessage: Bool {
         if chat.isChannel {
             return viewModel.myRole == "owner" || viewModel.myRole == "admin"
@@ -115,13 +118,39 @@ struct ChatView: View {
                 )
                 viewModel.newMessageText = pending.content
             }
+            
+            // ⭐️ ГЛАВНАЯ ЛОГИКА: прокрутка к сообщению после появления
+            if let pendingId = AppState.shared.pendingScrollToMessageId {
+                AppState.shared.pendingScrollToMessageId = nil
+                // Даём время на отрисовку (ScrollViewReader появится)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    viewModel.scrollToMessage(messageId: pendingId) {
+                        DispatchQueue.main.async {
+                            withAnimation {
+                                self.scrollProxy?.scrollTo(pendingId, anchor: .center)
+                            }
+                            viewModel.highlightMessage(pendingId)
+                        }
+                    }
+                }
+            }
+        }
+        .onReceive(AppState.shared.$pendingScrollToMessageId) { newId in
+            guard let id = newId else { return }
+            AppState.shared.pendingScrollToMessageId = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                viewModel.scrollToMessage(messageId: id) {
+                    DispatchQueue.main.async {
+                        withAnimation {
+                            scrollProxy?.scrollTo(id, anchor: .center)
+                        }
+                        viewModel.highlightMessage(id)
+                    }
+                }
+            }
         }
         .onDisappear {
             viewModel.clearPendingForward()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .scrollToMessage)) { notification in
-            guard let messageId = notification.userInfo?["messageId"] as? Int64 else { return }
-            viewModel.scrollToMessage(messageId: messageId) { }
         }
     }
     
@@ -235,11 +264,7 @@ struct ChatView: View {
                                     withAnimation {
                                         proxy.scrollTo(replyId, anchor: .center)
                                     }
-                                    highlightedMessageId = replyId
-                                    highlightTimer?.invalidate()
-                                    highlightTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
-                                        highlightedMessageId = nil
-                                    }
+                                    viewModel.highlightMessage(replyId)
                                 }
                             },
                             onForward: {
@@ -249,28 +274,21 @@ struct ChatView: View {
                         )
                         .id(message.messageId)
                         .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
-                        .animation(.easeInOut(duration: 0.3), value: viewModel.highlightMessageId)
                     }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 12)
             }
+            .onAppear {
+                scrollProxy = proxy
+            }
+            
+            .onDisappear {
+                scrollProxy = nil
+            }
             .onChange(of: viewModel.messages.count) { _ in
                 if let last = viewModel.messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
-            }
-            .onChange(of: viewModel.scrollToMessageId) { messageId in
-                if let messageId = messageId {
-                    withAnimation {
-                        proxy.scrollTo(messageId, anchor: .center)
-                    }
-                    viewModel.highlightMessage(messageId)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        if viewModel.scrollToMessageId == messageId {
-                            viewModel.scrollToMessageId = nil
-                        }
-                    }
                 }
             }
         }
@@ -337,8 +355,6 @@ struct ChatView: View {
         .padding()
         .background(Color(.systemBackground))
     }
-    
-    // MARK: - Helper Methods
     
     private func sendMessageWithAttachment(replyToId: Int64? = nil) {
         Task {
@@ -419,11 +435,10 @@ struct ChatView: View {
                 selectedVideoURL = nil
                 selectedDocumentURL = nil
                 if success {
-                        // ✅ Очищаем поле ввода после успешной отправки
-                        viewModel.newMessageText = ""
-                    } else {
-                        NotificationService.shared.showError("Не удалось отправить сообщение")
-                    }
+                    viewModel.newMessageText = ""
+                } else {
+                    NotificationService.shared.showError("Не удалось отправить сообщение")
+                }
             }
         }
     }
@@ -442,11 +457,9 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Пересылка сообщения (исправленная)
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
         
-        // Получаем реальный никнейм отправителя через viewModel
         let senderNick = viewModel.getNicknameForForward(for: message.senderId)
         
         if targetChat.id == chat.id {

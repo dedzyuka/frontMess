@@ -1,93 +1,82 @@
-//
-//  ChatSidebarView.swift
-//  FrontDip
-//
-
 import SwiftUI
-
-
 
 struct ChatSidebarView: View {
     let chat: Chat
-    @ObservedObject var chatViewModel: ChatViewModel   // <-- добавлено
-    @Environment(\.dismiss) var dismiss
+    @ObservedObject var chatViewModel: ChatViewModel
+    @Environment(\.presentationMode) var presentationMode
     @StateObject private var viewModel: ChatSidebarViewModel
     
-    init(chat: Chat, chatViewModel: ChatViewModel) {   // <-- изменён инициализатор
+    init(chat: Chat, chatViewModel: ChatViewModel) {
         self.chat = chat
         self.chatViewModel = chatViewModel
         _viewModel = StateObject(wrappedValue: ChatSidebarViewModel(chat: chat))
     }
     
     var body: some View {
-        NavigationView {
-            Group {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Поле поиска
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            .onSubmit {
-                                chatViewModel.searchMessages()
-                            }
-                        if !chatViewModel.searchQuery.isEmpty {
-                            Button(action: {
-                                chatViewModel.clearSearch()
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+        VStack(alignment: .leading, spacing: 0) {
+            // Поле поиска
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .onSubmit {
+                        chatViewModel.searchMessages()
                     }
-                    .padding(8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(10)
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    
-                    if !chatViewModel.searchQuery.isEmpty {
-                        // Результаты поиска
-                        if chatViewModel.isSearching {
-                            ProgressView()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if chatViewModel.searchResults.isEmpty {
-                            Text("Сообщения не найдены")
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            List(chatViewModel.searchResults) { message in
-                                SearchMessResultRow(message: message, chatViewModel: chatViewModel)
-                                    .onTapGesture {
-                                        AppState.shared.isSidebarOpen = false
-                                        dismiss()
-                                        // Даём время на закрытие сайдбара и появление чата
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                            chatViewModel.scrollToMessage(messageId: message.messageId) { }
-                                        }
-                                    }
-                            }
-                            .listStyle(PlainListStyle())
-                        }
-                    } else {
-                        // Обычное содержимое (личный чат / группа / канал)
-                        if chat.isPrivate {
-                            privateChatContent
-                        } else if chat.isGroup {
-                            groupChatContent
-                        } else {
-                            channelContent
-                        }
+                if !chatViewModel.searchQuery.isEmpty {
+                    Button(action: {
+                        chatViewModel.clearSearch()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
                     }
                 }
             }
-            .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") { dismiss() }
+            .padding(8)
+            .background(Color(.systemGray6))
+            .cornerRadius(10)
+            .padding(.horizontal)
+            .padding(.top, 8)
+            
+            if !chatViewModel.searchQuery.isEmpty {
+                // Результаты поиска
+                if chatViewModel.isSearching {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if chatViewModel.searchResults.isEmpty {
+                    Text("Сообщения не найдены")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(chatViewModel.searchResults) { message in
+                        SearchMessResultRow(
+                            message: message,
+                            chatViewModel: chatViewModel,
+                            onDismiss: {
+                                presentationMode.wrappedValue.dismiss()
+                            }
+                        )
+                    }
+                    .listStyle(PlainListStyle())
+                }
+            } else {
+                // Обычное содержимое (личный чат / группа / канал)
+                if chat.isPrivate {
+                    privateChatContent
+                } else if chat.isGroup {
+                    groupChatContent
+                } else {
+                    channelContent
+                }
+            }
+        }
+        .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Готово") {
+                    presentationMode.wrappedValue.dismiss()
                 }
             }
         }
@@ -144,7 +133,7 @@ struct ChatSidebarView: View {
                     }
                     
                     Button("Написать") {
-                        dismiss()
+                        presentationMode.wrappedValue.dismiss()
                         NotificationCenter.default.post(name: .openChat, object: chat)
                     }
                     .buttonStyle(.borderedProminent)
@@ -183,10 +172,9 @@ struct ChatSidebarView: View {
         }
     }
     
-    // MARK: - Группа (и канал – общий UI)
+    // MARK: - Группа
     private var groupChatContent: some View {
         VStack {
-            // Аватар и название
             if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                 AvatarView(urlString: avatarUrl, size: 100)
                     .padding(.top, 20)
@@ -213,7 +201,6 @@ struct ChatSidebarView: View {
                     .padding(.horizontal)
             }
             
-            // Кнопки управления
             HStack {
                 if viewModel.currentUserRole == "owner" || viewModel.currentUserRole == "admin" {
                     Button("Редактировать") {
@@ -235,7 +222,6 @@ struct ChatSidebarView: View {
             }
             .padding(.horizontal)
             
-            // Список участников с секциями
             List {
                 if !viewModel.activeMembers.isEmpty {
                     Section(header: Text("Участники (\(viewModel.activeMembers.count))")) {
@@ -285,7 +271,6 @@ struct ChatSidebarView: View {
             }
             .listStyle(InsetGroupedListStyle())
             
-            // Кнопки выхода/удаления
             VStack(spacing: 12) {
                 if viewModel.currentUserRole == "owner" {
                     Button("Удалить чат", role: .destructive) {
@@ -322,7 +307,7 @@ struct ChatSidebarView: View {
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { _ in
             Task {
-                await MainActor.run { self.dismiss() }
+                await MainActor.run { presentationMode.wrappedValue.dismiss() }
                 if await self.viewModel.deleteChat() {
                     NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
                 }
@@ -339,7 +324,7 @@ struct ChatSidebarView: View {
                 if await self.viewModel.leaveChat() {
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
-                        self.dismiss()
+                        self.presentationMode.wrappedValue.dismiss()
                     }
                 }
             }
@@ -354,10 +339,10 @@ struct ChatSidebarView: View {
     }
 }
 
-// MARK: - MemberRow (компонент строки участника)
+// MARK: - MemberRow
 struct MemberRow: View {
     let member: ChatMemberItem
-    let currentUserRole: String   // "owner", "admin", "member"
+    let currentUserRole: String
     let onRoleChange: (UUID, String) -> Void
     let onKick: (UUID) -> Void
     let onBan: (UUID, Date?) -> Void
@@ -385,7 +370,6 @@ struct MemberRow: View {
                 Text("Забанен")
                     .font(.caption)
                     .foregroundColor(.red)
-                // Разбанить могут только owner/admin
                 if currentUserRole == "owner" || currentUserRole == "admin" {
                     Button("Разбанить") {
                         onUnban(member.userId)
@@ -394,7 +378,6 @@ struct MemberRow: View {
                     .controlSize(.small)
                 }
             } else {
-                // Активный участник
                 if currentUserRole == "owner" || (currentUserRole == "admin" && member.role != "owner") {
                     Menu {
                         if currentUserRole == "owner" && member.role != "owner" {
@@ -420,55 +403,43 @@ struct MemberRow: View {
     }
 }
 
-// MARK: - Расширение уведомлений
-extension Notification.Name {
-    static let chatDeleted = Notification.Name("chatDeleted")
-}
-extension ChatMemberItem {
-    var roleDisplay: String {
-        switch role {
-        case "owner": return "Владелец"
-        case "admin": return "Администратор"
-        default: return "Участник"
-        }
-    }
-}
+// MARK: - SearchMessResultRow
 struct SearchMessResultRow: View {
     let message: Message
     let chatViewModel: ChatViewModel
-    @Environment(\.dismiss) var dismiss
-    
+    let onDismiss: () -> Void
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(chatViewModel.getUserNickname(for: message.senderId))
-                .font(.headline)
-            Text(message.content ?? "")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .lineLimit(2)
-            Text(formatDate(message.createdAt))
-                .font(.caption2)
-                .foregroundColor(.gray)
-        }
-        .padding(.vertical, 4)
-        .onTapGesture {
-            // Закрыть сайдбар
+        Button {
+            onDismiss()
             AppState.shared.isSidebarOpen = false
-            dismiss()
-            // Через небольшую задержку отправить уведомление о прокрутке
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                NotificationCenter.default.post(
-                    name: .scrollToMessage,
-                    object: nil,
-                    userInfo: ["messageId": message.messageId]
-                )
+                AppState.shared.pendingScrollToMessageId = message.messageId
             }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chatViewModel.getUserNickname(for: message.senderId))
+                    .font(.headline)
+                Text(message.content ?? "")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text(formatDate(message.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+            }
+            .padding(.vertical, 4)
         }
+        .buttonStyle(PlainButtonStyle())
     }
-    
+
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "dd.MM.yy HH:mm"
         return formatter.string(from: date)
     }
+}
+
+extension Notification.Name {
+    static let chatDeleted = Notification.Name("chatDeleted")
 }

@@ -782,13 +782,17 @@ class ChatViewModel: ObservableObject {
     
 
     func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
+        print("🔵 scrollToMessage вызван для messageId = \(messageId)")
+        
         if messages.contains(where: { $0.messageId == messageId }) {
+            print("✅ сообщение уже есть в массиве, устанавливаю scrollToMessageId")
             scrollToMessageId = messageId
             completion()
             return
         }
         
         if let message = database.getMessage(byId: messageId, chatId: chat.id) {
+            print("📀 сообщение найдено в БД, добавляю в массив")
             DispatchQueue.main.async {
                 self.messages.append(message)
                 self.messages.sort { $0.createdAt < $1.createdAt }
@@ -800,6 +804,7 @@ class ChatViewModel: ObservableObject {
         }
         
         Task {
+            print("🌐 загружаем сообщение с сервера")
             if let message = await fetchMessage(byId: messageId) {
                 await MainActor.run {
                     if !self.messages.contains(where: { $0.messageId == message.messageId }) {
@@ -811,6 +816,9 @@ class ChatViewModel: ObservableObject {
                     self.scrollToMessageId = messageId
                     completion()
                 }
+            } else {
+                print("❌ сообщение не найдено нигде")
+                completion()
             }
         }
     }
