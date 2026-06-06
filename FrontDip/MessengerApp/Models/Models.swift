@@ -164,23 +164,52 @@ enum MessageStatusType {
 
 
 // MARK: - Message
+// MARK: - Message
 struct Message: Identifiable, Codable {
     let messageId: Int64
     let chatId: UUID
     let senderId: UUID
     let replyToId: Int64?
-    var content: String?           // теперь var
+    var content: String?
     let type: String
     let createdAt: Date
-    var updatedAt: Date            // теперь var
+    var updatedAt: Date
     let deletedAt: Date?
-    var isEdited: Bool             // теперь var
-    var deliveredAt: Date?         // теперь var
-    var readAt: Date?              // теперь var
+    var isEdited: Bool
+    var deliveredAt: Date?
+    var readAt: Date?
     var reactions: [Reaction]? = nil
     var attachments: [Attachment]? = nil
     
+    // UI-поля для отображения ответа (не участвуют в Codable)
+    var replyToSenderName: String? = nil
+    var replyToContent: String? = nil
+    
     var id: Int64 { messageId }
+    
+    // Добавляем инициализатор с параметрами по умолчанию для convenience
+    init(messageId: Int64, chatId: UUID, senderId: UUID, replyToId: Int64? = nil,
+         content: String? = nil, type: String = "text", createdAt: Date, updatedAt: Date,
+         deletedAt: Date? = nil, isEdited: Bool = false, deliveredAt: Date? = nil,
+         readAt: Date? = nil, reactions: [Reaction]? = nil, attachments: [Attachment]? = nil,
+         replyToSenderName: String? = nil, replyToContent: String? = nil) {
+        self.messageId = messageId
+        self.chatId = chatId
+        self.senderId = senderId
+        self.replyToId = replyToId
+        self.content = content
+        self.type = type
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.deletedAt = deletedAt
+        self.isEdited = isEdited
+        self.deliveredAt = deliveredAt
+        self.readAt = readAt
+        self.reactions = reactions
+        self.attachments = attachments
+        self.replyToSenderName = replyToSenderName
+        self.replyToContent = replyToContent
+    }
 }
 
 

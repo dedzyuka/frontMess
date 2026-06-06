@@ -1,12 +1,14 @@
 import SwiftUI
 
 struct MessageBubbleView: View {
-    var message: Message
+    let message: Message
     let isCurrentUser: Bool
     let senderUser: User?
     @ObservedObject var viewModel: ChatViewModel
     let onEdit: (() -> Void)?
     let onDelete: (() -> Void)?
+    let onReply: (() -> Void)?
+    let onReplyTap: ((Int64) -> Void)?
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -107,11 +109,20 @@ struct MessageBubbleView: View {
                 viewModel.markMessageAsReadIfNeeded(messageId: message.messageId)
             }
         }
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    if value.translation.width > 50 && value.startLocation.x < 50 {
+                        onReply?()
+                    }
+                }
+        )
         .confirmationDialog("Действия с сообщением", isPresented: $showMenu, titleVisibility: .visible) {
             if isCurrentUser {
                 Button("Редактировать") { onEdit?() }
                 Button("Удалить", role: .destructive) { onDelete?() }
             }
+            Button("Ответить") { onReply?() }
             Button("Добавить реакцию") { showReactionPicker = true }
             Button("Отмена", role: .cancel) { }
         }
@@ -125,21 +136,48 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            if let attachments = message.attachments, !attachments.isEmpty {
-                ForEach(attachments, id: \.attachmentId) { attachment in
-                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
-                }
-            }
-            
-            if let content = message.content, !content.isEmpty {
-                Text(content)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isCurrentUser ? Color.blue : Color(.systemGray5))
-                    .foregroundColor(isCurrentUser ? .white : .primary)
-                    .cornerRadius(18)
-            }
-        }.id("\(message.messageId)_\(viewModel.reactionsDict[message.messageId]?.count ?? 0)")
+            // Цитата родительского сообщения
+            if let replyContent = message.replyToContent, !replyContent.isEmpty {
+                        Button {
+                            if let replyId = message.replyToId {
+                                onReplyTap?(replyId)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrowshape.turn.up.left.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text(replyContent)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(isCurrentUser ? Color.blue.opacity(0.2) : Color(.systemGray5))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .fixedSize(horizontal: true, vertical: false)   // не растягивается по ширине
+                        .padding(.bottom, 2)
+                    }
+                        
+                        // Вложения и текст
+                        if let attachments = message.attachments, !attachments.isEmpty {
+                            ForEach(attachments, id: \.attachmentId) { attachment in
+                                AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                            }
+                        }
+                        
+                        if let content = message.content, !content.isEmpty {
+                            Text(content)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+                                .foregroundColor(isCurrentUser ? .white : .primary)
+                                .cornerRadius(18)
+                        }
+        }/*.id("\(message.messageId)_\(viewModel.reactionsDict[message.messageId]?.count ?? 0)")*/
     }
     
     private var reactionRow: some View {
@@ -165,7 +203,6 @@ struct MessageBubbleView: View {
         }
         .padding(.top, 2)
     }
-
     
     private func toggleReaction(emoji: String) {
         Task {

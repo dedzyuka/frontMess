@@ -276,6 +276,31 @@ class LocalDatabase {
             return false
         }
     }
+    func getMessage(byId messageId: Int64, chatId: UUID) -> Message? {
+        guard let db = db else { return nil }
+        let query = messagesTable.filter(msgId == messageId && msgChatId == chatId)
+        do {
+            if let row = try db.pluck(query) {
+                return Message(
+                    messageId: row[msgId],
+                    chatId: row[msgChatId],
+                    senderId: row[msgSenderId],
+                    replyToId: row[msgReplyToId],
+                    content: row[msgContent],
+                    type: row[msgType],
+                    createdAt: row[msgCreatedAt],
+                    updatedAt: row[msgUpdatedAt],
+                    deletedAt: row[msgDeletedAt],
+                    isEdited: row[msgIsEdited],
+                    deliveredAt: row[msgDeliveredAt],
+                    readAt: row[msgReadAt]
+                )
+            }
+        } catch {
+            print("❌ getMessage error: \(error)")
+        }
+        return nil
+    }
     
     func updateMessage(_ message: Message) -> Bool {
         guard let db = db else { return false }

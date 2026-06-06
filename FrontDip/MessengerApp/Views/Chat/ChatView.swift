@@ -10,7 +10,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
     
-    // Вложения и остальные состояния...
+    // Вложения
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -27,12 +27,21 @@ struct ChatView: View {
     
     @State private var typingTimer: Timer?
     @State private var isTyping = false
+    @State private var highlightedMessageId: Int64?
+    @State private var highlightTimer: Timer?
+    
+    // Reply state
+    @State private var replyingToMessage: Message?
     
     private var canSendMessage: Bool {
         if chat.isChannel {
             return viewModel.myRole == "owner" || viewModel.myRole == "admin"
         }
         return true
+    }
+    
+    private var canSend: Bool {
+        (!viewModel.newMessageText.isEmpty || selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil) && !isSending
     }
     
     init(chat: Chat) {
@@ -42,7 +51,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок (шапка) с аватаркой
+            // Header (без изменений)
             HStack(spacing: 12) {
                 Button {
                     presentationMode.wrappedValue.dismiss()
@@ -84,7 +93,6 @@ struct ChatView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 } else {
-                    // Группа или канал – показываем аватарку чата и название
                     HStack(spacing: 8) {
                         if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                             AvatarView(urlString: avatarUrl, size: 40)
@@ -123,7 +131,7 @@ struct ChatView: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground))
             
-            // Список сообщений (остаётся без изменений)
+            // Messages list
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -141,9 +149,31 @@ struct ChatView: View {
                                 onDelete: {
                                     selectedMessage = message
                                     showDeleteConfirmation = true
+                                },
+                                onReply: {
+                                    replyingToMessage = message
+                                },
+                                onReplyTap: { replyId in
+                                    // Скролл к родительскому сообщению
+                                    viewModel.scrollToMessage(messageId: replyId) {
+                                        withAnimation {
+                                            proxy.scrollTo(replyId, anchor: .center)
+                                        }
+                                        // Подсветка
+                                        highlightedMessageId = replyId
+                                        highlightTimer?.invalidate()
+                                        highlightTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+                                            highlightedMessageId = nil
+                                        }
+                                    }
                                 }
                             )
-                            .id(message.id)
+                            .id(message.messageId)
+                            .background(
+                                highlightedMessageId == message.messageId ?
+                                Color.yellow.opacity(0.3) : Color.clear
+                            )
+                            .animation(.easeInOut(duration: 0.3), value: highlightedMessageId)
                         }
                     }
                     .padding(.horizontal)
@@ -157,7 +187,31 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода (остаётся без изменений)
+            // Reply preview bar
+            // Reply preview bar — стильная компактная панель
+            if let reply = replyingToMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrowshape.turn.up.left.fill")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(reply.content ?? (reply.attachments != nil ? "[Вложение]" : ""))
+                        .font(.caption)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button { replyingToMessage = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .background(Color(.clear))   // ← прозрачный фон
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
+            }
+            
+            // Input area
             if canSendMessage {
                 HStack(spacing: 12) {
                     Button { showingActionSheet = true } label: {
@@ -179,13 +233,14 @@ struct ChatView: View {
                         ProgressView().frame(width: 32, height: 32)
                     } else {
                         Button {
-                            sendMessageWithAttachment()
+                            sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
+                            replyingToMessage = nil
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")
                                 .font(.system(size: 32))
-                                .foregroundColor((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) ? .gray : .blue)
+                                .foregroundColor(canSend ? .blue : .gray)
                         }
-                        .disabled((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) || isSending)
+                        .disabled(!canSend)
                     }
                 }
                 .padding()
@@ -242,8 +297,8 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка с вложением (остаётся без изменений)
-    private func sendMessageWithAttachment() {
+    // MARK: - Send with attachment
+    private func sendMessageWithAttachment(replyToId: Int64? = nil) {
         Task {
             isSending = true
             isUploading = true
@@ -301,7 +356,8 @@ struct ChatView: View {
                 storagePath: storagePath,
                 fileName: fileName,
                 fileSize: fileSize,
-                mimeType: mimeType
+                mimeType: mimeType,
+                replyToId: replyToId
             )
             
             await MainActor.run {

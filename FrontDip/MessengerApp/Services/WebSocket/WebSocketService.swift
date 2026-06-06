@@ -152,6 +152,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
         
         let content = payload["content"] as? String
+        let replyToId = (payload["reply_to_id"] as? NSNumber)?.int64Value
         var attachments: [Attachment] = []
         if let attachmentsArray = payload["attachments"] as? [[String: Any]] {
             for attDict in attachmentsArray {
@@ -174,12 +175,13 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
         
         let message = Message(
-            messageId: messageId, chatId: chatId, senderId: senderId,
-            replyToId: nil, content: content, type: "text",
-            createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
-            isEdited: false, deliveredAt: nil, readAt: nil,
-            reactions: nil, attachments: attachments
-        )
+                messageId: messageId, chatId: chatId, senderId: senderId,
+                replyToId: replyToId,   // ← передаём
+                content: content, type: "text",
+                createdAt: createdAt, updatedAt: createdAt, deletedAt: nil,
+                isEdited: false, deliveredAt: nil, readAt: nil,
+                reactions: nil, attachments: attachments
+            )
 
         if !LocalDatabase.shared.messageExists(messageId) {
             _ = LocalDatabase.shared.saveMessage(message)

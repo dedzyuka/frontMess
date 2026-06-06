@@ -14,9 +14,9 @@
             filePath = "FrontDip/MessengerApp/Models/Models.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "288"
-            endingLineNumber = "288"
-            landmarkName = "InviteLinkWrapper"
+            startingLineNumber = "317"
+            endingLineNumber = "317"
+            landmarkName = "DeleteChatWrapper"
             landmarkType = "14">
          </BreakpointContent>
       </BreakpointProxy>

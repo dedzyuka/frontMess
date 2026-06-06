@@ -171,10 +171,11 @@ struct GraphQLQueries {
     }
     """
     
+
     static let sendMessage = """
-    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String) {
+    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int) {
         message {
-            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId) {
+            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId) {
                 messageId
                 chatId
                 senderId
@@ -183,6 +184,7 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                replyToId
                 attachments {
                     attachmentId
                     fileName

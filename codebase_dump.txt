@@ -29,6 +29,7 @@ class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
+    @Published var isSidebarOpen = false   // 👈 флаг для блокировки навигации
     
     private init() {}
     
@@ -1002,10 +1003,11 @@ struct GraphQLQueries {
     }
     """
     
+
     static let sendMessage = """
-    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String) {
+    mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int) {
         message {
-            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId) {
+            sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId) {
                 messageId
                 chatId
                 senderId
@@ -1014,6 +1016,7 @@ struct GraphQLQueries {
                 createdAt
                 updatedAt
                 isEdited
+                replyToId
                 attachments {
                     attachmentId
                     fileName
@@ -5996,18 +5999,20 @@ class ChatViewModel: ObservableObject {
     }
     
     // MARK: - Send message
-    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil) async -> Bool {
+    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil, replyToId: Int64? = nil) async -> Bool {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
         guard let currentUserId = currentUserId else { return false }
 
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
-        let tempMessage = Message(
+        var tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
-            replyToId: nil, content: content, type: "text",
+            replyToId: replyToId,   // сохраняем в локальном сообщении
+            content: content, type: "text",
             createdAt: Date(), updatedAt: Date(), deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil
         )
+
 
         // Временное вложение для локального отображения
         var localAttachment: Attachment? = nil
@@ -7308,62 +7313,54 @@ struct ChatListView: View {
     @State private var showChat = false
 
     var body: some View {
-        ZStack {
-            NavigationView {
-                mainContent
-                    .navigationTitle("Чаты")
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarLeading) {
-                            Button {
-                                withAnimation(.spring()) { showMenu.toggle() }
-                            } label: {
-                                Image(systemName: "line.horizontal.3")
-                                    .font(.title2)
-                            }
-                        }
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Menu {
-                                Button("Новый чат") { showCreateChat = true }
-                                Button("Присоединиться") { showJoinChat = true }
-                            } label: {
-                                Image(systemName: "plus")
-                            }
+        NavigationStack {
+            mainContent
+                .navigationTitle("Чаты")
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Button {
+                            withAnimation(.spring()) { showMenu.toggle() }
+                        } label: {
+                            Image(systemName: "line.horizontal.3")
+                                .font(.title2)
                         }
                     }
-                    .background(
-                        NavigationLink(destination: selectedChat.map { ChatView(chat: $0) }, isActive: $showChat) {
-                            EmptyView()
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Menu {
+                            Button("Новый чат") { showCreateChat = true }
+                            Button("Присоединиться") { showJoinChat = true }
+                        } label: {
+                            Image(systemName: "plus")
                         }
-                    )
-            }
-            .disabled(showMenu)
-            .blur(radius: showMenu ? 5 : 0)
-            .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
-                Task { await viewModel.loadChats() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-                print("🚨 .openChat received in ChatListView with object: \(notification.object ?? "nil")")
-                print("🔍 .openChat posted from:\n\(Thread.callStackSymbols.joined(separator: "\n"))")
-                if let chat = notification.object as? Chat {
-                    selectedChat = chat
-                    showChat = true
-                    if !viewModel.chats.contains(where: { $0.id == chat.id }) {
-                        viewModel.addChat(chat)
                     }
                 }
-            }
-            .sheet(isPresented: $showJoinChat) {
-                JoinChatView()
-            }
-
-            SideMenuView(isShowing: $showMenu)
-                .environmentObject(viewModel)
+                .navigationDestination(isPresented: $showChat) {
+                    if let chat = selectedChat {
+                        ChatView(chat: chat)
+                    }
+                }
         }
-        .onAppear {
+        .disabled(showMenu)
+        .blur(radius: showMenu ? 5 : 0)
+        .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
             Task { await viewModel.loadChats() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { _ in
+            Task { await viewModel.loadChats() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
+            // Открываем чат только если сайдбар закрыт
+            guard !AppState.shared.isSidebarOpen else { return }
+            if let chat = notification.object as? Chat {
+                selectedChat = chat
+                showChat = true
+                if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+                    viewModel.addChat(chat)
+                }
+            }
+        }
+        .sheet(isPresented: $showJoinChat) {
+            JoinChatView()
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
             TextField("Название", text: $newChatName)
@@ -7387,6 +7384,9 @@ struct ChatListView: View {
             Button("OK") { viewModel.errorMessage = nil }
         } message: {
             Text(viewModel.errorMessage ?? "")
+        }
+        .onAppear {
+            Task { await viewModel.loadChats() }
         }
     }
 
@@ -7412,10 +7412,14 @@ struct ChatListView: View {
             }
         } else {
             List(viewModel.chats) { chat in
-                NavigationLink(destination: ChatView(chat: chat)) {
-                    ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
-                }
-                .id(chat.id)
+                ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
+                    .onTapGesture {
+                        // Открываем чат только если сайдбар закрыт
+                        guard !AppState.shared.isSidebarOpen else { return }
+                        selectedChat = chat
+                        showChat = true
+                    }
+                    .id(chat.id)
             }
             .listStyle(PlainListStyle())
             .refreshable {
@@ -7425,7 +7429,7 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - ChatRow (с аватаркой для групп и каналов)
+// MARK: - ChatRow (без изменений)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -7434,7 +7438,6 @@ struct ChatRow: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Аватарка: для личных чатов – аватар контакта, для групп/каналов – avatarUrl или плейсхолдер
             if isPrivateChat {
                 AvatarView(urlString: chat.otherUserAvatarUrl, size: 50)
                     .overlay(
@@ -7444,11 +7447,9 @@ struct ChatRow: View {
                             .offset(x: 18, y: 18)
                     )
             } else {
-                // Группа или канал – используем avatarUrl чата
                 if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                     AvatarView(urlString: avatarUrl, size: 50)
                 } else {
-                    // Плейсхолдер в зависимости от типа чата
                     Circle()
                         .fill(chat.isGroup ? Color.blue.opacity(0.2) : Color.purple.opacity(0.2))
                         .frame(width: 50, height: 50)
@@ -7549,6 +7550,7 @@ struct MessageStatusIcon: View {
     }
 }
 
+
 ./FrontDip/MessengerApp/Views/Chat/ChatRow.swift
 
 
@@ -7561,7 +7563,8 @@ struct MessageStatusIcon: View {
 
 import SwiftUI
 
-// MARK: - ChatSidebarView
+
+
 struct ChatSidebarView: View {
     let chat: Chat
     @Environment(\.dismiss) var dismiss
@@ -7592,7 +7595,11 @@ struct ChatSidebarView: View {
             }
         }
         .onAppear {
+            AppState.shared.isSidebarOpen = true
             viewModel.loadMembers()
+        }
+        .onDisappear {
+            AppState.shared.isSidebarOpen = false
         }
         .onReceive(NotificationCenter.default.publisher(for: .chatUpdated)) { notification in
             if let updatedChat = notification.object as? Chat, updatedChat.id == chat.id {
@@ -7944,7 +7951,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
     
-    // Вложения и остальные состояния...
+    // Вложения
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -7962,11 +7969,18 @@ struct ChatView: View {
     @State private var typingTimer: Timer?
     @State private var isTyping = false
     
+    // Reply state
+    @State private var replyingToMessage: Message?
+    
     private var canSendMessage: Bool {
         if chat.isChannel {
             return viewModel.myRole == "owner" || viewModel.myRole == "admin"
         }
         return true
+    }
+    
+    private var canSend: Bool {
+        (!viewModel.newMessageText.isEmpty || selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil) && !isSending
     }
     
     init(chat: Chat) {
@@ -7976,7 +7990,7 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Заголовок (шапка) с аватаркой
+            // Header
             HStack(spacing: 12) {
                 Button {
                     presentationMode.wrappedValue.dismiss()
@@ -8018,7 +8032,6 @@ struct ChatView: View {
                     }
                     .buttonStyle(PlainButtonStyle())
                 } else {
-                    // Группа или канал – показываем аватарку чата и название
                     HStack(spacing: 8) {
                         if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
                             AvatarView(urlString: avatarUrl, size: 40)
@@ -8057,7 +8070,7 @@ struct ChatView: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground))
             
-            // Список сообщений (остаётся без изменений)
+            // Messages list
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -8075,6 +8088,9 @@ struct ChatView: View {
                                 onDelete: {
                                     selectedMessage = message
                                     showDeleteConfirmation = true
+                                },
+                                onReply: {
+                                    replyingToMessage = message
                                 }
                             )
                             .id(message.id)
@@ -8091,7 +8107,34 @@ struct ChatView: View {
             }
             .background(Color(.systemGroupedBackground))
             
-            // Поле ввода (остаётся без изменений)
+            // Reply preview bar
+            if let reply = replyingToMessage {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        let replySenderName = viewModel.getUser(for: reply.senderId)?.nickName ?? "Пользователь"
+                        Text("Ответ для \(replySenderName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(reply.content ?? (reply.attachments != nil ? "[Вложение]" : ""))
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button {
+                        replyingToMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(8)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+            }
+            
+            // Input area
             if canSendMessage {
                 HStack(spacing: 12) {
                     Button { showingActionSheet = true } label: {
@@ -8113,13 +8156,14 @@ struct ChatView: View {
                         ProgressView().frame(width: 32, height: 32)
                     } else {
                         Button {
-                            sendMessageWithAttachment()
+                            sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
+                            replyingToMessage = nil
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")
                                 .font(.system(size: 32))
-                                .foregroundColor((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) ? .gray : .blue)
+                                .foregroundColor(canSend ? .blue : .gray)
                         }
-                        .disabled((viewModel.newMessageText.isEmpty && selectedImage == nil && selectedVideoURL == nil && selectedDocumentURL == nil) || isSending)
+                        .disabled(!canSend)
                     }
                 }
                 .padding()
@@ -8176,8 +8220,8 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка с вложением (остаётся без изменений)
-    private func sendMessageWithAttachment() {
+    // MARK: - Send with attachment
+    private func sendMessageWithAttachment(replyToId: Int64? = nil) {
         Task {
             isSending = true
             isUploading = true
@@ -8235,7 +8279,8 @@ struct ChatView: View {
                 storagePath: storagePath,
                 fileName: fileName,
                 fileSize: fileSize,
-                mimeType: mimeType
+                mimeType: mimeType,
+                replyToId: replyToId
             )
             
             await MainActor.run {
@@ -8885,6 +8930,76 @@ struct VideoThumbnailView: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Common/AvaratView.swift
+
+//
+//  AvatarView.swift
+//  FrontDip
+//
+
+import SwiftUI
+
+struct AvatarView: View {
+    let urlString: String?
+    let size: CGFloat
+    @State private var image: UIImage?
+    
+    private var fullURL: URL? {
+        guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
+        // Приводим к нижнему регистру, чтобы избежать проблем с регистром в MinIO
+        let lowerPath = urlString.lowercased()
+        if lowerPath.hasPrefix("http") {
+            return URL(string: lowerPath)
+        }
+        let base = AppConfig.baseURL
+        let path = lowerPath.hasPrefix("/") ? String(lowerPath.dropFirst()) : lowerPath
+        return URL(string: base + "/media/" + path)
+    }
+    
+    var body: some View {
+        Group {
+            if let image = image {
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                placeholderView
+                    .onAppear {
+                        loadImage()
+                    }
+            }
+        }
+    }
+    
+    private func loadImage() {
+        guard let url = fullURL else { return }
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            if let error = error {
+                print("❌ Avatar load error: \(error.localizedDescription)")
+                return
+            }
+            guard let data = data, let uiImage = UIImage(data: data) else {
+                print("❌ Failed to decode image from data")
+                return
+            }
+            DispatchQueue.main.async {
+                self.image = uiImage
+            }
+        }.resume()
+    }
+    
+    private var placeholderView: some View {
+        Circle()
+            .fill(Color.gray.opacity(0.3))
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: "person")
+                    .foregroundColor(.gray)
+            )
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/EmptyStateView.swift
 
 
@@ -9024,10 +9139,9 @@ struct SearchResultRow: View {
 //  SideMenuView.swift
 //  FrontDip
 //
-//
 
 import SwiftUI
-
+import Foundation
 struct SideMenuView: View {
     @Binding var isShowing: Bool
     @EnvironmentObject var viewModel: ChatListViewModel
@@ -9120,6 +9234,12 @@ struct SideMenuView: View {
             }
         }
         .animation(.spring(), value: isShowing)
+        .onAppear {
+            AppState.shared.isSidebarOpen = true
+        }
+        .onDisappear {
+            AppState.shared.isSidebarOpen = false
+        }
         .sheet(isPresented: $showContacts) {
             ContactsView()
                 .environmentObject(ContactService.shared)
@@ -9144,65 +9264,6 @@ struct SideMenuView: View {
     }
 }
 
-// AvatarView.swift – полный код с исправлениями
-
-import SwiftUI
-
-
-struct AvatarView: View {
-    let urlString: String?
-    let size: CGFloat
-    @State private var image: UIImage?
-    
-    private var fullURL: URL? {
-        guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
-        let lowerPath = urlString.lowercased()
-        if lowerPath.lowercased().hasPrefix("http") {
-            return URL(string: lowerPath)
-        }
-        let base = AppConfig.baseURL
-        let path = lowerPath.hasPrefix("/") ? String(lowerPath.dropFirst()) : lowerPath
-        return URL(string: base + "/media/" + path)
-    }
-    
-    var body: some View {
-        Group {
-            if let image = image {
-                Image(uiImage: image)
-                    .resizable()
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
-            } else {
-                placeholderView
-                    .onAppear { loadImage() }
-            }
-        }
-    }
-    
-    private func loadImage() {
-        guard let url = fullURL else { return }
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            if let error = error {
-                print("❌ Avatar load error: \(error)")
-                return
-            }
-            guard let data = data, let uiImage = UIImage(data: data) else { return }
-            DispatchQueue.main.async {
-                self.image = uiImage
-            }
-        }.resume()
-    }
-    
-    private var placeholderView: some View {
-        Circle()
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: "person")
-                    .foregroundColor(.gray)
-            )
-    }
-}
 struct MenuItem: View {
     let icon: String
     let title: String
@@ -9597,12 +9658,13 @@ struct ContactRow: View {
 import SwiftUI
 
 struct MessageBubbleView: View {
-    var message: Message
+    let message: Message
     let isCurrentUser: Bool
     let senderUser: User?
     @ObservedObject var viewModel: ChatViewModel
     let onEdit: (() -> Void)?
     let onDelete: (() -> Void)?
+    let onReply: (() -> Void)?
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -9703,11 +9765,21 @@ struct MessageBubbleView: View {
                 viewModel.markMessageAsReadIfNeeded(messageId: message.messageId)
             }
         }
+        // Swipe gesture for reply
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    if value.translation.width > 50 && value.startLocation.x < 50 {
+                        onReply?()
+                    }
+                }
+        )
         .confirmationDialog("Действия с сообщением", isPresented: $showMenu, titleVisibility: .visible) {
             if isCurrentUser {
                 Button("Редактировать") { onEdit?() }
                 Button("Удалить", role: .destructive) { onDelete?() }
             }
+            Button("Ответить") { onReply?() }
             Button("Добавить реакцию") { showReactionPicker = true }
             Button("Отмена", role: .cancel) { }
         }
@@ -9761,7 +9833,6 @@ struct MessageBubbleView: View {
         }
         .padding(.top, 2)
     }
-
     
     private func toggleReaction(emoji: String) {
         Task {

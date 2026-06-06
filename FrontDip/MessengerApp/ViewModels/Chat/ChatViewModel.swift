@@ -201,26 +201,29 @@ class ChatViewModel: ObservableObject {
             return []
         }
     }
-    
+    private func removeDuplicateMessages(_ messages: [Message]) -> [Message] {
+        var seen = Set<Int64>()
+        return messages.filter { seen.insert($0.messageId).inserted }
+    }
     // MARK: - Загрузка сообщений (кэш + сеть)
     func loadMessages() {
         Task {
-            // 1. Быстрый показ из кэша (для мгновенного отображения)
             let cached = await loadMessagesFromDatabase()
+            let uniqueCached = removeDuplicateMessages(cached)
             await MainActor.run {
                 self.messages = cached
+                self.enrichMessagesWithReplies()
                 self.objectWillChange.send()
                 self.markVisibleMessagesAsRead()
             }
-            
-            // 2. Загружаем свежие данные с сервера – ПОЛНОСТЬЮ ЗАМЕНЯЕМ
+
             do {
                 let freshMessages = try await fetchMessagesFromServer()
                 let sortedFresh = freshMessages.sorted { $0.createdAt < $1.createdAt }
+                let uniqueFresh = removeDuplicateMessages(sortedFresh)
                 await MainActor.run {
-                    // Заменяем массив, не сливая
                     self.messages = sortedFresh
-                    // Перезаписываем БД актуальными данными
+                    self.enrichMessagesWithReplies()
                     self.saveMessagesToDatabase(freshMessages)
                     self.objectWillChange.send()
                     self.markVisibleMessagesAsRead()
@@ -576,15 +579,19 @@ class ChatViewModel: ObservableObject {
     }
     
     // MARK: - Send message
-    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil) async -> Bool {
+    // ChatViewModel.swift – исправленный метод sendMessage
+    // Остальная часть класса не изменяется
+
+    func sendMessage(attachmentId: UUID? = nil, storagePath: String? = nil, fileName: String? = nil, fileSize: Int? = nil, mimeType: String? = nil, replyToId: Int64? = nil) async -> Bool {
         let content = newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
         guard let currentUserId = currentUserId else { return false }
 
         let tempId = Int64(Date().timeIntervalSince1970 * -1000)
-        let tempMessage = Message(
+        var tempMessage = Message(
             messageId: tempId, chatId: chat.id, senderId: currentUserId,
-            replyToId: nil, content: content, type: "text",
+            replyToId: replyToId,
+            content: content, type: "text",
             createdAt: Date(), updatedAt: Date(), deletedAt: nil,
             isEdited: false, deliveredAt: nil, readAt: nil
         )
@@ -599,7 +606,7 @@ class ChatViewModel: ObservableObject {
                 mimeType: mimeType,
                 storagePath: storage,
                 uploadedAt: Date(),
-                messageCreatedAt: nil 
+                messageCreatedAt: nil
             )
             var msgWithAtt = tempMessage
             msgWithAtt.attachments = [localAttachment!]
@@ -621,31 +628,31 @@ class ChatViewModel: ObservableObject {
             if let aid = attachmentId {
                 variables["attachmentId"] = aid.uuidString
             }
+            // ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ – добавляем replyToId
+            if let replyId = replyToId {
+                variables["replyToId"] = Int(replyId)
+            }
+
             let response: SendMessageResponse = try await graphQL.perform(
                 query: GraphQLQueries.sendMessage,
                 variables: variables,
                 responseType: SendMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            let realMsg = response.message.sendMessage   // теперь содержит attachments
+            let realMsg = response.message.sendMessage
 
             await MainActor.run {
                 if let index = self.messages.firstIndex(where: { $0.messageId == tempId }) {
                     self.messages[index] = realMsg
+                    self.enrichMessagesWithReplies()
                     _ = self.database.saveMessage(realMsg)
                     if let attachments = realMsg.attachments, !attachments.isEmpty {
                         _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
                     }
                     self.objectWillChange.send()
+                    self.enrichMessageWithReplyIfNeeded(realMsg)
                 }
             }
-
-            // 🚫 Удаляем этот блок (дополнительный fetch через 1.5 секунды)
-            // Task {
-            //     try? await Task.sleep(nanoseconds: 1_500_000_000)
-            //     if let fullMsg = await self.fetchMessage(byId: realMessageId) { ... }
-            // }
-
             return true
         } catch {
             await MainActor.run {
@@ -655,6 +662,91 @@ class ChatViewModel: ObservableObject {
             }
             return false
         }
+    }
+    // MARK: - Scroll to message with highlight
+    func scrollToMessage(messageId: Int64, completion: @escaping () -> Void) {
+        if messages.contains(where: { $0.messageId == messageId }) {
+            completion()
+            return
+        }
+        
+        if let message = database.getMessage(byId: messageId, chatId: chat.id) {
+            DispatchQueue.main.async {
+                self.messages.append(message)
+                self.messages.sort { $0.createdAt < $1.createdAt }
+                self.objectWillChange.send()
+                completion()
+            }
+            return
+        }
+        
+        Task {
+            if let message = await fetchMessage(byId: messageId) {
+                await MainActor.run {
+                    if !self.messages.contains(where: { $0.messageId == message.messageId }) {
+                        self.messages.append(message)
+                        self.messages.sort { $0.createdAt < $1.createdAt }
+                        _ = self.database.saveMessage(message)
+                        self.objectWillChange.send()
+                    }
+                    completion()
+                }
+            }
+        }
+    }
+
+    // MARK: - Enrich messages with reply data
+    private func enrichMessagesWithReplies() {
+        var dict = [Int64: Message]()
+        for msg in messages {
+            dict[msg.messageId] = msg
+        }
+        for i in 0..<messages.count {
+            if let replyId = messages[i].replyToId, let parent = dict[replyId] {
+                messages[i].replyToContent = parent.content ?? (parent.attachments != nil ? "[Вложение]" : "")
+            } else {
+                messages[i].replyToContent = nil
+            }
+        }
+    }
+
+    private func enrichMessageWithReplyIfNeeded(_ message: Message) {
+        guard let replyId = message.replyToId else { return }
+        
+        if let parent = messages.first(where: { $0.messageId == replyId }) {
+            updateReplyFields(for: message, with: parent)
+            return
+        }
+        
+        if let parent = database.getMessage(byId: replyId, chatId: chat.id) {
+            updateReplyFields(for: message, with: parent)
+            if !messages.contains(where: { $0.messageId == parent.messageId }) {
+                messages.append(parent)
+                messages.sort { $0.createdAt < $1.createdAt }
+                _ = database.saveMessage(parent)
+            }
+            return
+        }
+        
+        Task {
+            if let parent = await fetchMessage(byId: replyId) {
+                await MainActor.run {
+                    if !self.messages.contains(where: { $0.messageId == parent.messageId }) {
+                        self.messages.append(parent)
+                        self.messages.sort { $0.createdAt < $1.createdAt }
+                        _ = self.database.saveMessage(parent)
+                    }
+                    self.updateReplyFields(for: message, with: parent)
+                    self.objectWillChange.send()
+                }
+            }
+        }
+    }
+
+    private func updateReplyFields(for message: Message, with parent: Message) {
+        guard let index = messages.firstIndex(where: { $0.messageId == message.messageId }) else { return }
+        messages[index].replyToContent = parent.content ?? (parent.attachments != nil ? "[Вложение]" : "")
+        objectWillChange.send()
     }
 
     // Вспомогательный метод (добавить в конец класса)
@@ -808,21 +900,25 @@ class ChatViewModel: ObservableObject {
     
     private func addMessage(_ message: Message) {
         DispatchQueue.main.async {
+            guard !self.messages.contains(where: { $0.messageId == message.messageId }) else {
+                        print("⚠️ Duplicate message \(message.messageId) ignored")
+                        return
+                    }
             if !self.messages.contains(where: { $0.messageId == message.messageId }) {
                 var newMessages = self.messages
                 newMessages.append(message)
                 newMessages.sort(by: { $0.createdAt < $1.createdAt })
                 self.messages = newMessages
+                self.enrichMessagesWithReplies()
                 _ = self.database.saveMessage(message)
                 if let attachments = message.attachments, !attachments.isEmpty {
                     _ = self.database.saveAttachments(attachments, for: message.messageId, messageCreatedAt: message.createdAt)
                 }
                 if let reactions = message.reactions {
-                    for reaction in reactions {
-                        _ = self.database.saveReaction(reaction)
-                    }
+                    for reaction in reactions { _ = self.database.saveReaction(reaction) }
                 }
                 self.objectWillChange.send()
+                self.enrichMessageWithReplyIfNeeded(message)
             }
         }
     }
@@ -844,6 +940,7 @@ class ChatViewModel: ObservableObject {
             print("Failed to refresh user status: \(error)")
         }
     }
+   
 }
 
 private struct EmptyResponse: Decodable {}
