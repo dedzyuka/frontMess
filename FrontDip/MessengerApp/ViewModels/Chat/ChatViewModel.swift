@@ -696,7 +696,8 @@ class ChatViewModel: ObservableObject {
                      replyToId: Int64? = nil,
                      forwardedFromUserId: UUID? = nil,
                      forwardedFromNickname: String? = nil,
-                     customContent: String? = nil) async -> Bool {
+                     customContent: String? = nil,
+                     isCircular: Bool? = nil) async -> Bool {
         
         let content = (customContent ?? newMessageText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
@@ -712,6 +713,7 @@ class ChatViewModel: ObservableObject {
         )
         tempMessage.forwardedFromUserId = forwardedFromUserId
         tempMessage.forwardedFromNickname = forwardedFromNickname
+        
         
         if let aid = attachmentId, let fname = fileName, let storage = storagePath {
             let localAttachment = Attachment(
@@ -758,6 +760,9 @@ class ChatViewModel: ObservableObject {
             if let forwardNick = forwardedFromNickname {
                 variables["forwardedFromNickname"] = forwardNick
             }
+            if let isCircular = isCircular {
+                    variables["isCircular"] = isCircular
+                }
             
             let response: SendMessageResponse = try await graphQL.perform(
                 query: GraphQLQueries.sendMessage,
@@ -768,14 +773,36 @@ class ChatViewModel: ObservableObject {
             let realMsg = response.message.sendMessage
             
             await MainActor.run {
-                self.messages.removeAll { $0.messageId == tempId }
-                self.messages.append(realMsg)
+                // Проверяем, не добавлено ли уже сообщение через WebSocket
+                if let existingIndex = self.messages.firstIndex(where: { $0.messageId == realMsg.messageId }) {
+                    // Обновляем существующее сообщение, но не перезаписываем вложения
+                    var updatedMsg = self.messages[existingIndex]
+                    updatedMsg.content = realMsg.content
+                    updatedMsg.updatedAt = realMsg.updatedAt
+                    updatedMsg.isEdited = realMsg.isEdited
+                    // Не трогаем attachments – оставляем те, что пришли из WebSocket (с true)
+                    self.messages[existingIndex] = updatedMsg
+                } else {
+                    // Если сообщения ещё нет – удаляем временное и добавляем реальное
+                    self.messages.removeAll { $0.messageId == tempId }
+                    self.messages.append(realMsg)
+                }
+                
                 self.messages.sort { $0.createdAt < $1.createdAt }
                 self.enrichMessagesWithReplies()
                 _ = self.database.saveMessage(realMsg)
+                
+                // Сохраняем вложения, только если их ещё нет в БД
                 if let attachments = realMsg.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
+                    for attachment in attachments {
+                        if !self.database.attachmentExists(attachment.attachmentId) {
+                            _ = self.database.saveAttachments([attachment], for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
+                        } else {
+                            print("⚠️ Attachment \(attachment.attachmentId) already exists, skipping save")
+                        }
+                    }
                 }
+                
                 self.objectWillChange.send()
                 self.enrichMessageWithReplyIfNeeded(realMsg)
                 self.newMessageText = ""

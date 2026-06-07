@@ -473,6 +473,7 @@ class LocalDatabase {
         do {
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
+                print("💾 Saving attachment \(att.attachmentId) with isCircular=\(att.isCircular ?? false)")
                 try db.run(attachmentsTable.insert(
                     attId <- att.attachmentId,
                     attMessageId <- messageId,
@@ -494,6 +495,16 @@ class LocalDatabase {
             return false
         }
     }
+    func attachmentExists(_ attachmentId: UUID) -> Bool {
+        guard let db = db else { return false }
+        let query = attachmentsTable.filter(attId == attachmentId)
+        do {
+            return try db.scalar(query.count) > 0
+        } catch {
+            print("❌ attachmentExists error: \(error)")
+            return false
+        }
+    }
     
     func getAttachments(for messageId: Int64) -> [Attachment] {
         guard let db = db else { return [] }
@@ -501,6 +512,7 @@ class LocalDatabase {
         do {
             var attachments: [Attachment] = []
             for row in try db.prepare(query) {
+                print("📀 Read attachment \(row[attId]) isCircular=\(row[attIsCircular])")
                 let att = Attachment(
                     attachmentId: row[attId],
                     fileName: row[attFileName],

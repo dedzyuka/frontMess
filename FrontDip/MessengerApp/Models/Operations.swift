@@ -161,6 +161,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular    
                 }
                 reactions {
                     messageId
@@ -190,6 +194,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular  
                 }
                 reactions {
                     messageId
@@ -205,9 +213,9 @@ struct GraphQLQueries {
 
     // В файле GraphQLQueries.swift
     static let sendMessage = """
-        mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String) {
+        mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String, $isCircular: Boolean) {
             message {
-                sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId, forwardedFromUserId: $forwardedFromUserId, forwardedFromNickname: $forwardedFromNickname) {
+                sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId, forwardedFromUserId: $forwardedFromUserId, forwardedFromNickname: $forwardedFromNickname, isCircular: $isCircular) {
                     messageId
                     chatId
                     senderId
@@ -225,6 +233,10 @@ struct GraphQLQueries {
                         fileSize
                         mimeType
                         storagePath
+                        duration
+                        waveform
+                        thumbnailUrl
+                        isCircular
                     }
                     reactions {
                         messageId
@@ -427,6 +439,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular  
                 }
                 reactions {
                     messageId
@@ -676,7 +692,7 @@ struct Tokens: Decodable {
 
 // Models.swift (фрагмент)
 // Models.swift (только структура Attachment, остальное без изменений)
-struct Attachment: Codable {
+struct Attachment: Codable, Identifiable {
     let attachmentId: UUID
     let fileName: String
     let fileSize: Int?
@@ -689,6 +705,8 @@ struct Attachment: Codable {
     let thumbnailUrl: String?
     let isCircular: Bool?
     
+    var id: UUID { attachmentId }
+    
     enum CodingKeys: String, CodingKey {
         case attachmentId
         case fileName
@@ -696,11 +714,11 @@ struct Attachment: Codable {
         case mimeType
         case storagePath
         case uploadedAt
-        case messageCreatedAt = "message_created_at"
+        case messageCreatedAt = "messageCreatedAt"
         case duration
         case waveform
-        case thumbnailUrl = "thumbnail_url"
-        case isCircular = "is_circular"
+        case thumbnailUrl = "thumbnailUrl"
+        case isCircular = "isCircular"
     }
     
     // Инициализатор для ручного создания (например, из WebSocket)

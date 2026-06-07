@@ -30,7 +30,6 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
-                // Аватар показываем только в групповых чатах/каналах
                 if !isPrivateChat {
                     NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                         AvatarView(urlString: senderUser?.avatarUrl, size: 32)
@@ -39,14 +38,12 @@ struct MessageBubbleView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    // Имя отправителя тоже показываем только в не-приватных чатах
                     if !isPrivateChat, let nickname = senderUser?.nickName, !nickname.isEmpty {
                         Text(nickname)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 12)
                     }
-                    
                     
                     messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
@@ -149,8 +146,7 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            // === Блок "От: ..." для пересланного сообщения (кликабельный) ===
-            // В messageContentView
+            // Пересланное сообщение
             if let forwardUserId = message.forwardedFromUserId, let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
                 Button {
                     let profileView = UserProfileView(userId: forwardUserId)
@@ -172,7 +168,7 @@ struct MessageBubbleView: View {
                 .padding(.top, 4)
             }
             
-            // Цитата родительского сообщения
+            // Цитата
             if let replyContent = message.replyToContent, !replyContent.isEmpty {
                 Button {
                     if let replyId = message.replyToId {
@@ -200,17 +196,28 @@ struct MessageBubbleView: View {
             
             // Вложения и текст
             if let attachments = message.attachments, !attachments.isEmpty {
-                ForEach(attachments, id: \.attachmentId) { attachment in
-                    if message.type == "voice" || attachment.mimeType?.hasPrefix("audio/") == true {
-                        VoiceMessageBubble(attachment: attachment, isCurrentUser: isCurrentUser)
-                    } else if attachment.mimeType?.hasPrefix("video/") == true {
-                        // Если видео короткое (≤60 сек) – показываем как кружок, иначе как обычный файл
-                        let isShortVideo = (attachment.duration ?? 0) <= 60
-                        if isShortVideo {
+                ForEach(attachments.indices, id: \.self) { index in
+                    let attachment = attachments[index]
+                    
+                    // Логирование через невидимую вьюху
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .onAppear {
+                            print("🔍 Attachment #\(index): mimeType=\(attachment.mimeType ?? "nil"), isCircular=\(attachment.isCircular ?? false)")
+                            if attachment.mimeType?.hasPrefix("video/") == true {
+                                print("🎬 Video detected, isCircular=\(attachment.isCircular ?? false)")
+                            }
+                        }
+                    
+                    // Отображение вложения
+                    if attachment.mimeType?.hasPrefix("video/") == true {
+                        if attachment.isCircular == true {
                             CircularVideoView(attachment: attachment)
                         } else {
                             AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
                         }
+                    } else if attachment.mimeType?.hasPrefix("audio/") == true {
+                        VoiceMessageBubble(attachment: attachment, isCurrentUser: isCurrentUser)
                     } else {
                         AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
                     }

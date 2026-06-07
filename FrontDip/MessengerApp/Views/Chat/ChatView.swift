@@ -573,12 +573,13 @@ struct ChatView: View {
             print("📹 Upload success, attachmentId: \(result.attachmentId)")
             
             let success = await viewModel.sendMessage(
-                attachmentId: result.attachmentId,
-                storagePath: result.storagePath,
-                fileName: url.lastPathComponent,
-                fileSize: nil,
-                mimeType: "video/mp4",
-                replyToId: replyingToMessage?.messageId
+                    attachmentId: result.attachmentId,
+                    storagePath: result.storagePath,
+                    fileName: url.lastPathComponent,
+                    fileSize: nil,
+                    mimeType: "video/mp4",
+                    replyToId: replyingToMessage?.messageId,
+                    isCircular: true
             )
             print("📹 sendMessage success: \(success)")
             if success {

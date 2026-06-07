@@ -5,12 +5,14 @@ import SwiftUI
 struct MessengerApp: App {
     @StateObject private var appState = AppState.shared
     @StateObject private var contactService = ContactService.shared
+    @StateObject private var activeVideoManager = ActiveVideoManager.shared   // новая строка
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
                 .environmentObject(contactService)
+                .environmentObject(activeVideoManager)
                 .preferredColorScheme(.light)
         }
     }

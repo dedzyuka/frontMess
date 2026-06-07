@@ -1,10 +1,9 @@
 ./FrontDip/MessengerApp/App/AppConfig.swift
 
-// App/AppConfig.swift
 import Foundation
 
 struct AppConfig {
-    static let baseURL = "http://localhost:8002"
+    static let baseURL = "http://192.168.100.247:8002"
     static let graphqlPath = "/graphql"
     static let websocketPath = "/ws/chat"
     
@@ -13,7 +12,7 @@ struct AppConfig {
     }
     
     static var websocketURL: URL {
-        URL(string: "ws://localhost:8000" + websocketPath)!
+        URL(string: "ws://192.168.100.247:8000" + websocketPath)!
     }
 }
 
@@ -62,12 +61,14 @@ import SwiftUI
 struct MessengerApp: App {
     @StateObject private var appState = AppState.shared
     @StateObject private var contactService = ContactService.shared
+    @StateObject private var activeVideoManager = ActiveVideoManager.shared   // новая строка
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
                 .environmentObject(contactService)
+                .environmentObject(activeVideoManager)
                 .preferredColorScheme(.light)
         }
     }
@@ -1084,10 +1085,11 @@ struct GraphQLQueries {
     """
     
 
+    // В файле GraphQLQueries.swift
     static let sendMessage = """
-        mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String) {
+        mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String, $isCircular: Boolean) {
             message {
-                sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId, forwardedFromUserId: $forwardedFromUserId, forwardedFromNickname: $forwardedFromNickname) {
+                sendMessage(chatId: $chatId, content: $content, attachmentId: $attachmentId, replyToId: $replyToId, forwardedFromUserId: $forwardedFromUserId, forwardedFromNickname: $forwardedFromNickname, isCircular: $isCircular) {
                     messageId
                     chatId
                     senderId
@@ -1105,6 +1107,16 @@ struct GraphQLQueries {
                         fileSize
                         mimeType
                         storagePath
+                        duration
+                        waveform
+                        thumbnailUrl
+                        isCircular
+                    }
+                    reactions {
+                        messageId
+                        userId
+                        emoji
+                        createdAt
                     }
                 }
             }
@@ -1550,14 +1562,20 @@ struct Tokens: Decodable {
 
 // Models.swift (фрагмент)
 // Models.swift (только структура Attachment, остальное без изменений)
-struct Attachment: Codable {
+struct Attachment: Codable, Identifiable {
     let attachmentId: UUID
     let fileName: String
     let fileSize: Int?
     let mimeType: String?
     let storagePath: String
     let uploadedAt: Date?
-    let messageCreatedAt: Date?      // новое поле
+    let messageCreatedAt: Date?
+    let duration: Int?
+    let waveform: String?
+    let thumbnailUrl: String?
+    let isCircular: Bool?
+    
+    var id: UUID { attachmentId }
     
     enum CodingKeys: String, CodingKey {
         case attachmentId
@@ -1567,6 +1585,35 @@ struct Attachment: Codable {
         case storagePath
         case uploadedAt
         case messageCreatedAt = "message_created_at"
+        case duration
+        case waveform
+        case thumbnailUrl = "thumbnail_url"
+        case isCircular = "is_circular"
+    }
+    
+    // Инициализатор для ручного создания (например, из WebSocket)
+    init(attachmentId: UUID,
+         fileName: String,
+         fileSize: Int? = nil,
+         mimeType: String? = nil,
+         storagePath: String,
+         uploadedAt: Date? = nil,
+         messageCreatedAt: Date? = nil,
+         duration: Int? = nil,
+         waveform: String? = nil,
+         thumbnailUrl: String? = nil,
+         isCircular: Bool? = nil) {
+        self.attachmentId = attachmentId
+        self.fileName = fileName
+        self.fileSize = fileSize
+        self.mimeType = mimeType
+        self.storagePath = storagePath
+        self.uploadedAt = uploadedAt
+        self.messageCreatedAt = messageCreatedAt
+        self.duration = duration
+        self.waveform = waveform
+        self.thumbnailUrl = thumbnailUrl
+        self.isCircular = isCircular
     }
 }
 
@@ -1862,6 +1909,10 @@ class LocalDatabase {
     private let attStoragePath = Expression<String>("storage_path")
     private let attUploadedAt = Expression<Date?>("uploaded_at")
     private let attMessageCreatedAt = Expression<Date?>("message_created_at")
+    private let attDuration = Expression<Int?>("duration")
+    private let attWaveform = Expression<String?>("waveform")
+    private let attThumbnailUrl = Expression<String?>("thumbnail_url")
+    private let attIsCircular = Expression<Bool>("is_circular")
     
     // === Message Statuses columns ===
     private let msMessageId = Expression<Int64>("message_id")
@@ -1948,7 +1999,11 @@ class LocalDatabase {
                 t.column(attStoragePath)
                 t.column(attUploadedAt)
                 t.column(attMessageCreatedAt)
-                t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
+                // НОВЫЕ КОЛОНКИ
+                t.column(attDuration)
+                t.column(attWaveform)
+                t.column(attThumbnailUrl)
+                t.column(attIsCircular)
             })
             
             try db?.run(messageStatusesTable.create(ifNotExists: true) { t in
@@ -2251,6 +2306,7 @@ class LocalDatabase {
         do {
             try db.run(attachmentsTable.filter(attMessageId == messageId).delete())
             for att in attachments {
+                print("💾 Saving attachment \(att.attachmentId) with isCircular=\(att.isCircular ?? false)")
                 try db.run(attachmentsTable.insert(
                     attId <- att.attachmentId,
                     attMessageId <- messageId,
@@ -2259,12 +2315,26 @@ class LocalDatabase {
                     attFileSize <- att.fileSize,
                     attMimeType <- att.mimeType,
                     attStoragePath <- att.storagePath,
-                    attUploadedAt <- att.uploadedAt ?? Date()
+                    attUploadedAt <- att.uploadedAt ?? Date(),
+                    attDuration <- att.duration,
+                    attWaveform <- att.waveform,
+                    attThumbnailUrl <- att.thumbnailUrl,
+                    attIsCircular <- att.isCircular ?? false
                 ))
             }
             return true
         } catch {
             print("❌ saveAttachments error: \(error)")
+            return false
+        }
+    }
+    func attachmentExists(_ attachmentId: UUID) -> Bool {
+        guard let db = db else { return false }
+        let query = attachmentsTable.filter(attId == attachmentId)
+        do {
+            return try db.scalar(query.count) > 0
+        } catch {
+            print("❌ attachmentExists error: \(error)")
             return false
         }
     }
@@ -2275,6 +2345,7 @@ class LocalDatabase {
         do {
             var attachments: [Attachment] = []
             for row in try db.prepare(query) {
+                print("📀 Read attachment \(row[attId]) isCircular=\(row[attIsCircular])")
                 let att = Attachment(
                     attachmentId: row[attId],
                     fileName: row[attFileName],
@@ -2282,7 +2353,11 @@ class LocalDatabase {
                     mimeType: row[attMimeType],
                     storagePath: row[attStoragePath],
                     uploadedAt: row[attUploadedAt],
-                    messageCreatedAt: row[attMessageCreatedAt]
+                    messageCreatedAt: row[attMessageCreatedAt],
+                    duration: row[attDuration],
+                    waveform: row[attWaveform],
+                    thumbnailUrl: row[attThumbnailUrl],
+                    isCircular: row[attIsCircular]
                 )
                 attachments.append(att)
             }
@@ -4079,6 +4154,12 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                    let attachmentId = UUID(uuidString: attachmentIdString),
                    let fileName = attDict["file_name"] as? String,
                    let storagePath = attDict["storage_path"] as? String {
+                    
+                    let duration = attDict["duration"] as? Int
+                    let waveform = attDict["waveform"] as? String
+                    let thumbnailUrl = attDict["thumbnail_url"] as? String
+                    let isCircular = attDict["is_circular"] as? Bool
+                    
                     let attachment = Attachment(
                         attachmentId: attachmentId,
                         fileName: fileName,
@@ -4086,9 +4167,15 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
                         uploadedAt: Date(),
-                        messageCreatedAt: createdAt
+                        messageCreatedAt: createdAt,
+                        duration: attDict["duration"] as? Int,
+                        waveform: attDict["waveform"] as? String,
+                        thumbnailUrl: attDict["thumbnail_url"] as? String,
+                        isCircular: attDict["is_circular"] as? Bool
                     )
+                    print("📎 New attachment from WebSocket: isCircular = \(attachment.isCircular ?? false)")
                     attachments.append(attachment)
+                    
                 }
             }
         }
@@ -4103,6 +4190,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             )
 
         if !LocalDatabase.shared.messageExists(messageId) {
+            print("💾 About to save message \(message.messageId), attachment isCircular=\(attachments.first?.isCircular ?? false)")
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
                 _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
@@ -6247,7 +6335,7 @@ class ChatViewModel: ObservableObject {
         return usersCache[senderId]
     }
     
-    // MARK: - Send message (с поддержкой pending forward)
+    // MARK: - Send message (с поддержкой pending forward и медиа-типов)
     func sendMessage(attachmentId: UUID? = nil,
                      storagePath: String? = nil,
                      fileName: String? = nil,
@@ -6256,7 +6344,8 @@ class ChatViewModel: ObservableObject {
                      replyToId: Int64? = nil,
                      forwardedFromUserId: UUID? = nil,
                      forwardedFromNickname: String? = nil,
-                     customContent: String? = nil) async -> Bool {
+                     customContent: String? = nil,
+                     isCircular: Bool? = nil) async -> Bool {
         
         let content = (customContent ?? newMessageText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || attachmentId != nil else { return false }
@@ -6273,6 +6362,7 @@ class ChatViewModel: ObservableObject {
         tempMessage.forwardedFromUserId = forwardedFromUserId
         tempMessage.forwardedFromNickname = forwardedFromNickname
         
+        
         if let aid = attachmentId, let fname = fileName, let storage = storagePath {
             let localAttachment = Attachment(
                 attachmentId: aid,
@@ -6281,7 +6371,11 @@ class ChatViewModel: ObservableObject {
                 mimeType: mimeType,
                 storagePath: storage,
                 uploadedAt: Date(),
-                messageCreatedAt: nil
+                messageCreatedAt: nil,
+                duration: nil,
+                waveform: nil,
+                thumbnailUrl: nil,
+                isCircular: nil
             )
             tempMessage.attachments = [localAttachment]
             await MainActor.run {
@@ -6314,6 +6408,9 @@ class ChatViewModel: ObservableObject {
             if let forwardNick = forwardedFromNickname {
                 variables["forwardedFromNickname"] = forwardNick
             }
+            if let isCircular = isCircular {
+                    variables["isCircular"] = isCircular
+                }
             
             let response: SendMessageResponse = try await graphQL.perform(
                 query: GraphQLQueries.sendMessage,
@@ -6324,14 +6421,36 @@ class ChatViewModel: ObservableObject {
             let realMsg = response.message.sendMessage
             
             await MainActor.run {
-                self.messages.removeAll { $0.messageId == tempId }
-                self.messages.append(realMsg)
+                // Проверяем, не добавлено ли уже сообщение через WebSocket
+                if let existingIndex = self.messages.firstIndex(where: { $0.messageId == realMsg.messageId }) {
+                    // Обновляем существующее сообщение, но не перезаписываем вложения
+                    var updatedMsg = self.messages[existingIndex]
+                    updatedMsg.content = realMsg.content
+                    updatedMsg.updatedAt = realMsg.updatedAt
+                    updatedMsg.isEdited = realMsg.isEdited
+                    // Не трогаем attachments – оставляем те, что пришли из WebSocket (с true)
+                    self.messages[existingIndex] = updatedMsg
+                } else {
+                    // Если сообщения ещё нет – удаляем временное и добавляем реальное
+                    self.messages.removeAll { $0.messageId == tempId }
+                    self.messages.append(realMsg)
+                }
+                
                 self.messages.sort { $0.createdAt < $1.createdAt }
                 self.enrichMessagesWithReplies()
                 _ = self.database.saveMessage(realMsg)
+                
+                // Сохраняем вложения, только если их ещё нет в БД
                 if let attachments = realMsg.attachments, !attachments.isEmpty {
-                    _ = self.database.saveAttachments(attachments, for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
+                    for attachment in attachments {
+                        if !self.database.attachmentExists(attachment.attachmentId) {
+                            _ = self.database.saveAttachments([attachment], for: realMsg.messageId, messageCreatedAt: realMsg.createdAt)
+                        } else {
+                            print("⚠️ Attachment \(attachment.attachmentId) already exists, skipping save")
+                        }
+                    }
                 }
+                
                 self.objectWillChange.send()
                 self.enrichMessageWithReplyIfNeeded(realMsg)
                 self.newMessageText = ""
@@ -8398,6 +8517,7 @@ extension Notification.Name {
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
 import SwiftUI
+import AVFoundation
 
 struct ChatView: View {
     let chat: Chat
@@ -8427,7 +8547,13 @@ struct ChatView: View {
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
-    // Сохраняем ScrollViewProxy для использования в onReceive
+    
+    // NEW: dynamic send button
+    @State private var sendButtonMode: SendButtonMode = .video
+    @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "video"
+    @State private var showingVoiceRecorder = false
+    @State private var showingVideoRecorder = false
+    
     @State private var scrollProxy: ScrollViewProxy?
     
     private var canSendMessage: Bool {
@@ -8443,6 +8569,16 @@ struct ChatView: View {
          selectedVideoURL != nil ||
          selectedDocumentURL != nil ||
          viewModel.pendingForward?.attachmentId != nil) && !isSending
+    }
+    
+    private var shouldShowSend: Bool {
+        !viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil ||
+        viewModel.pendingForward != nil
+    }
+    
+    enum SendButtonMode: String {
+        case video, audio, send
     }
     
     init(chat: Chat) {
@@ -8494,6 +8630,20 @@ struct ChatView: View {
                 forwardMessage = nil
             }
         }
+        .sheet(isPresented: $showingVoiceRecorder) {
+            VoiceRecorderView { url, duration, waveform in
+                Task {
+                    await sendVoiceMessage(url: url, duration: duration, waveform: waveform)
+                }
+            }
+        }
+        .sheet(isPresented: $showingVideoRecorder) {
+            VideoRecorderView { url in
+                Task {
+                    await sendCircularVideo(url: url)
+                }
+            }
+        }
         .alert("Редактировать сообщение", isPresented: $showEditAlert, actions: {
             TextField("Новый текст", text: $editText)
             Button("Отмена", role: .cancel) { }
@@ -8537,10 +8687,8 @@ struct ChatView: View {
                 viewModel.newMessageText = pending.content
             }
             
-            // ⭐️ ГЛАВНАЯ ЛОГИКА: прокрутка к сообщению после появления
             if let pendingId = AppState.shared.pendingScrollToMessageId {
                 AppState.shared.pendingScrollToMessageId = nil
-                // Даём время на отрисовку (ScrollViewReader появится)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     viewModel.scrollToMessage(messageId: pendingId) {
                         DispatchQueue.main.async {
@@ -8552,6 +8700,8 @@ struct ChatView: View {
                     }
                 }
             }
+            
+            sendButtonMode = SendButtonMode(rawValue: lastSendButtonModeRaw) ?? .video
         }
         .onReceive(AppState.shared.$pendingScrollToMessageId) { newId in
             guard let id = newId else { return }
@@ -8765,14 +8915,34 @@ struct ChatView: View {
                 ProgressView().frame(width: 32, height: 32)
             } else {
                 Button {
-                    sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
-                    replyingToMessage = nil
+                    if shouldShowSend {
+                        sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
+                        replyingToMessage = nil
+                    } else {
+                        switch sendButtonMode {
+                        case .video:
+                            showingVideoRecorder = true
+                            sendButtonMode = .audio
+                        case .audio:
+                            showingVoiceRecorder = true
+                            sendButtonMode = .video
+                        case .send:
+                            break
+                        }
+                        lastSendButtonModeRaw = sendButtonMode.rawValue
+                    }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(canSend ? .blue : .gray)
+                    if shouldShowSend {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(canSend ? .blue : .gray)
+                    } else {
+                        Image(systemName: sendButtonMode == .video ? "video.circle.fill" : "mic.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(.blue)
+                    }
                 }
-                .disabled(!canSend)
+                .disabled(!shouldShowSend && sendButtonMode == .send)
             }
         }
         .padding()
@@ -8866,6 +9036,81 @@ struct ChatView: View {
         }
     }
     
+    // MARK: - Отправка голосового сообщения
+    private func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: String?) async {
+        isSending = true
+        isUploading = true
+        defer {
+            isSending = false
+            isUploading = false
+        }
+        
+        do {
+            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            let success = await viewModel.sendMessage(
+                attachmentId: result.attachmentId,
+                storagePath: result.storagePath,
+                fileName: url.lastPathComponent,
+                fileSize: nil,
+                mimeType: "audio/m4a",
+                replyToId: replyingToMessage?.messageId,
+                forwardedFromUserId: nil,
+                forwardedFromNickname: nil,
+                customContent: nil
+            )
+            if success {
+                replyingToMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка загрузки голосового: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Отправка видеосообщения (кружок)
+
+    
+    // MARK: - Отправка видеосообщения (кружок)
+    private func sendCircularVideo(url: URL) async {
+        print("📹 sendCircularVideo called with url: \(url)")
+        isSending = true
+        isUploading = true
+        defer {
+            isSending = false
+            isUploading = false
+        }
+        
+        let asset = AVAsset(url: url)
+        let duration = CMTimeGetSeconds(asset.duration)
+        print("📹 Video duration: \(duration)")
+        
+        do {
+            print("📹 Uploading video to server...")
+            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            print("📹 Upload success, attachmentId: \(result.attachmentId)")
+            
+            let success = await viewModel.sendMessage(
+                    attachmentId: result.attachmentId,
+                    storagePath: result.storagePath,
+                    fileName: url.lastPathComponent,
+                    fileSize: nil,
+                    mimeType: "video/mp4",
+                    replyToId: replyingToMessage?.messageId,
+                    isCircular: true
+            )
+            print("📹 sendMessage success: \(success)")
+            if success {
+                replyingToMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка загрузки видео: \(error.localizedDescription)")
+            }
+            print("❌ Video upload error: \(error)")
+        }
+    }
+    
     private func handleTyping(_ text: String) {
         if !text.isEmpty && !isTyping && canSendMessage {
             isTyping = true
@@ -8879,6 +9124,7 @@ struct ChatView: View {
             }
         }
     }
+    
     private func previewTypeForSelected() -> AttachmentPreviewBar.AttachmentType {
         if let image = selectedImage {
             return .image(image)
@@ -8889,7 +9135,7 @@ struct ChatView: View {
         }
         fatalError("No attachment selected")
     }
-
+    
     private func clearSelectedAttachments() {
         selectedImage = nil
         selectedVideoURL = nil
@@ -9188,6 +9434,31 @@ struct JoinChatView: View {
             dismiss()
         } catch {
             errorMessage = "Не удалось вступить: \(error.localizedDescription)"
+        }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/ActiveVideoManager.swift
+
+import Foundation
+import SwiftUI
+
+class ActiveVideoManager: ObservableObject {
+    static let shared = ActiveVideoManager()
+    
+    @Published var activeVideoId: UUID? = nil
+    
+    private init() {}
+    
+    func activate(videoId: UUID) {
+        if activeVideoId != videoId {
+            activeVideoId = videoId
+        }
+    }
+    
+    func deactivate(videoId: UUID) {
+        if activeVideoId == videoId {
+            activeVideoId = nil
         }
     }
 }
@@ -9757,6 +10028,191 @@ struct ChatSelectionForForwardView: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Common/CircularVideoView.swift
+
+//
+//  CircularVideoView.swift
+//  MessengerApp
+//
+
+import SwiftUI
+import AVFoundation
+
+struct CircularVideoView: View {
+    let attachment: Attachment
+    
+    @ObservedObject private var manager = VideoCircleManager.shared
+    @State private var loopPlayer: AVQueuePlayer?
+    @State private var thumbnailImage: UIImage?
+    @State private var isLoadingThumbnail = true
+    
+    private var videoId: String { attachment.attachmentId.uuidString }
+    
+    private var videoURL: URL? {
+        let base = AppConfig.baseURL
+        let path = attachment.storagePath.hasPrefix("/") ? attachment.storagePath : "/media/" + attachment.storagePath
+        return URL(string: base + path)
+    }
+    
+    private var thumbnailURL: URL? {
+        guard let path = attachment.thumbnailUrl, !path.isEmpty else { return nil }
+        if path.hasPrefix("http") { return URL(string: path) }
+        let base = AppConfig.baseURL
+        let fullPath = path.hasPrefix("/") ? path : "/media/" + path
+        return URL(string: base + fullPath)
+    }
+    
+    private var isExpanded: Bool {
+        manager.expandedVideoId == videoId
+    }
+    
+    var body: some View {
+        ZStack {
+            if let url = videoURL {
+                // Если развёрнут – показываем однократный плеер, иначе – цикл
+                if isExpanded {
+                    SinglePlayVideoView(url: url)
+                        .frame(width: expandedSize, height: expandedSize)
+                        .clipShape(Circle())
+                } else {
+                    LoopingVideoView(player: loopPlayer)
+                        .frame(width: collapsedSize, height: collapsedSize)
+                        .clipShape(Circle())
+                        .onAppear {
+                            if loopPlayer == nil {
+                                loopPlayer = manager.registerLooper(id: videoId, url: url)
+                            } else {
+                                loopPlayer?.play()
+                            }
+                        }
+                        .onDisappear {
+                            manager.unregisterLooper(id: videoId)
+                            loopPlayer?.pause()
+                            loopPlayer = nil
+                        }
+                }
+            } else {
+                thumbnailPlaceholder
+            }
+        }
+        .overlay(Circle().stroke(Color.white.opacity(0.5), lineWidth: 2))
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isExpanded)
+        .onTapGesture {
+            if isExpanded {
+                // Сворачиваем
+                manager.setExpanded(nil, url: nil, onFinish: {})
+            } else {
+                // Разворачиваем и включаем однократное воспроизведение
+                if let url = videoURL {
+                    manager.setExpanded(videoId, url: url, onFinish: {})
+                }
+            }
+        }
+        .onAppear(perform: loadThumbnail)
+    }
+    
+    // MARK: - Thumbnail
+    private var thumbnailPlaceholder: some View {
+        Group {
+            if let image = thumbnailImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Circle()
+                    .fill(Color.gray.opacity(0.3))
+                    .overlay(
+                        isLoadingThumbnail ?
+                            AnyView(ProgressView()) :
+                            AnyView(Image(systemName: "play.circle.fill").font(.largeTitle))
+                    )
+            }
+        }
+        .frame(width: collapsedSize, height: collapsedSize)
+        .clipShape(Circle())
+    }
+    
+    private var collapsedSize: CGFloat { 150 }
+    private var expandedSize: CGFloat { UIScreen.main.bounds.width * 0.7 }
+    
+    private func loadThumbnail() {
+        guard let url = thumbnailURL else { isLoadingThumbnail = false; return }
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            DispatchQueue.main.async {
+                if let data = data, let image = UIImage(data: data) {
+                    thumbnailImage = image
+                } else {
+                    print("❌ Thumbnail load error: \(error?.localizedDescription ?? "unknown")")
+                }
+                isLoadingThumbnail = false
+            }
+        }.resume()
+    }
+}
+
+// MARK: - Looping Video (бесшумный цикл)
+struct LoopingVideoView: UIViewRepresentable {
+    let player: AVQueuePlayer?
+    
+    func makeUIView(context: Context) -> PlayerContainerView {
+        let view = PlayerContainerView()
+        view.player = player
+        view.videoGravity = .resizeAspectFill
+        return view
+    }
+    
+    func updateUIView(_ uiView: PlayerContainerView, context: Context) {
+        uiView.player = player
+        uiView.player?.isMuted = true
+    }
+    
+    static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {
+        uiView.player?.pause()
+    }
+}
+
+// MARK: - Single Play Video (один раз со звуком)
+struct SinglePlayVideoView: UIViewRepresentable {
+    let url: URL
+    @State private var player: AVPlayer?
+    
+    func makeUIView(context: Context) -> PlayerContainerView {
+        let view = PlayerContainerView()
+        let newPlayer = AVPlayer(url: url)
+        newPlayer.isMuted = false
+        view.player = newPlayer
+        view.videoGravity = .resizeAspectFill
+        newPlayer.play()
+        return view
+    }
+    
+    func updateUIView(_ uiView: PlayerContainerView, context: Context) {
+        // не нужно
+    }
+    
+    static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {
+        uiView.player?.pause()
+        uiView.player = nil
+    }
+}
+
+// MARK: - Общий вью для AVPlayerLayer
+class PlayerContainerView: UIView {
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+    
+    var player: AVPlayer? {
+        get { (layer as? AVPlayerLayer)?.player }
+        set { (layer as? AVPlayerLayer)?.player = newValue }
+    }
+    
+    var videoGravity: AVLayerVideoGravity {
+        get { (layer as? AVPlayerLayer)?.videoGravity ?? .resizeAspectFill }
+        set { (layer as? AVPlayerLayer)?.videoGravity = newValue }
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/EmptyStateView.swift
 
 
@@ -10121,6 +10577,160 @@ struct MenuItem: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Common/VideoCircleManager.swift
+
+//
+//  VideoCircleManager.swift
+//  MessengerApp
+//
+
+import SwiftUI
+import AVFoundation
+
+class VideoCircleManager: ObservableObject {
+    static let shared = VideoCircleManager()
+    
+    @Published var expandedVideoId: String? = nil
+    
+    // Для бесшумного циклического воспроизведения (свёрнутое состояние)
+    private var loopPlayers: [String: AVQueuePlayer] = [:]
+    private var loopers: [String: AVPlayerLooper] = [:]
+    
+    // Для проигрывания одного раза (развёрнутое состояние)
+    private var singlePlayPlayers: [String: AVPlayer] = [:]
+    
+    private init() {}
+    
+    // Регистрируем видео для бесшумного цикла
+    func registerLooper(id: String, url: URL) -> AVQueuePlayer? {
+        unregisterLooper(id: id)
+        let playerItem = AVPlayerItem(url: url)
+        let player = AVQueuePlayer(playerItem: playerItem)
+        player.isMuted = true
+        guard let looper = try? AVPlayerLooper(player: player, templateItem: playerItem) else {
+            return nil
+        }
+        loopPlayers[id] = player
+        loopers[id] = looper
+        player.play()
+        return player
+    }
+    
+    func unregisterLooper(id: String) {
+        loopPlayers[id]?.pause()
+        loopPlayers.removeValue(forKey: id)
+        loopers.removeValue(forKey: id)
+    }
+    
+    // Запуск однократного воспроизведения со звуком при разворачивании
+    func playSingleWithSound(id: String, url: URL, onFinish: @escaping () -> Void) {
+        // Останавливаем цикл, если он был
+        if let loopPlayer = loopPlayers[id] {
+            loopPlayer.pause()
+        }
+        // Создаём новый плеер для одного раза
+        let player = AVPlayer(url: url)
+        player.isMuted = false
+        singlePlayPlayers[id] = player
+        
+        // Подписываемся на окончание
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: player.currentItem,
+            queue: .main
+        ) { _ in
+            onFinish()
+            self.cleanupSinglePlay(id: id)
+        }
+        
+        player.play()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+    
+    private func cleanupSinglePlay(id: String) {
+        singlePlayPlayers[id]?.pause()
+        singlePlayPlayers.removeValue(forKey: id)
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
+        
+        // Возвращаем цикл, если он был
+        if let loopPlayer = loopPlayers[id] {
+            loopPlayer.play()
+        }
+    }
+    
+    func setExpanded(_ id: String?, url: URL?, onFinish: @escaping () -> Void) {
+        // Если уже развёрнут этот же – ничего не делаем
+        if expandedVideoId == id { return }
+        
+        // Сворачиваем предыдущий развёрнутый
+        if let prevId = expandedVideoId {
+            // Останавливаем однократное воспроизведение
+            cleanupSinglePlay(id: prevId)
+        }
+        
+        expandedVideoId = id
+        
+        if let id = id, let url = url {
+            // Запускаем однократное воспроизведение
+            playSingleWithSound(id: id, url: url, onFinish: {
+                // Автоматически сворачиваем
+                DispatchQueue.main.async {
+                    if self.expandedVideoId == id {
+                        self.setExpanded(nil, url: nil, onFinish: {})
+                    }
+                    onFinish()
+                }
+            })
+        } else {
+            // Если свернули – просто обновляем состояние
+        }
+        objectWillChange.send()
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VideoPlaybackCoordinator.swift
+
+//
+//  VideoPlaybackCoordinator.swift
+//  MessengerApp
+//
+
+import Foundation
+import AVFoundation
+
+class VideoPlaybackCoordinator: ObservableObject {
+    static let shared = VideoPlaybackCoordinator()
+
+    private(set) var activePlayerId: String?
+    private var activePlayer: AVPlayer?
+
+    private init() {}
+
+    func setActivePlayer(id: String, player: AVPlayer) {
+        if activePlayerId == id { return }
+        // Деактивируем старый
+        if let oldPlayer = activePlayer {
+            oldPlayer.isMuted = true
+        }
+        activePlayerId = id
+        activePlayer = player
+        player.isMuted = false
+    }
+
+    func deactivateCurrent() {
+        if let player = activePlayer {
+            player.isMuted = true
+        }
+        activePlayerId = nil
+        activePlayer = nil
+    }
+
+    func isActive(id: String) -> Bool {
+        return activePlayerId == id
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/VideoPlayerView.swift
 
 import SwiftUI
@@ -10146,6 +10756,551 @@ struct VideoPlayerView: View {
             let player = AVPlayer(url: url)
             player.play()
         }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VideoRecorderView.swift
+
+//
+//  VideoRecorderView.swift
+//  MessengerApp
+//
+
+import SwiftUI
+import AVFoundation
+
+// MARK: - SwiftUI обёртка
+struct VideoRecorderView: UIViewControllerRepresentable {
+    let onRecordingFinished: (URL) -> Void
+    
+    func makeUIViewController(context: Context) -> VideoRecorderViewController {
+        let controller = VideoRecorderViewController()
+        controller.onRecordingFinished = onRecordingFinished
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: VideoRecorderViewController, context: Context) {}
+}
+
+// MARK: - UIViewController с камерой
+class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordingDelegate {
+    
+    var onRecordingFinished: ((URL) -> Void)?
+    
+    private var session: AVCaptureSession?
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var movieOutput: AVCaptureMovieFileOutput?
+    private var outputURL: URL?
+    private var isRecording = false
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        checkPermissionsAndSetup()
+    }
+    
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.bounds
+    }
+    
+    private func checkPermissionsAndSetup() {
+        // Проверка камеры
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                if granted {
+                    DispatchQueue.main.async {
+                        self.checkPermissionsAndSetup()
+                    }
+                } else {
+                    self.showAccessDeniedAlert()
+                }
+            }
+            return
+        default:
+            showAccessDeniedAlert()
+            return
+        }
+        
+        // Проверка микрофона
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            break
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        default:
+            print("⚠️ Микрофон запрещён – видео будет без звука")
+        }
+        
+        setupCamera()
+    }
+    
+    private func setupCamera() {
+        // Создаём сессию
+        let session = AVCaptureSession()
+        session.sessionPreset = .hd1280x720
+        
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+            print("❌ Нет камеры")
+            return
+        }
+        
+        guard let videoInput = try? AVCaptureDeviceInput(device: device) else {
+            print("❌ Не удалось создать видеовход")
+            return
+        }
+        
+        session.addInput(videoInput)
+        
+        // Аудио вход (если разрешён)
+        if let audioDevice = AVCaptureDevice.default(for: .audio),
+           let audioInput = try? AVCaptureDeviceInput(device: audioDevice) {
+            session.addInput(audioInput)
+        }
+        
+        let output = AVCaptureMovieFileOutput()
+        session.addOutput(output)
+        movieOutput = output
+        
+        // Запускаем сессию в фоновом потоке, чтобы не блокировать UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.startRunning()
+            DispatchQueue.main.async {
+                self.session = session
+                self.previewLayer = AVCaptureVideoPreviewLayer(session: session)
+                self.previewLayer?.videoGravity = .resizeAspectFill
+                self.previewLayer?.frame = self.view.bounds
+                if let layer = self.previewLayer {
+                    self.view.layer.addSublayer(layer)
+                }
+                self.setupUI()
+            }
+        }
+    }
+    
+    private func setupUI() {
+        let button = UIButton(type: .system)
+        button.setTitle("⏺ Записать", for: .normal)
+        button.setTitleColor(.white, for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        button.backgroundColor = UIColor.red.withAlphaComponent(0.8)
+        button.layer.cornerRadius = 30
+        button.frame = CGRect(x: 0, y: 0, width: 140, height: 60)
+        button.center = CGPoint(x: view.bounds.midX, y: view.bounds.height - 100)
+        button.addTarget(self, action: #selector(recordButtonTapped), for: .touchUpInside)
+        view.addSubview(button)
+        
+        let cancelButton = UIButton(type: .system)
+        cancelButton.setTitle("Отмена", for: .normal)
+        cancelButton.setTitleColor(.white, for: .normal)
+        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
+        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        cancelButton.frame = CGRect(x: 20, y: 40, width: 80, height: 40)
+        view.addSubview(cancelButton)
+    }
+    
+    @objc private func recordButtonTapped() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+    
+    @objc private func cancelTapped() {
+        dismiss(animated: true)
+    }
+    
+    private func startRecording() {
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".mp4")
+        outputURL = fileURL
+        movieOutput?.startRecording(to: fileURL, recordingDelegate: self)
+        isRecording = true
+        
+        if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "⏺ Записать" }) as? UIButton {
+            button.setTitle("⏹ Остановить", for: .normal)
+            button.backgroundColor = UIColor.gray.withAlphaComponent(0.8)
+        }
+    }
+    
+    private func stopRecording() {
+        movieOutput?.stopRecording()
+        isRecording = false
+    }
+    
+    private func showAccessDeniedAlert() {
+        let alert = UIAlertController(title: "Нет доступа к камере",
+                                      message: "Разрешите доступ в настройках iPhone",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+            self.dismiss(animated: true)
+        })
+        present(alert, animated: true)
+    }
+    
+    // MARK: - AVCaptureFileOutputRecordingDelegate
+    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        print("📹 didFinishRecordingTo called, error: \(error?.localizedDescription ?? "none")")
+        DispatchQueue.main.async {
+            if let url = self.outputURL {
+                print("📹 Calling onRecordingFinished with url: \(url)")
+                self.onRecordingFinished?(url)
+            } else {
+                print("❌ outputURL is nil")
+            }
+            self.dismiss(animated: true)
+        }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VoiceMessageBubble.swift
+
+//
+//  VoiceMessageBubble.swift
+//  MessengerApp
+//
+
+import SwiftUI
+import AVFoundation
+
+struct VoiceMessageBubble: View {
+    let attachment: Attachment
+    let isCurrentUser: Bool
+
+    @State private var isPlaying = false
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var timer: Timer?
+
+    private var audioURL: URL? {
+        let base = AppConfig.baseURL
+        let path = attachment.storagePath.hasPrefix("/") ? attachment.storagePath : "/media/" + attachment.storagePath
+        return URL(string: base + path)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                togglePlayback()
+            } label: {
+                Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(isCurrentUser ? .white : .blue)
+            }
+
+            // Упрощённый waveform (динамические полоски)
+            HStack(spacing: 2) {
+                ForEach(0..<20, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(isCurrentUser ? Color.white.opacity(0.7) : Color.blue.opacity(0.7))
+                        .frame(width: 3, height: CGFloat.random(in: 8...20))
+                }
+            }
+            .frame(height: 30)
+
+            Text(formatDuration(attachment.duration ?? 0))
+                .font(.caption)
+                .foregroundColor(isCurrentUser ? .white : .primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isCurrentUser ? Color.blue : Color(.systemGray5))
+        .cornerRadius(20)
+        .onDisappear {
+            audioPlayer?.stop()
+            timer?.invalidate()
+        }
+    }
+
+    private func togglePlayback() {
+        if isPlaying {
+            audioPlayer?.pause()
+            timer?.invalidate()
+            isPlaying = false
+        } else {
+            guard let url = audioURL else { return }
+            do {
+                audioPlayer = try AVAudioPlayer(contentsOf: url)
+                audioPlayer?.play()
+                isPlaying = true
+                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                    if let player = audioPlayer, !player.isPlaying {
+                        isPlaying = false
+                        timer?.invalidate()
+                    }
+                }
+            } catch {
+                print("Audio playback error: \(error)")
+            }
+        }
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let secs = seconds % 60
+        return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VoiceMessageView.swift
+
+import SwiftUI
+import AVFoundation
+
+struct VoiceMessageView: View {
+    let attachment: Attachment
+    @State private var isPlaying = false
+    @State private var progress: Float = 0
+    @State private var player: AVAudioPlayer?
+    @State private var timer: Timer?
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: togglePlayback) {
+                Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+            }
+            
+            // Waveform placeholder
+            HStack(spacing: 2) {
+                if let waveformData = attachment.waveform, let amplitudes = decodeWaveform(waveformData) {
+                    ForEach(0..<min(amplitudes.count, 30), id: \.self) { i in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.accentColor)
+                            .frame(width: 3, height: CGFloat(amplitudes[i]) / 100 * 30)
+                    }
+                } else {
+                    Text("🎙️")
+                        .font(.title3)
+                }
+            }
+            .frame(height: 30)
+            
+            Text(formatDuration(attachment.duration ?? 0))
+                .font(.caption)
+                .monospacedDigit()
+            
+            if isPlaying {
+                ProgressView(value: progress, total: 1.0)
+                    .frame(width: 50)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.gray.opacity(0.15))
+        .cornerRadius(20)
+        .onDisappear {
+            stopPlayback()
+        }
+    }
+    
+    private func togglePlayback() {
+        if isPlaying {
+            stopPlayback()
+        } else {
+            startPlayback()
+        }
+    }
+    
+    private func startPlayback() {
+        guard let url = attachment.storagePath.getMediaURL() else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback)
+            try session.setActive(true)
+            player = try AVAudioPlayer(contentsOf: url)
+            player?.play()
+            isPlaying = true
+            progress = 0
+            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                guard let player = player, player.duration > 0 else { return }
+                progress = Float(player.currentTime / player.duration)
+                if !player.isPlaying {
+                    stopPlayback()
+                }
+            }
+        } catch {
+            print("Playback error: \(error)")
+        }
+    }
+    
+    private func stopPlayback() {
+        player?.stop()
+        player = nil
+        timer?.invalidate()
+        isPlaying = false
+        progress = 0
+        try? AVAudioSession.sharedInstance().setActive(false)
+    }
+    
+    private func formatDuration(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let secs = seconds % 60
+        return String(format: "%d:%02d", minutes, secs)
+    }
+    
+    private func decodeWaveform(_ base64: String) -> [Int]? {
+        guard let data = Data(base64Encoded: base64),
+              let array = try? JSONDecoder().decode([Int].self, from: data) else { return nil }
+        return array
+    }
+}
+
+extension String {
+    func getMediaURL() -> URL? {
+        if self.hasPrefix("http") {
+            return URL(string: self)
+        }
+        let base = AppConfig.baseURL
+        let path = self.hasPrefix("/") ? String(self.dropFirst()) : self
+        return URL(string: base + "/media/" + path)
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VoiceRecorderView.swift
+
+//
+//  VoiceRecorderView.swift
+//  MessengerApp
+//
+
+import SwiftUI
+import AVFoundation
+
+struct VoiceRecorderView: UIViewControllerRepresentable {
+    let onRecordingFinished: (URL, TimeInterval, String?) -> Void
+    
+    func makeUIViewController(context: Context) -> VoiceRecorderViewController {
+        let controller = VoiceRecorderViewController()
+        controller.onRecordingFinished = onRecordingFinished
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: VoiceRecorderViewController, context: Context) {}
+}
+
+class VoiceRecorderViewController: UIViewController, AVAudioRecorderDelegate {
+    
+    var onRecordingFinished: ((URL, TimeInterval, String?) -> Void)?
+    
+    private var audioRecorder: AVAudioRecorder?
+    private var recordingURL: URL?
+    private var recordingStartTime: Date?
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        setupUI()
+    }
+    
+    private func setupUI() {
+        let button = UIButton(type: .system)
+        button.setTitle("🎙 Записать", for: .normal)
+        button.setTitleColor(.white, for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
+        button.layer.cornerRadius = 30
+        button.frame = CGRect(x: 0, y: 0, width: 160, height: 60)
+        button.center = CGPoint(x: view.bounds.midX, y: view.bounds.height - 100)
+        button.addTarget(self, action: #selector(recordButtonTapped), for: .touchUpInside)
+        view.addSubview(button)
+        
+        // Кнопка отмены
+        let cancelButton = UIButton(type: .system)
+        cancelButton.setTitle("Отмена", for: .normal)
+        cancelButton.setTitleColor(.white, for: .normal)
+        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
+        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        cancelButton.frame = CGRect(x: 20, y: 40, width: 80, height: 40)
+        view.addSubview(cancelButton)
+    }
+    
+    @objc private func recordButtonTapped() {
+        if audioRecorder?.isRecording == true {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+    
+    @objc private func cancelTapped() {
+        dismiss(animated: true)
+    }
+    
+    private func startRecording() {
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileName = UUID().uuidString + ".m4a"
+        recordingURL = tempDir.appendingPathComponent(fileName)
+        
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 44100,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        
+        do {
+            audioRecorder = try AVAudioRecorder(url: recordingURL!, settings: settings)
+            audioRecorder?.delegate = self
+            audioRecorder?.record()
+            recordingStartTime = Date()
+            
+            if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "🎙 Записать" }) as? UIButton {
+                button.setTitle("⏹ Остановить", for: .normal)
+                button.backgroundColor = UIColor.systemRed.withAlphaComponent(0.8)
+            }
+        } catch {
+            print("Recording failed: \(error)")
+        }
+    }
+    
+    private func stopRecording() {
+        audioRecorder?.stop()
+        
+        if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "⏹ Остановить" }) as? UIButton {
+            button.setTitle("🎙 Записать", for: .normal)
+            button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
+        }
+    }
+    
+    // MARK: - AVAudioRecorderDelegate
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        guard flag, let url = recordingURL, let startTime = recordingStartTime else {
+            dismiss(animated: true)
+            return
+        }
+        let duration = Date().timeIntervalSince(startTime)
+        
+        // Генерация упрощённого waveform (массив амплитуд)
+        var waveform: String? = nil
+        if let audioFile = try? AVAudioFile(forReading: url) {
+            let format = audioFile.processingFormat
+            let frameCount = AVAudioFrameCount(audioFile.length)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            try? audioFile.read(into: buffer)
+            if let channelData = buffer.floatChannelData {
+                let channelDataPointer = channelData.pointee
+                let frameLength = Int(buffer.frameLength)
+                let step = max(1, frameLength / 100) // 100 точек
+                var amplitudes: [Float] = []
+                for i in stride(from: 0, to: frameLength, by: step) {
+                    let amplitude = abs(channelDataPointer[i])
+                    amplitudes.append(amplitude)
+                }
+                // Нормализуем и кодируем в base64
+                let maxAmp = amplitudes.max() ?? 1.0
+                let normalized = amplitudes.map { Int(($0 / maxAmp) * 100) }
+                if let jsonData = try? JSONSerialization.data(withJSONObject: normalized) {
+                    waveform = jsonData.base64EncodedString()
+                }
+            }
+        }
+        
+        onRecordingFinished?(url, duration, waveform)
+        dismiss(animated: true)
     }
 }
 
@@ -10523,7 +11678,6 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
-                // Аватар показываем только в групповых чатах/каналах
                 if !isPrivateChat {
                     NavigationLink(destination: UserProfileView(userId: message.senderId)) {
                         AvatarView(urlString: senderUser?.avatarUrl, size: 32)
@@ -10532,14 +11686,12 @@ struct MessageBubbleView: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    // Имя отправителя тоже показываем только в не-приватных чатах
                     if !isPrivateChat, let nickname = senderUser?.nickName, !nickname.isEmpty {
                         Text(nickname)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 12)
                     }
-                    
                     
                     messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
@@ -10642,8 +11794,7 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageContentView: some View {
         VStack(alignment: isCurrentUser ? .trailing : .leading, spacing: 8) {
-            // === Блок "От: ..." для пересланного сообщения (кликабельный) ===
-            // В messageContentView
+            // Пересланное сообщение
             if let forwardUserId = message.forwardedFromUserId, let forwardNick = message.forwardedFromNickname, !forwardNick.isEmpty {
                 Button {
                     let profileView = UserProfileView(userId: forwardUserId)
@@ -10665,7 +11816,7 @@ struct MessageBubbleView: View {
                 .padding(.top, 4)
             }
             
-            // Цитата родительского сообщения
+            // Цитата
             if let replyContent = message.replyToContent, !replyContent.isEmpty {
                 Button {
                     if let replyId = message.replyToId {
@@ -10693,8 +11844,31 @@ struct MessageBubbleView: View {
             
             // Вложения и текст
             if let attachments = message.attachments, !attachments.isEmpty {
-                ForEach(attachments, id: \.attachmentId) { attachment in
-                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                ForEach(attachments.indices, id: \.self) { index in
+                    let attachment = attachments[index]
+                    
+                    // Логирование через невидимую вьюху
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .onAppear {
+                            print("🔍 Attachment #\(index): mimeType=\(attachment.mimeType ?? "nil"), isCircular=\(attachment.isCircular ?? false)")
+                            if attachment.mimeType?.hasPrefix("video/") == true {
+                                print("🎬 Video detected, isCircular=\(attachment.isCircular ?? false)")
+                            }
+                        }
+                    
+                    // Отображение вложения
+                    if attachment.mimeType?.hasPrefix("video/") == true {
+                        if attachment.isCircular == true {
+                            CircularVideoView(attachment: attachment)
+                        } else {
+                            AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                        }
+                    } else if attachment.mimeType?.hasPrefix("audio/") == true {
+                        VoiceMessageBubble(attachment: attachment, isCurrentUser: isCurrentUser)
+                    } else {
+                        AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                    }
                 }
             }
             

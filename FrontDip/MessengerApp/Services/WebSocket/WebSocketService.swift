@@ -179,7 +179,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                         thumbnailUrl: attDict["thumbnail_url"] as? String,
                         isCircular: attDict["is_circular"] as? Bool
                     )
+                    print("📎 New attachment from WebSocket: isCircular = \(attachment.isCircular ?? false)")
                     attachments.append(attachment)
+                    
                 }
             }
         }
@@ -194,6 +196,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             )
 
         if !LocalDatabase.shared.messageExists(messageId) {
+            print("💾 About to save message \(message.messageId), attachment isCircular=\(attachments.first?.isCircular ?? false)")
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
                 _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
