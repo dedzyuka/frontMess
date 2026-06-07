@@ -32,7 +32,6 @@ class AppState: ObservableObject {
     @Published var isSidebarOpen = false
     @Published var pendingForwardText: String? = nil
     @Published var pendingScrollToMessageId: Int64?
-    @Published var pendingOpenChat: Chat? = nil
     
     private init() {}
     
@@ -6730,6 +6729,7 @@ class CreateChatViewModel: ObservableObject {
             )
             await MainActor.run {
                 NotificationCenter.default.post(name: .chatCreated, object: chat)
+                
                 self.showInviteSheet = true
             }
             return true
@@ -6992,7 +6992,7 @@ class UserProfileViewModel: ObservableObject {
     let userId: UUID
     private let userService = UserService.shared
     private let contactService = ContactService.shared
-    private let chatVM = ChatListViewModel()
+    private let graphQL = GraphQLClient.shared
     
     init(userId: UUID) {
         self.userId = userId
@@ -7119,17 +7119,21 @@ class UserProfileViewModel: ObservableObject {
         }
     }
     
-    func startPrivateChat() {
-        Task {
-            if let chat = await chatVM.findOrCreatePrivateChat(with: userId) {
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .openChat, object: chat)
-                }
-            }
-        }
-    }
+    
     func startPrivateChatAndGetChat() async -> Chat? {
-        return await chatVM.findOrCreatePrivateChat(with: userId)
+        let vm = ChatListViewModel()
+
+        if let chat = await vm.findOrCreatePrivateChat(with: userId) {
+
+            NotificationCenter.default.post(
+                name: .chatUpdated,
+                object: nil
+            )
+
+            return chat
+        }
+
+        return nil
     }
 }
 
@@ -7754,16 +7758,7 @@ struct ChatListView: View {
         .onAppear {
             Task { await viewModel.loadChats() }
         }
-        .onReceive(AppState.shared.$pendingOpenChat) { chat in
-            if let chat = chat {
-                AppState.shared.pendingOpenChat = nil
-                selectedChat = chat
-                showChat = true
-                if !viewModel.chats.contains(where: { $0.id == chat.id }) {
-                    viewModel.addChat(chat)
-                }
-            }
-        }
+        
     }
 
     @ViewBuilder
@@ -11277,8 +11272,14 @@ struct UserProfileView: View {
                             Button("Написать") {
                                 Task {
                                     if let chat = await viewModel.startPrivateChatAndGetChat() {
+
                                         await MainActor.run {
-                                            AppState.shared.pendingOpenChat = chat
+
+                                            NotificationCenter.default.post(
+                                                name: .openChat,
+                                                object: chat
+                                            )
+
                                             dismiss()
                                         }
                                     }
@@ -11333,15 +11334,21 @@ struct UserProfileView: View {
                             .frame(maxWidth: .infinity)
                             
                             Button("Написать") {
-                                    Task {
-                                        if let chat = await viewModel.startPrivateChatAndGetChat() {
-                                            await MainActor.run {
-                                                AppState.shared.pendingOpenChat = chat
-                                                dismiss()
-                                            }
+                                Task {
+                                    if let chat = await viewModel.startPrivateChatAndGetChat() {
+
+                                        await MainActor.run {
+
+                                            NotificationCenter.default.post(
+                                                name: .openChat,
+                                                object: chat
+                                            )
+
+                                            dismiss()
                                         }
                                     }
                                 }
+                            }
                                 .buttonStyle(.bordered)
                                 .frame(maxWidth: .infinity)
                         }
