@@ -15,6 +15,7 @@ struct MessageBubbleView: View {
     let onReply: (() -> Void)?
     let onReplyTap: ((Int64) -> Void)?
     let onForward: (() -> Void)?
+    let isPrivateChat: Bool
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -29,18 +30,23 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
-                NavigationLink(destination: UserProfileView(userId: message.senderId)) {
-                    AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                // Аватар показываем только в групповых чатах/каналах
+                if !isPrivateChat {
+                    NavigationLink(destination: UserProfileView(userId: message.senderId)) {
+                        AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    if let nickname = senderUser?.nickName, !nickname.isEmpty {
+                    // Имя отправителя тоже показываем только в не-приватных чатах
+                    if !isPrivateChat, let nickname = senderUser?.nickName, !nickname.isEmpty {
                         Text(nickname)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 12)
                     }
+                    
                     
                     messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {

@@ -242,38 +242,7 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(viewModel.messages) { message in
-                        MessageBubbleView(
-                            message: message,
-                            isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
-                            senderUser: viewModel.getUser(for: message.senderId),
-                            viewModel: viewModel,
-                            onEdit: {
-                                selectedMessage = message
-                                editText = message.content ?? ""
-                                showEditAlert = true
-                            },
-                            onDelete: {
-                                selectedMessage = message
-                                showDeleteConfirmation = true
-                            },
-                            onReply: {
-                                replyingToMessage = message
-                            },
-                            onReplyTap: { replyId in
-                                viewModel.scrollToMessage(messageId: replyId) {
-                                    withAnimation {
-                                        proxy.scrollTo(replyId, anchor: .center)
-                                    }
-                                    viewModel.highlightMessage(replyId)
-                                }
-                            },
-                            onForward: {
-                                forwardMessage = message
-                                showForwardChatSelection = true
-                            }
-                        )
-                        .id(message.messageId)
-                        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
+                        messageView(for: message, proxy: proxy)
                     }
                 }
                 .padding(.horizontal)
@@ -282,7 +251,6 @@ struct ChatView: View {
             .onAppear {
                 scrollProxy = proxy
             }
-            
             .onDisappear {
                 scrollProxy = nil
             }
@@ -293,6 +261,43 @@ struct ChatView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+    }
+    
+    @ViewBuilder
+    private func messageView(for message: Message, proxy: ScrollViewProxy) -> some View {
+        MessageBubbleView(
+            message: message,
+            isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
+            senderUser: viewModel.getUser(for: message.senderId),
+            viewModel: viewModel,
+            onEdit: {
+                selectedMessage = message
+                editText = message.content ?? ""
+                showEditAlert = true
+            },
+            onDelete: {
+                selectedMessage = message
+                showDeleteConfirmation = true
+            },
+            onReply: {
+                replyingToMessage = message
+            },
+            onReplyTap: { replyId in
+                viewModel.scrollToMessage(messageId: replyId) {
+                    withAnimation {
+                        proxy.scrollTo(replyId, anchor: .center)
+                    }
+                    viewModel.highlightMessage(replyId)
+                }
+            },
+            onForward: {
+                forwardMessage = message
+                showForwardChatSelection = true
+            },
+            isPrivateChat: chat.isPrivate
+        )
+        .id(message.messageId)
+        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
     }
     
     private var replyPreviewBar: some View {
