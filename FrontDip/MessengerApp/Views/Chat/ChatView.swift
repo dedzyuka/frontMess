@@ -39,7 +39,11 @@ struct ChatView: View {
     }
     
     private var canSend: Bool {
-        (!viewModel.newMessageText.isEmpty || selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil) && !isSending
+        (!viewModel.newMessageText.isEmpty ||
+         selectedImage != nil ||
+         selectedVideoURL != nil ||
+         selectedDocumentURL != nil ||
+         viewModel.pendingForward?.attachmentId != nil) && !isSending
     }
     
     init(chat: Chat) {
@@ -51,6 +55,21 @@ struct ChatView: View {
         VStack(spacing: 0) {
             headerView
             messagesListView
+            if selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil {
+                AttachmentPreviewBar(
+                    type: previewTypeForSelected(),
+                    onCancel: { clearSelectedAttachments() }
+                )
+            } else if let pending = viewModel.pendingForward {
+                AttachmentPreviewBar(
+                    type: .forward(
+                        content: pending.originalContent,
+                        fromNickname: pending.forwardedFromNickname,
+                        attachmentId: pending.attachmentId
+                    ),
+                    onCancel: { viewModel.pendingForward = nil }
+                )
+            }
             replyPreviewBar
             if canSendMessage {
                 inputAreaView
@@ -460,6 +479,22 @@ struct ChatView: View {
                 WebSocketService.shared.sendTyping(chatId: self.chat.id, isTyping: false)
             }
         }
+    }
+    private func previewTypeForSelected() -> AttachmentPreviewBar.AttachmentType {
+        if let image = selectedImage {
+            return .image(image)
+        } else if let videoURL = selectedVideoURL {
+            return .video(videoURL)
+        } else if let docURL = selectedDocumentURL {
+            return .document(docURL)
+        }
+        fatalError("No attachment selected")
+    }
+
+    private func clearSelectedAttachments() {
+        selectedImage = nil
+        selectedVideoURL = nil
+        selectedDocumentURL = nil
     }
     
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {

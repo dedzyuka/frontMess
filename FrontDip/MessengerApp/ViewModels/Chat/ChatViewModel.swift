@@ -260,15 +260,16 @@ class ChatViewModel: ObservableObject {
         }
         return usersCache[userId]?.nickName ?? "Пользователь"
     }
-    private func loadUserIfNeeded(_ userId: UUID) {
+    private func loadUserIfNeeded(_ userId: UUID) async {
         guard usersCache[userId] == nil, userId != currentUserId else { return }
-        Task {
-            if let user = try? await UserService.shared.getUser(userId: userId) {
-                await MainActor.run {
-                    self.usersCache[userId] = user
-                    self.objectWillChange.send()
-                }
+        do {
+            let user = try await UserService.shared.getUser(userId: userId)
+            await MainActor.run {
+                self.usersCache[userId] = user
+                self.objectWillChange.send()   // обновляем список сообщений
             }
+        } catch {
+            print("Failed to load user \(userId): \(error)")
         }
     }
     
@@ -351,6 +352,12 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
+        let uniqueSenderIds = Set(messages.map { $0.senderId })
+                .filter { $0 != currentUserId && usersCache[$0] == nil }
+            
+            for senderId in uniqueSenderIds {
+                await loadUserIfNeeded(senderId)
+            }
         for msg in messages {
             _ = database.saveMessage(msg)
             if let attachments = msg.attachments, !attachments.isEmpty {
@@ -1030,6 +1037,9 @@ class ChatViewModel: ObservableObject {
             }
             var newMessages = self.messages
             newMessages.append(message)
+            if message.senderId != self.currentUserId && self.usersCache[message.senderId] == nil {
+                        Task { await self.loadUserIfNeeded(message.senderId) }
+                    }
             newMessages.sort(by: { $0.createdAt < $1.createdAt })
             self.messages = newMessages
             self.enrichMessagesWithReplies()

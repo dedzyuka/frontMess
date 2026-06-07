@@ -5820,15 +5820,16 @@ class ChatViewModel: ObservableObject {
         }
         return usersCache[userId]?.nickName ?? "Пользователь"
     }
-    private func loadUserIfNeeded(_ userId: UUID) {
+    private func loadUserIfNeeded(_ userId: UUID) async {
         guard usersCache[userId] == nil, userId != currentUserId else { return }
-        Task {
-            if let user = try? await UserService.shared.getUser(userId: userId) {
-                await MainActor.run {
-                    self.usersCache[userId] = user
-                    self.objectWillChange.send()
-                }
+        do {
+            let user = try await UserService.shared.getUser(userId: userId)
+            await MainActor.run {
+                self.usersCache[userId] = user
+                self.objectWillChange.send()   // обновляем список сообщений
             }
+        } catch {
+            print("Failed to load user \(userId): \(error)")
         }
     }
     
@@ -5911,6 +5912,12 @@ class ChatViewModel: ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let messages = response.message.listMessages
+        let uniqueSenderIds = Set(messages.map { $0.senderId })
+                .filter { $0 != currentUserId && usersCache[$0] == nil }
+            
+            for senderId in uniqueSenderIds {
+                await loadUserIfNeeded(senderId)
+            }
         for msg in messages {
             _ = database.saveMessage(msg)
             if let attachments = msg.attachments, !attachments.isEmpty {
@@ -6590,6 +6597,9 @@ class ChatViewModel: ObservableObject {
             }
             var newMessages = self.messages
             newMessages.append(message)
+            if message.senderId != self.currentUserId && self.usersCache[message.senderId] == nil {
+                        Task { await self.loadUserIfNeeded(message.senderId) }
+                    }
             newMessages.sort(by: { $0.createdAt < $1.createdAt })
             self.messages = newMessages
             self.enrichMessagesWithReplies()
@@ -8428,7 +8438,11 @@ struct ChatView: View {
     }
     
     private var canSend: Bool {
-        (!viewModel.newMessageText.isEmpty || selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil) && !isSending
+        (!viewModel.newMessageText.isEmpty ||
+         selectedImage != nil ||
+         selectedVideoURL != nil ||
+         selectedDocumentURL != nil ||
+         viewModel.pendingForward?.attachmentId != nil) && !isSending
     }
     
     init(chat: Chat) {
@@ -8440,6 +8454,21 @@ struct ChatView: View {
         VStack(spacing: 0) {
             headerView
             messagesListView
+            if selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil {
+                AttachmentPreviewBar(
+                    type: previewTypeForSelected(),
+                    onCancel: { clearSelectedAttachments() }
+                )
+            } else if let pending = viewModel.pendingForward {
+                AttachmentPreviewBar(
+                    type: .forward(
+                        content: pending.originalContent,
+                        fromNickname: pending.forwardedFromNickname,
+                        attachmentId: pending.attachmentId
+                    ),
+                    onCancel: { viewModel.pendingForward = nil }
+                )
+            }
             replyPreviewBar
             if canSendMessage {
                 inputAreaView
@@ -8631,38 +8660,7 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(viewModel.messages) { message in
-                        MessageBubbleView(
-                            message: message,
-                            isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
-                            senderUser: viewModel.getUser(for: message.senderId),
-                            viewModel: viewModel,
-                            onEdit: {
-                                selectedMessage = message
-                                editText = message.content ?? ""
-                                showEditAlert = true
-                            },
-                            onDelete: {
-                                selectedMessage = message
-                                showDeleteConfirmation = true
-                            },
-                            onReply: {
-                                replyingToMessage = message
-                            },
-                            onReplyTap: { replyId in
-                                viewModel.scrollToMessage(messageId: replyId) {
-                                    withAnimation {
-                                        proxy.scrollTo(replyId, anchor: .center)
-                                    }
-                                    viewModel.highlightMessage(replyId)
-                                }
-                            },
-                            onForward: {
-                                forwardMessage = message
-                                showForwardChatSelection = true
-                            }
-                        )
-                        .id(message.messageId)
-                        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
+                        messageView(for: message, proxy: proxy)
                     }
                 }
                 .padding(.horizontal)
@@ -8671,7 +8669,6 @@ struct ChatView: View {
             .onAppear {
                 scrollProxy = proxy
             }
-            
             .onDisappear {
                 scrollProxy = nil
             }
@@ -8682,6 +8679,43 @@ struct ChatView: View {
             }
         }
         .background(Color(.systemGroupedBackground))
+    }
+    
+    @ViewBuilder
+    private func messageView(for message: Message, proxy: ScrollViewProxy) -> some View {
+        MessageBubbleView(
+            message: message,
+            isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
+            senderUser: viewModel.getUser(for: message.senderId),
+            viewModel: viewModel,
+            onEdit: {
+                selectedMessage = message
+                editText = message.content ?? ""
+                showEditAlert = true
+            },
+            onDelete: {
+                selectedMessage = message
+                showDeleteConfirmation = true
+            },
+            onReply: {
+                replyingToMessage = message
+            },
+            onReplyTap: { replyId in
+                viewModel.scrollToMessage(messageId: replyId) {
+                    withAnimation {
+                        proxy.scrollTo(replyId, anchor: .center)
+                    }
+                    viewModel.highlightMessage(replyId)
+                }
+            },
+            onForward: {
+                forwardMessage = message
+                showForwardChatSelection = true
+            },
+            isPrivateChat: chat.isPrivate
+        )
+        .id(message.messageId)
+        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
     }
     
     private var replyPreviewBar: some View {
@@ -8844,6 +8878,22 @@ struct ChatView: View {
                 WebSocketService.shared.sendTyping(chatId: self.chat.id, isTyping: false)
             }
         }
+    }
+    private func previewTypeForSelected() -> AttachmentPreviewBar.AttachmentType {
+        if let image = selectedImage {
+            return .image(image)
+        } else if let videoURL = selectedVideoURL {
+            return .video(videoURL)
+        } else if let docURL = selectedDocumentURL {
+            return .document(docURL)
+        }
+        fatalError("No attachment selected")
+    }
+
+    private func clearSelectedAttachments() {
+        selectedImage = nil
+        selectedVideoURL = nil
+        selectedDocumentURL = nil
     }
     
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
@@ -9139,6 +9189,110 @@ struct JoinChatView: View {
         } catch {
             errorMessage = "Не удалось вступить: \(error.localizedDescription)"
         }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/AttachmentPreviewBar.swift
+
+import SwiftUI
+
+struct AttachmentPreviewBar: View {
+    enum AttachmentType {
+        case image(UIImage)
+        case video(URL)
+        case document(URL)
+        case forward(content: String, fromNickname: String, attachmentId: UUID?)   // пересылка
+    }
+    
+    let type: AttachmentType
+    let onCancel: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Иконка / превью
+            Group {
+                switch type {
+                case .image(let image):
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 50, height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                case .video(let url):
+                    ZStack {
+                        VideoThumbnailView(url: url)
+                            .frame(width: 50, height: 50)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Image(systemName: "play.circle.fill")
+                            .foregroundColor(.white)
+                            .font(.title2)
+                    }
+                case .document(let url):
+                    Image(systemName: "doc.fill")
+                        .font(.title2)
+                        .foregroundColor(.blue)
+                        .frame(width: 50, height: 50)
+                        .background(Color(.systemGray5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                case .forward(let content, let fromNickname, _):
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrowshape.turn.up.right.fill")
+                                .font(.caption)
+                            Text("Переслано от \(fromNickname)")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                        }
+                        Text(content.isEmpty ? "[Вложение]" : content)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            
+            // Информация
+            VStack(alignment: .leading, spacing: 2) {
+                switch type {
+                case .image:
+                    Text("Изображение")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                case .video(let url):
+                    Text(url.lastPathComponent)
+                        .font(.caption)
+                        .lineLimit(1)
+                case .document(let url):
+                    Text(url.lastPathComponent)
+                        .font(.caption)
+                        .lineLimit(1)
+                case .forward(_, _, let attachmentId):
+                    Text(attachmentId == nil ? "Текстовое сообщение" : "Сообщение с вложением")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                if case .video = type {
+                    Text("Видео")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Spacer()
+            
+            Button(action: onCancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.gray)
+                    .font(.title3)
+            }
+        }
+        .padding(10)
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 }
 
@@ -10354,6 +10508,7 @@ struct MessageBubbleView: View {
     let onReply: (() -> Void)?
     let onReplyTap: ((Int64) -> Void)?
     let onForward: (() -> Void)?
+    let isPrivateChat: Bool
     
     @State private var showMenu = false
     @State private var showReactionPicker = false
@@ -10368,18 +10523,23 @@ struct MessageBubbleView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if !isCurrentUser {
-                NavigationLink(destination: UserProfileView(userId: message.senderId)) {
-                    AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                // Аватар показываем только в групповых чатах/каналах
+                if !isPrivateChat {
+                    NavigationLink(destination: UserProfileView(userId: message.senderId)) {
+                        AvatarView(urlString: senderUser?.avatarUrl, size: 32)
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    if let nickname = senderUser?.nickName, !nickname.isEmpty {
+                    // Имя отправителя тоже показываем только в не-приватных чатах
+                    if !isPrivateChat, let nickname = senderUser?.nickName, !nickname.isEmpty {
                         Text(nickname)
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 12)
                     }
+                    
                     
                     messageContentView
                         .onLongPressGesture(minimumDuration: 0.5) {
