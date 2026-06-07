@@ -15,7 +15,7 @@ class UserProfileViewModel: ObservableObject {
     let userId: UUID
     private let userService = UserService.shared
     private let contactService = ContactService.shared
-    private let chatVM = ChatListViewModel()
+    private let graphQL = GraphQLClient.shared
     
     init(userId: UUID) {
         self.userId = userId
@@ -142,13 +142,20 @@ class UserProfileViewModel: ObservableObject {
         }
     }
     
-    func startPrivateChat() {
-        Task {
-            if let chat = await chatVM.findOrCreatePrivateChat(with: userId) {
-                await MainActor.run {
-                    NotificationCenter.default.post(name: .openChat, object: chat)
-                }
-            }
+    
+    func startPrivateChatAndGetChat() async -> Chat? {
+        let vm = ChatListViewModel()
+
+        if let chat = await vm.findOrCreatePrivateChat(with: userId) {
+
+            NotificationCenter.default.post(
+                name: .chatUpdated,
+                object: nil
+            )
+
+            return chat
         }
+
+        return nil
     }
 }

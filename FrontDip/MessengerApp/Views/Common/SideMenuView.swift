@@ -4,7 +4,7 @@
 //
 
 import SwiftUI
-import Foundation
+
 struct SideMenuView: View {
     @Binding var isShowing: Bool
     @EnvironmentObject var viewModel: ChatListViewModel
@@ -100,8 +100,13 @@ struct SideMenuView: View {
         .onAppear {
             AppState.shared.isSidebarOpen = true
         }
-        .onDisappear {
-            AppState.shared.isSidebarOpen = false
+        .onChange(of: isShowing) { newValue in
+            // Сбрасываем флаг при закрытии меню
+            if !newValue {
+                AppState.shared.isSidebarOpen = false
+            } else {
+                AppState.shared.isSidebarOpen = true
+            }
         }
         .sheet(isPresented: $showContacts) {
             ContactsView()

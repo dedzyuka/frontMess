@@ -350,22 +350,34 @@ struct MemberRow: View {
 
     var body: some View {
         HStack {
-            AvatarView(urlString: member.avatarUrl, size: 40)
-            VStack(alignment: .leading) {
-                Text(member.nickName)
-                    .font(.headline)
-                Text({
-                    switch member.role ?? "member" {
-                    case "owner": return "Владелец"
-                    case "admin": return "Администратор"
-                    default: return "Участник"
+            // Левая часть – кликабельная (аватар + имя + роль)
+            Button {
+                let profileView = UserProfileView(userId: member.userId)
+                let hosting = UIHostingController(rootView: profileView)
+                UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+            } label: {
+                HStack {
+                    AvatarView(urlString: member.avatarUrl, size: 40)
+                    VStack(alignment: .leading) {
+                        Text(member.nickName)
+                            .font(.headline)
+                        Text({
+                            switch member.role ?? "member" {
+                            case "owner": return "Владелец"
+                            case "admin": return "Администратор"
+                            default: return "Участник"
+                            }
+                        }())
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     }
-                }())
-                .font(.caption)
-                .foregroundColor(.secondary)
+                }
             }
+            .buttonStyle(PlainButtonStyle()) // без серого фона при нажатии
+
             Spacer()
 
+            // Блок для забаненных
             if member.status == "banned" {
                 Text("Забанен")
                     .font(.caption)
@@ -378,6 +390,7 @@ struct MemberRow: View {
                     .controlSize(.small)
                 }
             } else {
+                // Меню действий для администраторов
                 if currentUserRole == "owner" || (currentUserRole == "admin" && member.role != "owner") {
                     Menu {
                         if currentUserRole == "owner" && member.role != "owner" {

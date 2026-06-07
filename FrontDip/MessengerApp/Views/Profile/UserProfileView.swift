@@ -5,7 +5,7 @@ import SwiftUI
 struct UserProfileView: View {
     let userId: UUID
     @StateObject private var viewModel: UserProfileViewModel
-    @Environment(\.dismiss) var dismiss
+    @Environment(\.dismiss) private var dismiss
     
     init(userId: UUID) {
         self.userId = userId
@@ -46,9 +46,21 @@ struct UserProfileView: View {
                     // MARK: - Кнопки действий в зависимости от contactStatus
                     VStack(spacing: 12) {
                         if viewModel.contactStatus == "accepted" {
-                            // Уже контакт
                             Button("Написать") {
-                                viewModel.startPrivateChat()
+                                Task {
+                                    if let chat = await viewModel.startPrivateChatAndGetChat() {
+
+                                        await MainActor.run {
+
+                                            NotificationCenter.default.post(
+                                                name: .openChat,
+                                                object: chat
+                                            )
+
+                                            dismiss()
+                                        }
+                                    }
+                                }
                             }
                             .buttonStyle(.borderedProminent)
                             .frame(maxWidth: .infinity)
@@ -99,10 +111,23 @@ struct UserProfileView: View {
                             .frame(maxWidth: .infinity)
                             
                             Button("Написать") {
-                                viewModel.startPrivateChat()
+                                Task {
+                                    if let chat = await viewModel.startPrivateChatAndGetChat() {
+
+                                        await MainActor.run {
+
+                                            NotificationCenter.default.post(
+                                                name: .openChat,
+                                                object: chat
+                                            )
+
+                                            dismiss()
+                                        }
+                                    }
+                                }
                             }
-                            .buttonStyle(.bordered)
-                            .frame(maxWidth: .infinity)
+                                .buttonStyle(.bordered)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(.horizontal, 40)

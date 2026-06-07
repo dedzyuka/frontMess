@@ -32,6 +32,7 @@ class AppState: ObservableObject {
     @Published var isSidebarOpen = false
     @Published var pendingForwardText: String? = nil
     @Published var pendingScrollToMessageId: Int64?
+    @Published var pendingOpenChat: Chat? = nil
     
     private init() {}
     
@@ -770,7 +771,7 @@ struct Contact: Identifiable, Codable {
     let userId: UUID
     let contactUserId: UUID
     let status: String
-    let createdAt: Date
+    let createdAt: Date?
     let updatedAt: Date?
     var contactUser: User?   // теперь var
     
@@ -2390,7 +2391,7 @@ class LocalDatabase {
                     contactUserId <- contact.userId,
                     contactContactUserId <- contact.contactUserId,
                     contactStatus <- contact.status,
-                    contactCreatedAt <- contact.createdAt,
+                    contactCreatedAt <- contact.createdAt ?? Date(),
                     contactUpdatedAt <- contact.updatedAt ?? Date(),
                     contactUserJSON <- userJSON
                 ))
@@ -7127,6 +7128,9 @@ class UserProfileViewModel: ObservableObject {
             }
         }
     }
+    func startPrivateChatAndGetChat() async -> Chat? {
+        return await chatVM.findOrCreatePrivateChat(with: userId)
+    }
 }
 
 ./FrontDip/MessengerApp/ViewModels/SearchViewModel.swift
@@ -7667,35 +7671,45 @@ struct ChatListView: View {
     @State private var showChat = false
 
     var body: some View {
-        NavigationStack {
-            mainContent
-                .navigationTitle("Чаты")
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button {
-                            withAnimation(.spring()) { showMenu.toggle() }
-                        } label: {
-                            Image(systemName: "line.horizontal.3")
-                                .font(.title2)
+        ZStack {
+            NavigationStack {
+                mainContent
+                    .navigationTitle("Чаты")
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button {
+                                withAnimation(.spring()) { showMenu.toggle() }
+                            } label: {
+                                Image(systemName: "line.horizontal.3")
+                                    .font(.title2)
+                            }
+                        }
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Menu {
+                                Button("Новый чат") { showCreateChat = true }
+                                Button("Присоединиться") { showJoinChat = true }
+                            } label: {
+                                Image(systemName: "plus")
+                            }
                         }
                     }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Menu {
-                            Button("Новый чат") { showCreateChat = true }
-                            Button("Присоединиться") { showJoinChat = true }
-                        } label: {
-                            Image(systemName: "plus")
+                    .navigationDestination(isPresented: $showChat) {
+                        if let chat = selectedChat {
+                            ChatView(chat: chat)
                         }
                     }
-                }
-                .navigationDestination(isPresented: $showChat) {
-                    if let chat = selectedChat {
-                        ChatView(chat: chat)
-                    }
-                }
+            }
+            .disabled(showMenu)
+            .blur(radius: showMenu ? 5 : 0)
+
+            if showMenu {
+                SideMenuView(isShowing: $showMenu)
+                    .environmentObject(viewModel)
+                    .transition(.move(edge: .trailing))
+                    .zIndex(1)
+            }
         }
-        .disabled(showMenu)
-        .blur(radius: showMenu ? 5 : 0)
+        .animation(.spring(), value: showMenu)
         .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
             Task { await viewModel.loadChats() }
         }
@@ -7703,8 +7717,6 @@ struct ChatListView: View {
             Task { await viewModel.loadChats() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-            // Открываем чат только если сайдбар закрыт
-            guard !AppState.shared.isSidebarOpen else { return }
             if let chat = notification.object as? Chat {
                 selectedChat = chat
                 showChat = true
@@ -7742,6 +7754,16 @@ struct ChatListView: View {
         .onAppear {
             Task { await viewModel.loadChats() }
         }
+        .onReceive(AppState.shared.$pendingOpenChat) { chat in
+            if let chat = chat {
+                AppState.shared.pendingOpenChat = nil
+                selectedChat = chat
+                showChat = true
+                if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+                    viewModel.addChat(chat)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -7768,8 +7790,8 @@ struct ChatListView: View {
             List(viewModel.chats) { chat in
                 ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
                     .onTapGesture {
-                        // Открываем чат только если сайдбар закрыт
-                        guard !AppState.shared.isSidebarOpen else { return }
+                        // Убрана проверка AppState.shared.isSidebarOpen – она не нужна,
+                        // так как при открытом меню весь контент заблокирован через .disabled(showMenu)
                         selectedChat = chat
                         showChat = true
                     }
@@ -7783,7 +7805,7 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - ChatRow (без изменений)
+// MARK: - ChatRow (без изменений, но для полноты оставлен)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -7904,7 +7926,6 @@ struct MessageStatusIcon: View {
     }
 }
 
-
 ./FrontDip/MessengerApp/Views/Chat/ChatRow.swift
 
 
@@ -7915,7 +7936,7 @@ import SwiftUI
 struct ChatSidebarView: View {
     let chat: Chat
     @ObservedObject var chatViewModel: ChatViewModel
-    @Environment(\.dismiss) var dismiss
+    @Environment(\.presentationMode) var presentationMode
     @StateObject private var viewModel: ChatSidebarViewModel
     
     init(chat: Chat, chatViewModel: ChatViewModel) {
@@ -7925,76 +7946,70 @@ struct ChatSidebarView: View {
     }
     
     var body: some View {
-        NavigationView {
-            Group {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Поле поиска
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            .onSubmit {
-                                chatViewModel.searchMessages()
-                            }
-                        if !chatViewModel.searchQuery.isEmpty {
-                            Button(action: {
-                                chatViewModel.clearSearch()
-                            }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+        VStack(alignment: .leading, spacing: 0) {
+            // Поле поиска
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Поиск сообщений", text: $chatViewModel.searchQuery)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .onSubmit {
+                        chatViewModel.searchMessages()
                     }
-                    .padding(8)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(10)
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    
-                    if !chatViewModel.searchQuery.isEmpty {
-                        // Результаты поиска
-                        if chatViewModel.isSearching {
-                            ProgressView()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if chatViewModel.searchResults.isEmpty {
-                            Text("Сообщения не найдены")
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            List(chatViewModel.searchResults) { message in
-                                SearchMessResultRow(message: message, chatViewModel: chatViewModel)
-                                    .onTapGesture {
-                                        // 1. Принудительно закрыть сайдбар
-                                        AppState.shared.isSidebarOpen = false
-                                        dismiss()
-                                        
-                                        // 2. Сохраняем ID в AppState (ждём появления ChatView)
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                            AppState.shared.pendingScrollToMessageId = message.messageId
-                                        }
-                                    }
-                            }
-                            .listStyle(PlainListStyle())
-                        }
-                    } else {
-                        // Обычное содержимое (личный чат / группа / канал)
-                        if chat.isPrivate {
-                            privateChatContent
-                        } else if chat.isGroup {
-                            groupChatContent
-                        } else {
-                            channelContent
-                        }
+                if !chatViewModel.searchQuery.isEmpty {
+                    Button(action: {
+                        chatViewModel.clearSearch()
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
                     }
                 }
             }
-            .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") { dismiss() }
+            .padding(8)
+            .background(Color(.systemGray6))
+            .cornerRadius(10)
+            .padding(.horizontal)
+            .padding(.top, 8)
+            
+            if !chatViewModel.searchQuery.isEmpty {
+                // Результаты поиска
+                if chatViewModel.isSearching {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if chatViewModel.searchResults.isEmpty {
+                    Text("Сообщения не найдены")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(chatViewModel.searchResults) { message in
+                        SearchMessResultRow(
+                            message: message,
+                            chatViewModel: chatViewModel,
+                            onDismiss: {
+                                presentationMode.wrappedValue.dismiss()
+                            }
+                        )
+                    }
+                    .listStyle(PlainListStyle())
+                }
+            } else {
+                // Обычное содержимое (личный чат / группа / канал)
+                if chat.isPrivate {
+                    privateChatContent
+                } else if chat.isGroup {
+                    groupChatContent
+                } else {
+                    channelContent
+                }
+            }
+        }
+        .navigationTitle(chat.isPrivate ? "Информация" : (chat.name ?? "Чат"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("Готово") {
+                    presentationMode.wrappedValue.dismiss()
                 }
             }
         }
@@ -8017,7 +8032,7 @@ struct ChatSidebarView: View {
         }
     }
     
-    // MARK: - Личный чат (сокращён для читаемости – оставьте как у вас)
+    // MARK: - Личный чат
     private var privateChatContent: some View {
         ScrollView {
             VStack(spacing: 20) {
@@ -8051,7 +8066,7 @@ struct ChatSidebarView: View {
                     }
                     
                     Button("Написать") {
-                        dismiss()
+                        presentationMode.wrappedValue.dismiss()
                         NotificationCenter.default.post(name: .openChat, object: chat)
                     }
                     .buttonStyle(.borderedProminent)
@@ -8090,7 +8105,7 @@ struct ChatSidebarView: View {
         }
     }
     
-    // MARK: - Группа (и канал) – сокращён, оставьте ваш полный код
+    // MARK: - Группа
     private var groupChatContent: some View {
         VStack {
             if let avatarUrl = chat.avatarUrl, !avatarUrl.isEmpty {
@@ -8225,7 +8240,7 @@ struct ChatSidebarView: View {
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
         alert.addAction(UIAlertAction(title: "Удалить", style: .destructive) { _ in
             Task {
-                await MainActor.run { self.dismiss() }
+                await MainActor.run { presentationMode.wrappedValue.dismiss() }
                 if await self.viewModel.deleteChat() {
                     NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
                 }
@@ -8242,7 +8257,7 @@ struct ChatSidebarView: View {
                 if await self.viewModel.leaveChat() {
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: .chatDeleted, object: self.chat.id)
-                        self.dismiss()
+                        self.presentationMode.wrappedValue.dismiss()
                     }
                 }
             }
@@ -8256,10 +8271,11 @@ struct ChatSidebarView: View {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
-// MARK: - MemberRow (компонент строки участника)
+
+// MARK: - MemberRow
 struct MemberRow: View {
     let member: ChatMemberItem
-    let currentUserRole: String   // "owner", "admin", "member"
+    let currentUserRole: String
     let onRoleChange: (UUID, String) -> Void
     let onKick: (UUID) -> Void
     let onBan: (UUID, Date?) -> Void
@@ -8267,22 +8283,34 @@ struct MemberRow: View {
 
     var body: some View {
         HStack {
-            AvatarView(urlString: member.avatarUrl, size: 40)
-            VStack(alignment: .leading) {
-                Text(member.nickName)
-                    .font(.headline)
-                Text({
-                    switch member.role ?? "member" {
-                    case "owner": return "Владелец"
-                    case "admin": return "Администратор"
-                    default: return "Участник"
+            // Левая часть – кликабельная (аватар + имя + роль)
+            Button {
+                let profileView = UserProfileView(userId: member.userId)
+                let hosting = UIHostingController(rootView: profileView)
+                UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+            } label: {
+                HStack {
+                    AvatarView(urlString: member.avatarUrl, size: 40)
+                    VStack(alignment: .leading) {
+                        Text(member.nickName)
+                            .font(.headline)
+                        Text({
+                            switch member.role ?? "member" {
+                            case "owner": return "Владелец"
+                            case "admin": return "Администратор"
+                            default: return "Участник"
+                            }
+                        }())
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     }
-                }())
-                .font(.caption)
-                .foregroundColor(.secondary)
+                }
             }
+            .buttonStyle(PlainButtonStyle()) // без серого фона при нажатии
+
             Spacer()
 
+            // Блок для забаненных
             if member.status == "banned" {
                 Text("Забанен")
                     .font(.caption)
@@ -8295,6 +8323,7 @@ struct MemberRow: View {
                     .controlSize(.small)
                 }
             } else {
+                // Меню действий для администраторов
                 if currentUserRole == "owner" || (currentUserRole == "admin" && member.role != "owner") {
                     Menu {
                         if currentUserRole == "owner" && member.role != "owner" {
@@ -8320,34 +8349,36 @@ struct MemberRow: View {
     }
 }
 
+// MARK: - SearchMessResultRow
 struct SearchMessResultRow: View {
     let message: Message
     let chatViewModel: ChatViewModel
-    @Environment(\.dismiss) var dismiss
-    
+    let onDismiss: () -> Void
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(chatViewModel.getUserNickname(for: message.senderId))
-                .font(.headline)
-            Text(message.content ?? "")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .lineLimit(2)
-            Text(formatDate(message.createdAt))
-                .font(.caption2)
-                .foregroundColor(.gray)
-        }
-        .padding(.vertical, 4)
-        .onTapGesture {
-            // Закрыть сайдбар и установить ID в AppState
+        Button {
+            onDismiss()
             AppState.shared.isSidebarOpen = false
-            dismiss()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 AppState.shared.pendingScrollToMessageId = message.messageId
             }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chatViewModel.getUserNickname(for: message.senderId))
+                    .font(.headline)
+                Text(message.content ?? "")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                Text(formatDate(message.createdAt))
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+            }
+            .padding(.vertical, 4)
         }
+        .buttonStyle(PlainButtonStyle())
     }
-    
+
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "dd.MM.yy HH:mm"
@@ -8498,6 +8529,20 @@ struct ChatView: View {
                 }
             }
         }
+        .onReceive(AppState.shared.$pendingScrollToMessageId) { newId in
+            guard let id = newId else { return }
+            AppState.shared.pendingScrollToMessageId = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                viewModel.scrollToMessage(messageId: id) {
+                    DispatchQueue.main.async {
+                        withAnimation {
+                            scrollProxy?.scrollTo(id, anchor: .center)
+                        }
+                        viewModel.highlightMessage(id)
+                    }
+                }
+            }
+        }
         .onDisappear {
             viewModel.clearPendingForward()
         }
@@ -8631,6 +8676,7 @@ struct ChatView: View {
             .onAppear {
                 scrollProxy = proxy
             }
+            
             .onDisappear {
                 scrollProxy = nil
             }
@@ -9777,7 +9823,7 @@ struct SearchResultRow: View {
 //
 
 import SwiftUI
-import Foundation
+
 struct SideMenuView: View {
     @Binding var isShowing: Bool
     @EnvironmentObject var viewModel: ChatListViewModel
@@ -9873,8 +9919,13 @@ struct SideMenuView: View {
         .onAppear {
             AppState.shared.isSidebarOpen = true
         }
-        .onDisappear {
-            AppState.shared.isSidebarOpen = false
+        .onChange(of: isShowing) { newValue in
+            // Сбрасываем флаг при закрытии меню
+            if !newValue {
+                AppState.shared.isSidebarOpen = false
+            } else {
+                AppState.shared.isSidebarOpen = true
+            }
         }
         .sheet(isPresented: $showContacts) {
             ContactsView()
@@ -10759,7 +10810,7 @@ struct ContactRequestRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Text(formatDate(request.createdAt))
+                    Text(formatDate(request.createdAt ?? Date()))
                         .font(.caption2)
                         .foregroundColor(.gray)
                 }
@@ -11182,7 +11233,7 @@ import SwiftUI
 struct UserProfileView: View {
     let userId: UUID
     @StateObject private var viewModel: UserProfileViewModel
-    @Environment(\.dismiss) var dismiss
+    @Environment(\.dismiss) private var dismiss
     
     init(userId: UUID) {
         self.userId = userId
@@ -11223,9 +11274,15 @@ struct UserProfileView: View {
                     // MARK: - Кнопки действий в зависимости от contactStatus
                     VStack(spacing: 12) {
                         if viewModel.contactStatus == "accepted" {
-                            // Уже контакт
                             Button("Написать") {
-                                viewModel.startPrivateChat()
+                                Task {
+                                    if let chat = await viewModel.startPrivateChatAndGetChat() {
+                                        await MainActor.run {
+                                            AppState.shared.pendingOpenChat = chat
+                                            dismiss()
+                                        }
+                                    }
+                                }
                             }
                             .buttonStyle(.borderedProminent)
                             .frame(maxWidth: .infinity)
@@ -11276,10 +11333,17 @@ struct UserProfileView: View {
                             .frame(maxWidth: .infinity)
                             
                             Button("Написать") {
-                                viewModel.startPrivateChat()
-                            }
-                            .buttonStyle(.bordered)
-                            .frame(maxWidth: .infinity)
+                                    Task {
+                                        if let chat = await viewModel.startPrivateChatAndGetChat() {
+                                            await MainActor.run {
+                                                AppState.shared.pendingOpenChat = chat
+                                                dismiss()
+                                            }
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(.horizontal, 40)

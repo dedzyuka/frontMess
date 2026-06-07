@@ -161,7 +161,7 @@ struct ContactRequestRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    Text(formatDate(request.createdAt))
+                    Text(formatDate(request.createdAt ?? Date()))
                         .font(.caption2)
                         .foregroundColor(.gray)
                 }

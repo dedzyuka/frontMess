@@ -246,7 +246,7 @@ struct Contact: Identifiable, Codable {
     let userId: UUID
     let contactUserId: UUID
     let status: String
-    let createdAt: Date
+    let createdAt: Date?
     let updatedAt: Date?
     var contactUser: User?   // теперь var
     

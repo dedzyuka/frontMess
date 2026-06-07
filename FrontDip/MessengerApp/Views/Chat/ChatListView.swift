@@ -16,35 +16,45 @@ struct ChatListView: View {
     @State private var showChat = false
 
     var body: some View {
-        NavigationStack {
-            mainContent
-                .navigationTitle("Чаты")
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button {
-                            withAnimation(.spring()) { showMenu.toggle() }
-                        } label: {
-                            Image(systemName: "line.horizontal.3")
-                                .font(.title2)
+        ZStack {
+            NavigationStack {
+                mainContent
+                    .navigationTitle("Чаты")
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button {
+                                withAnimation(.spring()) { showMenu.toggle() }
+                            } label: {
+                                Image(systemName: "line.horizontal.3")
+                                    .font(.title2)
+                            }
+                        }
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Menu {
+                                Button("Новый чат") { showCreateChat = true }
+                                Button("Присоединиться") { showJoinChat = true }
+                            } label: {
+                                Image(systemName: "plus")
+                            }
                         }
                     }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Menu {
-                            Button("Новый чат") { showCreateChat = true }
-                            Button("Присоединиться") { showJoinChat = true }
-                        } label: {
-                            Image(systemName: "plus")
+                    .navigationDestination(isPresented: $showChat) {
+                        if let chat = selectedChat {
+                            ChatView(chat: chat)
                         }
                     }
-                }
-                .navigationDestination(isPresented: $showChat) {
-                    if let chat = selectedChat {
-                        ChatView(chat: chat)
-                    }
-                }
+            }
+            .disabled(showMenu)
+            .blur(radius: showMenu ? 5 : 0)
+
+            if showMenu {
+                SideMenuView(isShowing: $showMenu)
+                    .environmentObject(viewModel)
+                    .transition(.move(edge: .trailing))
+                    .zIndex(1)
+            }
         }
-        .disabled(showMenu)
-        .blur(radius: showMenu ? 5 : 0)
+        .animation(.spring(), value: showMenu)
         .onReceive(NotificationCenter.default.publisher(for: .chatCreated)) { _ in
             Task { await viewModel.loadChats() }
         }
@@ -52,8 +62,6 @@ struct ChatListView: View {
             Task { await viewModel.loadChats() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-            // Открываем чат только если сайдбар закрыт
-            guard !AppState.shared.isSidebarOpen else { return }
             if let chat = notification.object as? Chat {
                 selectedChat = chat
                 showChat = true
@@ -91,6 +99,7 @@ struct ChatListView: View {
         .onAppear {
             Task { await viewModel.loadChats() }
         }
+        
     }
 
     @ViewBuilder
@@ -117,8 +126,8 @@ struct ChatListView: View {
             List(viewModel.chats) { chat in
                 ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
                     .onTapGesture {
-                        // Открываем чат только если сайдбар закрыт
-                        guard !AppState.shared.isSidebarOpen else { return }
+                        // Убрана проверка AppState.shared.isSidebarOpen – она не нужна,
+                        // так как при открытом меню весь контент заблокирован через .disabled(showMenu)
                         selectedChat = chat
                         showChat = true
                     }
@@ -132,7 +141,7 @@ struct ChatListView: View {
     }
 }
 
-// MARK: - ChatRow (без изменений)
+// MARK: - ChatRow (без изменений, но для полноты оставлен)
 struct ChatRow: View {
     let chat: Chat
     let currentUserId: UUID?
@@ -252,4 +261,3 @@ struct MessageStatusIcon: View {
         }
     }
 }
-

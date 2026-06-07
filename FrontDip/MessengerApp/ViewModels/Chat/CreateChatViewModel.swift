@@ -98,6 +98,7 @@ class CreateChatViewModel: ObservableObject {
             )
             await MainActor.run {
                 NotificationCenter.default.post(name: .chatCreated, object: chat)
+                
                 self.showInviteSheet = true
             }
             return true
