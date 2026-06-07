@@ -19,14 +19,14 @@ class AttachmentUploader {
         return try await upload(data: imageData, mimeType: "image/jpeg", fileName: "image.jpg")
     }
 
-    func uploadFile(url: URL) async throws -> (attachmentId: UUID, storagePath: String) {
+    func uploadFile(url: URL, mimeType: String? = nil) async throws -> (attachmentId: UUID, storagePath: String) {
         let data = try Data(contentsOf: url)
         let fileName = url.lastPathComponent
-        let mimeType = guessMimeType(from: fileName)
-        return try await upload(data: data, mimeType: mimeType, fileName: fileName)
+        let finalMimeType = mimeType ?? guessMimeType(from: fileName)
+        return try await upload(data: data, mimeType: finalMimeType, fileName: fileName)
     }
 
-    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String) {
+    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String){
         guard let token = TokenManager.shared.accessToken else {
             throw UploadError.notAuthenticated
         }
@@ -75,6 +75,7 @@ class AttachmentUploader {
         case "mp4": return "video/mp4"
         case "mov": return "video/quicktime"
         case "mp3": return "audio/mpeg"
+        case "m4a": return "audio/m4a"          // <-- добавить
         case "pdf": return "application/pdf"
         case "doc", "docx": return "application/msword"
         case "xls", "xlsx": return "application/vnd.ms-excel"

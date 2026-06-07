@@ -526,9 +526,8 @@ struct ChatView: View {
             isSending = false
             isUploading = false
         }
-        
         do {
-            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            let result = try await AttachmentUploader.shared.uploadFile(url: url, mimeType: "audio/m4a")
             let success = await viewModel.sendMessage(
                 attachmentId: result.attachmentId,
                 storagePath: result.storagePath,
