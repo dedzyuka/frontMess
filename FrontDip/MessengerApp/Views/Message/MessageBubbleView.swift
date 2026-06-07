@@ -201,7 +201,19 @@ struct MessageBubbleView: View {
             // Вложения и текст
             if let attachments = message.attachments, !attachments.isEmpty {
                 ForEach(attachments, id: \.attachmentId) { attachment in
-                    AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                    if message.type == "voice" || attachment.mimeType?.hasPrefix("audio/") == true {
+                        VoiceMessageBubble(attachment: attachment, isCurrentUser: isCurrentUser)
+                    } else if attachment.mimeType?.hasPrefix("video/") == true {
+                        // Если видео короткое (≤60 сек) – показываем как кружок, иначе как обычный файл
+                        let isShortVideo = (attachment.duration ?? 0) <= 60
+                        if isShortVideo {
+                            CircularVideoView(attachment: attachment)
+                        } else {
+                            AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                        }
+                    } else {
+                        AttachmentView(attachment: attachment, isCurrentUser: isCurrentUser)
+                    }
                 }
             }
             

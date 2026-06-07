@@ -1,9 +1,7 @@
-
-// App/AppConfig.swift
 import Foundation
 
 struct AppConfig {
-    static let baseURL = "http://localhost:8002"
+    static let baseURL = "http://192.168.100.247:8002"
     static let graphqlPath = "/graphql"
     static let websocketPath = "/ws/chat"
     
@@ -12,6 +10,6 @@ struct AppConfig {
     }
     
     static var websocketURL: URL {
-        URL(string: "ws://localhost:8000" + websocketPath)!
+        URL(string: "ws://192.168.100.247:8000" + websocketPath)!
     }
 }

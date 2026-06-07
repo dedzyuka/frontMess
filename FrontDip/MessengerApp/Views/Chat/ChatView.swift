@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct ChatView: View {
     let chat: Chat
@@ -28,7 +29,13 @@ struct ChatView: View {
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
-    // Сохраняем ScrollViewProxy для использования в onReceive
+    
+    // NEW: dynamic send button
+    @State private var sendButtonMode: SendButtonMode = .video
+    @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "video"
+    @State private var showingVoiceRecorder = false
+    @State private var showingVideoRecorder = false
+    
     @State private var scrollProxy: ScrollViewProxy?
     
     private var canSendMessage: Bool {
@@ -44,6 +51,16 @@ struct ChatView: View {
          selectedVideoURL != nil ||
          selectedDocumentURL != nil ||
          viewModel.pendingForward?.attachmentId != nil) && !isSending
+    }
+    
+    private var shouldShowSend: Bool {
+        !viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil ||
+        viewModel.pendingForward != nil
+    }
+    
+    enum SendButtonMode: String {
+        case video, audio, send
     }
     
     init(chat: Chat) {
@@ -95,6 +112,20 @@ struct ChatView: View {
                 forwardMessage = nil
             }
         }
+        .sheet(isPresented: $showingVoiceRecorder) {
+            VoiceRecorderView { url, duration, waveform in
+                Task {
+                    await sendVoiceMessage(url: url, duration: duration, waveform: waveform)
+                }
+            }
+        }
+        .sheet(isPresented: $showingVideoRecorder) {
+            VideoRecorderView { url in
+                Task {
+                    await sendCircularVideo(url: url)
+                }
+            }
+        }
         .alert("Редактировать сообщение", isPresented: $showEditAlert, actions: {
             TextField("Новый текст", text: $editText)
             Button("Отмена", role: .cancel) { }
@@ -138,10 +169,8 @@ struct ChatView: View {
                 viewModel.newMessageText = pending.content
             }
             
-            // ⭐️ ГЛАВНАЯ ЛОГИКА: прокрутка к сообщению после появления
             if let pendingId = AppState.shared.pendingScrollToMessageId {
                 AppState.shared.pendingScrollToMessageId = nil
-                // Даём время на отрисовку (ScrollViewReader появится)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     viewModel.scrollToMessage(messageId: pendingId) {
                         DispatchQueue.main.async {
@@ -153,6 +182,8 @@ struct ChatView: View {
                     }
                 }
             }
+            
+            sendButtonMode = SendButtonMode(rawValue: lastSendButtonModeRaw) ?? .video
         }
         .onReceive(AppState.shared.$pendingScrollToMessageId) { newId in
             guard let id = newId else { return }
@@ -366,14 +397,34 @@ struct ChatView: View {
                 ProgressView().frame(width: 32, height: 32)
             } else {
                 Button {
-                    sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
-                    replyingToMessage = nil
+                    if shouldShowSend {
+                        sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
+                        replyingToMessage = nil
+                    } else {
+                        switch sendButtonMode {
+                        case .video:
+                            showingVideoRecorder = true
+                            sendButtonMode = .audio
+                        case .audio:
+                            showingVoiceRecorder = true
+                            sendButtonMode = .video
+                        case .send:
+                            break
+                        }
+                        lastSendButtonModeRaw = sendButtonMode.rawValue
+                    }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(canSend ? .blue : .gray)
+                    if shouldShowSend {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(canSend ? .blue : .gray)
+                    } else {
+                        Image(systemName: sendButtonMode == .video ? "video.circle.fill" : "mic.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(.blue)
+                    }
                 }
-                .disabled(!canSend)
+                .disabled(!shouldShowSend && sendButtonMode == .send)
             }
         }
         .padding()
@@ -467,6 +518,80 @@ struct ChatView: View {
         }
     }
     
+    // MARK: - Отправка голосового сообщения
+    private func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: String?) async {
+        isSending = true
+        isUploading = true
+        defer {
+            isSending = false
+            isUploading = false
+        }
+        
+        do {
+            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            let success = await viewModel.sendMessage(
+                attachmentId: result.attachmentId,
+                storagePath: result.storagePath,
+                fileName: url.lastPathComponent,
+                fileSize: nil,
+                mimeType: "audio/m4a",
+                replyToId: replyingToMessage?.messageId,
+                forwardedFromUserId: nil,
+                forwardedFromNickname: nil,
+                customContent: nil
+            )
+            if success {
+                replyingToMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка загрузки голосового: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Отправка видеосообщения (кружок)
+
+    
+    // MARK: - Отправка видеосообщения (кружок)
+    private func sendCircularVideo(url: URL) async {
+        print("📹 sendCircularVideo called with url: \(url)")
+        isSending = true
+        isUploading = true
+        defer {
+            isSending = false
+            isUploading = false
+        }
+        
+        let asset = AVAsset(url: url)
+        let duration = CMTimeGetSeconds(asset.duration)
+        print("📹 Video duration: \(duration)")
+        
+        do {
+            print("📹 Uploading video to server...")
+            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            print("📹 Upload success, attachmentId: \(result.attachmentId)")
+            
+            let success = await viewModel.sendMessage(
+                attachmentId: result.attachmentId,
+                storagePath: result.storagePath,
+                fileName: url.lastPathComponent,
+                fileSize: nil,
+                mimeType: "video/mp4",
+                replyToId: replyingToMessage?.messageId
+            )
+            print("📹 sendMessage success: \(success)")
+            if success {
+                replyingToMessage = nil
+            }
+        } catch {
+            await MainActor.run {
+                NotificationService.shared.showError("Ошибка загрузки видео: \(error.localizedDescription)")
+            }
+            print("❌ Video upload error: \(error)")
+        }
+    }
+    
     private func handleTyping(_ text: String) {
         if !text.isEmpty && !isTyping && canSendMessage {
             isTyping = true
@@ -480,6 +605,7 @@ struct ChatView: View {
             }
         }
     }
+    
     private func previewTypeForSelected() -> AttachmentPreviewBar.AttachmentType {
         if let image = selectedImage {
             return .image(image)
@@ -490,7 +616,7 @@ struct ChatView: View {
         }
         fatalError("No attachment selected")
     }
-
+    
     private func clearSelectedAttachments() {
         selectedImage = nil
         selectedVideoURL = nil

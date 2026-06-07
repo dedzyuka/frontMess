@@ -52,10 +52,18 @@
 		1EB9759B2FBB11F70090F790 /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Info.plist,
 				MessengerApp/Services/Database/LocalDatabase.swift,
 				MessengerApp/Services/Network/ContactService.swift,
 			);
 			target = 1E0B45E02EE44B7F00BFD58D /* FrontDipUser2 */;
+		};
+		1ECE180C2FD5661500A58572 /* Exceptions for "FrontDip" folder in "FrontDip" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1E2DC35B2EDD995F0067EDAA /* FrontDip */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -63,6 +71,7 @@
 		1E2DC35E2EDD995F0067EDAA /* FrontDip */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
+				1ECE180C2FD5661500A58572 /* Exceptions for "FrontDip" folder in "FrontDip" target */,
 				1EB9759B2FBB11F70090F790 /* Exceptions for "FrontDip" folder in "FrontDipUser2" target */,
 			);
 			path = FrontDip;
@@ -440,9 +449,16 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D8L5NCMQ9N;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Для сохранения изображений в галерею";
+				INFOPLIST_FILE = FrontDip/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Для записи видеосообщений требуется доступ к камере<";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Для записи видео и голосовых сообщений требуется доступ к микрофону";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -472,9 +488,16 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D8L5NCMQ9N;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Для сохранения изображений в галерею";
+				INFOPLIST_FILE = FrontDip/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Для записи видеосообщений требуется доступ к камере<";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Для записи видео и голосовых сообщений требуется доступ к микрофону";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

@@ -76,6 +76,10 @@ class LocalDatabase {
     private let attStoragePath = Expression<String>("storage_path")
     private let attUploadedAt = Expression<Date?>("uploaded_at")
     private let attMessageCreatedAt = Expression<Date?>("message_created_at")
+    private let attDuration = Expression<Int?>("duration")
+    private let attWaveform = Expression<String?>("waveform")
+    private let attThumbnailUrl = Expression<String?>("thumbnail_url")
+    private let attIsCircular = Expression<Bool>("is_circular")
     
     // === Message Statuses columns ===
     private let msMessageId = Expression<Int64>("message_id")
@@ -162,7 +166,11 @@ class LocalDatabase {
                 t.column(attStoragePath)
                 t.column(attUploadedAt)
                 t.column(attMessageCreatedAt)
-                t.foreignKey(attMessageId, references: messagesTable, msgId, delete: .cascade)
+                // НОВЫЕ КОЛОНКИ
+                t.column(attDuration)
+                t.column(attWaveform)
+                t.column(attThumbnailUrl)
+                t.column(attIsCircular)
             })
             
             try db?.run(messageStatusesTable.create(ifNotExists: true) { t in
@@ -473,7 +481,11 @@ class LocalDatabase {
                     attFileSize <- att.fileSize,
                     attMimeType <- att.mimeType,
                     attStoragePath <- att.storagePath,
-                    attUploadedAt <- att.uploadedAt ?? Date()
+                    attUploadedAt <- att.uploadedAt ?? Date(),
+                    attDuration <- att.duration,
+                    attWaveform <- att.waveform,
+                    attThumbnailUrl <- att.thumbnailUrl,
+                    attIsCircular <- att.isCircular ?? false
                 ))
             }
             return true
@@ -496,7 +508,11 @@ class LocalDatabase {
                     mimeType: row[attMimeType],
                     storagePath: row[attStoragePath],
                     uploadedAt: row[attUploadedAt],
-                    messageCreatedAt: row[attMessageCreatedAt]
+                    messageCreatedAt: row[attMessageCreatedAt],
+                    duration: row[attDuration],
+                    waveform: row[attWaveform],
+                    thumbnailUrl: row[attThumbnailUrl],
+                    isCircular: row[attIsCircular]
                 )
                 attachments.append(att)
             }

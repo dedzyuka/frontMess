@@ -687,7 +687,7 @@ class ChatViewModel: ObservableObject {
         return usersCache[senderId]
     }
     
-    // MARK: - Send message (с поддержкой pending forward)
+    // MARK: - Send message (с поддержкой pending forward и медиа-типов)
     func sendMessage(attachmentId: UUID? = nil,
                      storagePath: String? = nil,
                      fileName: String? = nil,
@@ -721,7 +721,11 @@ class ChatViewModel: ObservableObject {
                 mimeType: mimeType,
                 storagePath: storage,
                 uploadedAt: Date(),
-                messageCreatedAt: nil
+                messageCreatedAt: nil,
+                duration: nil,
+                waveform: nil,
+                thumbnailUrl: nil,
+                isCircular: nil
             )
             tempMessage.attachments = [localAttachment]
             await MainActor.run {

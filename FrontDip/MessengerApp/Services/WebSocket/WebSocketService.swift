@@ -160,6 +160,12 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                    let attachmentId = UUID(uuidString: attachmentIdString),
                    let fileName = attDict["file_name"] as? String,
                    let storagePath = attDict["storage_path"] as? String {
+                    
+                    let duration = attDict["duration"] as? Int
+                    let waveform = attDict["waveform"] as? String
+                    let thumbnailUrl = attDict["thumbnail_url"] as? String
+                    let isCircular = attDict["is_circular"] as? Bool
+                    
                     let attachment = Attachment(
                         attachmentId: attachmentId,
                         fileName: fileName,
@@ -167,7 +173,11 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
                         uploadedAt: Date(),
-                        messageCreatedAt: createdAt
+                        messageCreatedAt: createdAt,
+                        duration: attDict["duration"] as? Int,
+                        waveform: attDict["waveform"] as? String,
+                        thumbnailUrl: attDict["thumbnail_url"] as? String,
+                        isCircular: attDict["is_circular"] as? Bool
                     )
                     attachments.append(attachment)
                 }

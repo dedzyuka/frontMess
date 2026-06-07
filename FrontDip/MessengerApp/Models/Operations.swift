@@ -203,6 +203,7 @@ struct GraphQLQueries {
     """
     
 
+    // В файле GraphQLQueries.swift
     static let sendMessage = """
         mutation SendMessage($chatId: String!, $content: String!, $attachmentId: String, $replyToId: Int, $forwardedFromUserId: String, $forwardedFromNickname: String) {
             message {
@@ -224,6 +225,12 @@ struct GraphQLQueries {
                         fileSize
                         mimeType
                         storagePath
+                    }
+                    reactions {
+                        messageId
+                        userId
+                        emoji
+                        createdAt
                     }
                 }
             }
@@ -676,7 +683,11 @@ struct Attachment: Codable {
     let mimeType: String?
     let storagePath: String
     let uploadedAt: Date?
-    let messageCreatedAt: Date?      // новое поле
+    let messageCreatedAt: Date?
+    let duration: Int?
+    let waveform: String?
+    let thumbnailUrl: String?
+    let isCircular: Bool?
     
     enum CodingKeys: String, CodingKey {
         case attachmentId
@@ -686,6 +697,35 @@ struct Attachment: Codable {
         case storagePath
         case uploadedAt
         case messageCreatedAt = "message_created_at"
+        case duration
+        case waveform
+        case thumbnailUrl = "thumbnail_url"
+        case isCircular = "is_circular"
+    }
+    
+    // Инициализатор для ручного создания (например, из WebSocket)
+    init(attachmentId: UUID,
+         fileName: String,
+         fileSize: Int? = nil,
+         mimeType: String? = nil,
+         storagePath: String,
+         uploadedAt: Date? = nil,
+         messageCreatedAt: Date? = nil,
+         duration: Int? = nil,
+         waveform: String? = nil,
+         thumbnailUrl: String? = nil,
+         isCircular: Bool? = nil) {
+        self.attachmentId = attachmentId
+        self.fileName = fileName
+        self.fileSize = fileSize
+        self.mimeType = mimeType
+        self.storagePath = storagePath
+        self.uploadedAt = uploadedAt
+        self.messageCreatedAt = messageCreatedAt
+        self.duration = duration
+        self.waveform = waveform
+        self.thumbnailUrl = thumbnailUrl
+        self.isCircular = isCircular
     }
 }
 
