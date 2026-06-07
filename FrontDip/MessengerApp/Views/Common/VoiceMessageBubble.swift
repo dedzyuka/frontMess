@@ -107,6 +107,7 @@ struct VoiceMessageBubble: View {
     }
 
     private func startPlayback() {
+        NotificationCenter.default.post(name: .shouldStopVideoPlayback, object: nil)
         guard let url = audioURL else { return }
         stopPlayback()
 

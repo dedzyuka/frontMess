@@ -28,6 +28,9 @@ extension Notification.Name {
     static let scrollToMessage = Notification.Name("scrollToMessage")
     
 }
+extension Notification.Name {
+    static let shouldStopVideoPlayback = Notification.Name("shouldStopVideoPlayback")
+}
 
 class NotificationService {
     static let shared = NotificationService()
