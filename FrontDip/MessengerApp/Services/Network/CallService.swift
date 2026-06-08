@@ -38,15 +38,23 @@ class CallService: NSObject, ObservableObject {
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: AcceptCallWrapper }
         struct AcceptCallWrapper: Decodable { let acceptCall: Call }
-        let response: Response = try await graphQL.perform(
-            query: GraphQLQueries.acceptCall,
-            variables: variables,
-            responseType: Response.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        let call = response.call.acceptCall
-        await MainActor.run { self.currentCall = call }
-        return call
+        
+        do {
+            let response: Response = try await graphQL.perform(
+                query: GraphQLQueries.acceptCall,
+                variables: variables,
+                responseType: Response.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let call = response.call.acceptCall
+            await MainActor.run { self.currentCall = call }
+            return call
+        } catch {
+            // При любой ошибке (включая IntegrityError) сбрасываем текущий вызов,
+            // чтобы клиент мог принять следующий входящий вызов.
+            await MainActor.run { self.currentCall = nil }
+            throw error
+        }
     }
     
     func rejectCall(callId: UUID) async throws {

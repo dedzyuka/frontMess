@@ -2,6 +2,7 @@
 import SwiftUI
 
 import PushKit
+import LiveKit
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
@@ -9,8 +10,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = CallManager.shared
         registry.desiredPushTypes = [.voIP]
+        
         return true
     }
+    
 }
 
 @main
@@ -19,6 +22,11 @@ struct MessengerApp: App {
     @StateObject private var appState = AppState.shared
     @StateObject private var contactService = ContactService.shared
     @StateObject private var activeVideoManager = ActiveVideoManager.shared   // новая строка
+    
+    init() {
+            // Включаем детальное логирование для отладки WebRTC
+            LiveKitSDK.setLogLevel(.debug)
+        }
 
     var body: some Scene {
         WindowGroup {
@@ -70,6 +78,9 @@ struct ContentView: View {
         }
         .sheet(item: $outgoingCallData) { data in
             OutgoingCallView(call: data.call, contactName: data.contactName, avatarURL: data.avatarURL)
+                .onDisappear {
+                            outgoingCallData = nil
+                        }
         }
         // Входящий вызов
         .onReceive(NotificationCenter.default.publisher(for: .incomingCall)) { notification in
@@ -101,7 +112,9 @@ struct ContentView: View {
             }
         }
         .sheet(item: $incomingCall) { call in
-            IncomingCallView(call: call, contactName: incomingCallerName, avatarURL: incomingCallerAvatar)
+            IncomingCallView(call: call, contactName: incomingCallerName, avatarURL: incomingCallerAvatar).onDisappear {
+                incomingCall = nil
+            }
         }
     }
     

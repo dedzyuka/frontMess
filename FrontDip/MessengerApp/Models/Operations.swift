@@ -436,15 +436,20 @@ struct GraphQLQueries {
     """
 
     static let acceptCall = """
-    mutation AcceptCall($callId: String!) {
-        call {
-            acceptCall(input: { callId: $callId }) {
-                callId
-                status
+        mutation AcceptCall($callId: String!) {
+            call {
+                acceptCall(input: { callId: $callId }) {
+                    callId
+                    chatId
+                    initiatorId
+                    status
+                    type
+                    startedAt
+                    endedAt
+                }
             }
         }
-    }
-    """
+        """
 
     static let rejectCall = """
     mutation RejectCall($callId: String!) {
