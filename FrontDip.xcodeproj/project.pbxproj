@@ -17,6 +17,7 @@
 		1E6E58882FBE319700C894AF /* Apollo in Frameworks */ = {isa = PBXBuildFile; productRef = 1E6E58872FBE319700C894AF /* Apollo */; };
 		1E6E588A2FBE319700C894AF /* ApolloWebSocket in Frameworks */ = {isa = PBXBuildFile; productRef = 1E6E58892FBE319700C894AF /* ApolloWebSocket */; };
 		1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 1E2DC4072EDD9E780067EDAA /* Alamofire */; };
+		1ECE18372FD65F4100A58572 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1ECE18362FD65F4100A58572 /* LiveKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -100,6 +101,7 @@
 				1EC4912E2EE43FBD000BB022 /* Alamofire in Frameworks */,
 				1E081FE02EDDB4A0002C6FD5 /* SQLite in Frameworks */,
 				1E081FDD2EDDB496002C6FD5 /* KeychainAccess in Frameworks */,
+				1ECE18372FD65F4100A58572 /* LiveKit in Frameworks */,
 				1E081FDA2EDDB486002C6FD5 /* CombineExt in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -187,6 +189,7 @@
 				1E081FDF2EDDB4A0002C6FD5 /* SQLite */,
 				1E6E58872FBE319700C894AF /* Apollo */,
 				1E6E58892FBE319700C894AF /* ApolloWebSocket */,
+				1ECE18362FD65F4100A58572 /* LiveKit */,
 			);
 			productName = FrontDip;
 			productReference = 1E2DC35C2EDD995F0067EDAA /* FrontDip.app */;
@@ -222,6 +225,7 @@
 				1E081FDB2EDDB496002C6FD5 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
 				1E081FDE2EDDB4A0002C6FD5 /* XCRemoteSwiftPackageReference "SQLite.swift" */,
 				1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */,
+				1ECE18202FD65B6600A58572 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1E2DC35D2EDD995F0067EDAA /* Products */;
@@ -459,6 +463,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Для записи видео и голосовых сообщений требуется доступ к микрофону";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "";
+				INFOPLIST_KEY_NSVoIPUsageDescription = development;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -498,6 +503,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Для записи видео и голосовых сообщений требуется доступ к микрофону";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "";
+				INFOPLIST_KEY_NSVoIPUsageDescription = development;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -617,6 +623,14 @@
 				minimumVersion = 5.10.2;
 			};
 		};
+		1ECE18202FD65B6600A58572 /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.14.1;
+			};
+		};
 		1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/apollographql/apollo-ios.git";
@@ -677,6 +691,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1ED2CA162FBDA7B100320195 /* XCRemoteSwiftPackageReference "apollo-ios" */;
 			productName = ApolloWebSocket;
+		};
+		1ECE18362FD65F4100A58572 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1ECE18202FD65B6600A58572 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

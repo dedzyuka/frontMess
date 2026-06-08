@@ -6,6 +6,7 @@ struct AppConfig {
     static let baseURL = "http://192.168.100.247:8002"
     static let graphqlPath = "/graphql"
     static let websocketPath = "/ws/chat"
+    static let liveKitWSURL = "ws://192.168.100.247:7880"
     
     static var graphqlURL: URL {
         URL(string: baseURL + graphqlPath)!
@@ -57,8 +58,21 @@ class AppState: ObservableObject {
 // MessengerApp.swift
 import SwiftUI
 
+import PushKit
+
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
+        // Регистрация VoIP push
+        let registry = PKPushRegistry(queue: .main)
+        registry.delegate = CallManager.shared
+        registry.desiredPushTypes = [.voIP]
+        return true
+    }
+}
+
 @main
 struct MessengerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState.shared
     @StateObject private var contactService = ContactService.shared
     @StateObject private var activeVideoManager = ActiveVideoManager.shared   // новая строка
@@ -877,6 +891,27 @@ struct DeleteChatResponse: Decodable {
 struct DeleteChatWrapper: Decodable {
     let delete: Bool
 }
+// Models/Call.swift
+import Foundation
+
+struct Call: Identifiable, Codable {
+    let callId: UUID
+    let chatId: UUID
+    let initiatorId: UUID
+    let status: String   // pending, active, missed, completed, declined
+    let type: String     // audio, video
+    let startedAt: Date
+    let endedAt: Date?
+    
+    var id: UUID { callId }
+    
+    var isIncoming: Bool {
+        initiatorId != AppState.shared.currentUser?.userId
+    }
+    
+    var isActive: Bool { status == "active" }
+    var isPending: Bool { status == "pending" }
+}
 
 ./FrontDip/MessengerApp/Models/Operations.swift
 
@@ -1043,6 +1078,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular    
                 }
                 reactions {
                     messageId
@@ -1072,6 +1111,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular  
                 }
                 reactions {
                     messageId
@@ -1293,7 +1336,56 @@ struct GraphQLQueries {
         }
     }
     """
-    
+    static let startCall = """
+    mutation StartCall($chatId: String!, $type: String!) {
+        call {
+            startCall(input: { chatId: $chatId, type: $type }) {
+                callId
+                chatId
+                initiatorId
+                status
+                type
+                startedAt
+                endedAt
+            }
+        }
+    }
+    """
+
+    static let acceptCall = """
+    mutation AcceptCall($callId: String!) {
+        call {
+            acceptCall(input: { callId: $callId }) {
+                callId
+                status
+            }
+        }
+    }
+    """
+
+    static let rejectCall = """
+    mutation RejectCall($callId: String!) {
+        call {
+            rejectCall(input: { callId: $callId })
+        }
+    }
+    """
+
+    static let endCall = """
+    mutation EndCall($callId: String!) {
+        call {
+            endCall(input: { callId: $callId })
+        }
+    }
+    """
+
+    static let getLiveKitToken = """
+    query GetLiveKitToken($callId: String!) {
+        call {
+            getLiveKitToken(callId: $callId)
+        }
+    }
+    """
     static let getMessage = """
     query GetMessage($messageId: Int!, $chatId: String!) {
         message {
@@ -1313,6 +1405,10 @@ struct GraphQLQueries {
                     fileSize
                     mimeType
                     storagePath
+                    duration
+                    waveform
+                    thumbnailUrl
+                    isCircular  
                 }
                 reactions {
                     messageId
@@ -1584,11 +1680,11 @@ struct Attachment: Codable, Identifiable {
         case mimeType
         case storagePath
         case uploadedAt
-        case messageCreatedAt = "message_created_at"
+        case messageCreatedAt = "messageCreatedAt"
         case duration
         case waveform
-        case thumbnailUrl = "thumbnail_url"
-        case isCircular = "is_circular"
+        case thumbnailUrl = "thumbnailUrl"
+        case isCircular = "isCircular"
     }
     
     // Инициализатор для ручного создания (например, из WebSocket)
@@ -1828,6 +1924,145 @@ class TokenManager {
 
 ./FrontDip/MessengerApp/Services/Auth/UserSession.swift
 
+
+./FrontDip/MessengerApp/Services/Call/CallManager.swift
+
+import Foundation
+import UIKit
+import CallKit
+import PushKit
+
+class CallManager: NSObject, ObservableObject {
+    static let shared = CallManager()
+    
+    private let callController = CXCallController()
+    private var provider: CXProvider?
+    private var currentCallUUID: UUID?
+    private let callService = CallService.shared
+    
+    override private init() {
+        super.init()
+        setupProvider()
+        registerForVoIPPushes()
+    }
+    
+    private func setupProvider() {
+        let config = CXProviderConfiguration(localizedName: "SocketUp")
+        config.supportsVideo = true
+        config.maximumCallGroups = 1
+        config.maximumCallsPerCallGroup = 1
+        config.supportedHandleTypes = [.generic]
+        config.iconTemplateImageData = UIImage(named: "AppIcon")?.pngData()
+        config.ringtoneSound = "ringtone.caf"
+        provider = CXProvider(configuration: config)
+        provider?.setDelegate(self, queue: nil)
+    }
+    
+    private func registerForVoIPPushes() {
+        let registry = PKPushRegistry(queue: .main)
+        registry.delegate = self
+        registry.desiredPushTypes = [.voIP]
+    }
+    
+    func reportIncomingCall(call: Call) {
+        let update = CXCallUpdate()
+        update.remoteHandle = CXHandle(type: .generic, value: call.callId.uuidString)
+        update.hasVideo = call.type == "video"
+        update.localizedCallerName = "Входящий звонок" // можно подставить имя контакта
+        provider?.reportNewIncomingCall(with: call.callId, update: update) { error in
+            if let error = error { print("Failed to report incoming call: \(error)") }
+            else { self.currentCallUUID = call.callId }
+        }
+    }
+    
+    func endCall(callId: UUID) {
+        let action = CXEndCallAction(call: callId)
+        let transaction = CXTransaction(action: action)
+        callController.request(transaction) { error in
+            if let error = error { print("End call error: \(error)") }
+        }
+        provider?.reportCall(with: callId, endedAt: Date(), reason: .remoteEnded)
+        currentCallUUID = nil
+    }
+}
+
+extension CallManager: CXProviderDelegate {
+    func providerDidReset(_ provider: CXProvider) {
+        currentCallUUID = nil
+    }
+    
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        guard let call = CallService.shared.currentCall else {
+            action.fail()
+            return
+        }
+        action.fulfill()
+        currentCallUUID = call.callId
+        WebSocketService.shared.sendCallStart(chatId: call.chatId, type: call.type)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .showCallScreen, object: call)
+        }
+    }
+    
+    func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        guard let callId = currentCallUUID else {
+            action.fail()
+            return
+        }
+        Task {
+            do {
+                WebSocketService.shared.sendCallAccept(callId: callId)
+                let (token, wsUrl) = try await callService.getLiveKitToken(callId: callId)
+                try await callService.connectToRoom(callId: callId, token: token, wsUrl: wsUrl)
+                action.fulfill()
+            } catch {
+                action.fail()
+            }
+        }
+    }
+    
+    func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        guard let callId = currentCallUUID else {
+            action.fail()
+            return
+        }
+        Task {
+            try? await callService.endCall(callId: callId)
+            WebSocketService.shared.sendCallEnd(callId: callId)
+            callService.disconnect()
+            action.fulfill()
+        }
+        currentCallUUID = nil
+    }
+    
+    func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        Task {
+            try? await callService.toggleMicrophone(enabled: !action.isMuted)
+            action.fulfill()
+        }
+    }
+}
+
+extension CallManager: PKPushRegistryDelegate {
+    func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
+        let token = pushCredentials.token.map { String(format: "%02.2hhx", $0) }.joined()
+        print("VoIP token: \(token)")
+        Task {
+            await PushService.shared.registerVoIPToken(token)
+        }
+    }
+    
+    func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+        guard let callIdString = payload.dictionaryPayload["call_id"] as? String,
+              let callId = UUID(uuidString: callIdString),
+              let call = CallService.shared.currentCall, call.callId == callId else {
+            completion()
+            return
+        }
+        reportIncomingCall(call: call)
+        completion()
+    }
+}
 
 ./FrontDip/MessengerApp/Services/Database/LocalDatabase.swift
 
@@ -2778,6 +3013,168 @@ class MessageService: ObservableObject {
 ./FrontDip/MessengerApp/Services/Network/APIEndpoints.swift
 
 
+./FrontDip/MessengerApp/Services/Network/CallService.swift
+
+import Foundation
+import LiveKit
+import Combine
+
+class CallService: NSObject, ObservableObject {
+    static let shared = CallService()
+    
+    @Published var currentCall: Call?
+    @Published var isConnecting = false
+    @Published var errorMessage: String?
+    @Published var room: Room?
+    
+    private let graphQL = GraphQLClient.shared
+    
+    override private init() { super.init() }
+    
+    // MARK: - GraphQL
+    
+    func startCall(chatId: UUID, type: String = "video") async throws -> Call {
+        let variables: [String: Any] = ["chatId": chatId.uuidString, "type": type]
+        struct Response: Decodable {
+            let call: StartCallWrapper
+            struct StartCallWrapper: Decodable { let startCall: Call }
+        }
+        let response: Response = try await graphQL.perform(
+            query: GraphQLQueries.startCall,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        let call = response.call.startCall
+        await MainActor.run { self.currentCall = call }
+        return call
+    }
+    
+    func acceptCall(callId: UUID) async throws -> Call {
+        let variables = ["callId": callId.uuidString]
+        struct Response: Decodable {
+            let call: AcceptCallWrapper
+            struct AcceptCallWrapper: Decodable { let acceptCall: Call }
+        }
+        let response: Response = try await graphQL.perform(
+            query: GraphQLQueries.acceptCall,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        let call = response.call.acceptCall
+        await MainActor.run { self.currentCall = call }
+        return call
+    }
+    
+    func rejectCall(callId: UUID) async throws {
+        let variables = ["callId": callId.uuidString]
+        struct Response: Decodable {
+            let call: RejectCallWrapper
+            struct RejectCallWrapper: Decodable { let rejectCall: Bool }
+        }
+        _ = try await graphQL.perform(
+            query: GraphQLQueries.rejectCall,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        await MainActor.run { if currentCall?.callId == callId { currentCall = nil } }
+    }
+    
+    func endCall(callId: UUID) async throws {
+        let variables = ["callId": callId.uuidString]
+        struct Response: Decodable {
+            let call: EndCallWrapper
+            struct EndCallWrapper: Decodable { let endCall: Bool }
+        }
+        _ = try await graphQL.perform(
+            query: GraphQLQueries.endCall,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        await MainActor.run {
+            if currentCall?.callId == callId {
+                currentCall = nil
+                room?.disconnect()
+                room = nil
+            }
+        }
+    }
+
+    func getLiveKitToken(callId: UUID) async throws -> (token: String, wsUrl: String) {
+        let variables = ["callId": callId.uuidString]
+        struct Response: Decodable {
+            let call: TokenWrapper
+            struct TokenWrapper: Decodable { let getLiveKitToken: String }
+        }
+        let response: Response = try await graphQL.perform(
+            query: GraphQLQueries.getLiveKitToken,
+            variables: variables,
+            responseType: Response.self,
+            authToken: TokenManager.shared.accessToken
+        )
+        let token = response.call.getLiveKitToken
+        let wsUrl = AppConfig.liveKitWSURL
+        return (token, wsUrl)
+    }
+    
+    // MARK: - LiveKit
+    
+    func connectToRoom(callId: UUID, token: String, wsUrl: String) async throws {
+        guard room == nil else { return }
+        let newRoom = Room(delegate: self)
+        self.room = newRoom
+        try await newRoom.connect(url: wsUrl, token: token)
+        try await newRoom.localParticipant.setMicrophone(enabled: true)
+        try await newRoom.localParticipant.setCamera(enabled: true)
+    }
+    
+    func disconnect() {
+        room?.disconnect()
+        room = nil
+    }
+    
+    func toggleCamera(enabled: Bool) async throws {
+        try await room?.localParticipant.setCamera(enabled: enabled)
+    }
+    
+    func toggleMicrophone(enabled: Bool) async throws {
+        try await room?.localParticipant.setMicrophone(enabled: enabled)
+    }
+    
+    func switchCamera() async throws {
+        try await room?.localParticipant.switchCameraPosition()
+    }
+}
+
+// MARK: - RoomDelegate
+extension CallService: RoomDelegate {
+    func room(_ room: Room, didDisconnect error: Error?) {
+        print("Room disconnected: \(error?.localizedDescription ?? "ok")")
+        Task { @MainActor in
+            if let call = currentCall, call.isActive {
+                try? await endCall(callId: call.callId)
+            }
+            currentCall = nil
+        }
+    }
+    
+    func room(_ room: Room, participantDidConnect participant: Participant) {
+        print("Participant joined: \(participant.identity)")
+    }
+    
+    func room(_ room: Room, participantDidDisconnect participant: Participant) {
+        print("Participant left: \(participant.identity)")
+        Task { @MainActor in
+            if let call = currentCall, call.isActive {
+                try? await endCall(callId: call.callId)
+            }
+        }
+    }
+}
+
 ./FrontDip/MessengerApp/Services/Network/ChatService.swift
 
 import Foundation
@@ -3432,6 +3829,35 @@ private struct EmptyResponse: Decodable {}
 ./FrontDip/MessengerApp/Services/Network/NetworkManager.swift
 
 
+./FrontDip/MessengerApp/Services/Network/PushService.swift
+
+import Foundation
+
+class PushService {
+    static let shared = PushService()
+    
+    func registerVoIPToken(_ token: String) async -> Bool {
+        let url = URL(string: AppConfig.baseURL + "/push/register")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let accessToken = TokenManager.shared.accessToken {
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        let body: [String: Any] = ["device_token": token, "device_type": "ios"]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                return true
+            }
+        } catch {
+            print("Push registration error: \(error)")
+        }
+        return false
+    }
+}
+
 ./FrontDip/MessengerApp/Services/Network/UserService.swift
 
 import Foundation
@@ -3494,6 +3920,15 @@ extension Notification.Name {
     static let chatOpened = Notification.Name("chatOpened")
     static let scrollToMessage = Notification.Name("scrollToMessage")
     
+}
+extension Notification.Name {
+    static let shouldStopVideoPlayback = Notification.Name("shouldStopVideoPlayback")
+}
+extension Notification.Name {
+    static let incomingCall = Notification.Name("incomingCall")
+    static let callStatusChanged = Notification.Name("callStatusChanged")
+    static let callEnded = Notification.Name("callEnded")
+    static let showCallScreen = Notification.Name("showCallScreen")
 }
 
 class NotificationService {
@@ -4124,13 +4559,109 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             handleStatusUpdate(json)
         case "user.online":
             handleUserOnline(json)
+        case "call.incoming":
+            handleCallIncoming(json)
+        case "call.updated":
+            handleCallUpdated(json)
+        case "call.ended":
+            handleCallEnded(json)
         case "pong":
             print("Pong received")
         default:
             print("Unhandled event: \(event)")
         }
     }
-    
+    private func handleCallIncoming(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let chatIdString = payload["chat_id"] as? String,
+              let initiatorIdString = payload["initiator_id"] as? String,
+              let type = payload["type"] as? String,
+              let startedAtString = payload["started_at"] as? String,
+              let callId = UUID(uuidString: callIdString),
+              let chatId = UUID(uuidString: chatIdString),
+              let initiatorId = UUID(uuidString: initiatorIdString),
+              let startedAt = isoDateFormatter.date(from: startedAtString) else { return }
+        let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
+                        status: "pending", type: type, startedAt: startedAt, endedAt: nil)
+        DispatchQueue.main.async {
+            CallService.shared.currentCall = call
+            NotificationCenter.default.post(name: .incomingCall, object: call)
+            // Если CallKit настроен, он сам вызовет reportIncomingCall
+            // Но можно вызвать CallManager.shared.reportIncomingCall(call: call)
+        }
+    }
+
+    private func handleCallUpdated(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let status = payload["status"] as? String,
+              let callId = UUID(uuidString: callIdString) else { return }
+        DispatchQueue.main.async {
+            if var call = CallService.shared.currentCall, call.callId == callId {
+                call.status = status
+                CallService.shared.currentCall = call
+                NotificationCenter.default.post(name: .callStatusChanged, object: call)
+            }
+        }
+    }
+
+    private func handleCallEnded(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let callId = UUID(uuidString: callIdString) else { return }
+        DispatchQueue.main.async {
+            if CallService.shared.currentCall?.callId == callId {
+                CallService.shared.currentCall = nil
+                CallService.shared.disconnect()
+                NotificationCenter.default.post(name: .callEnded, object: callId)
+            }
+        }
+    }
+
+    private func handleCallEnded(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let callId = UUID(uuidString: callIdString) else { return }
+        DispatchQueue.main.async {
+            if let call = CallService.shared.currentCall, call.callId == callId {
+                CallService.shared.currentCall = nil
+                CallService.shared.disconnect()
+                NotificationCenter.default.post(name: .callEnded, object: callId)
+            }
+        }
+    }
+    func sendCallStart(chatId: UUID, type: String = "video") {
+        let envelope: [String: Any] = [
+            "event": "call.start",
+            "payload": ["chat_id": chatId.uuidString, "type": type]
+        ]
+        send(envelope)
+    }
+
+    func sendCallAccept(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.accept",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
+
+    func sendCallReject(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.reject",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
+
+    func sendCallEnd(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.end",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
     // MARK: - Handlers
     private func handleNewMessage(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
@@ -4393,14 +4924,14 @@ class AttachmentUploader {
         return try await upload(data: imageData, mimeType: "image/jpeg", fileName: "image.jpg")
     }
 
-    func uploadFile(url: URL) async throws -> (attachmentId: UUID, storagePath: String) {
+    func uploadFile(url: URL, mimeType: String? = nil) async throws -> (attachmentId: UUID, storagePath: String) {
         let data = try Data(contentsOf: url)
         let fileName = url.lastPathComponent
-        let mimeType = guessMimeType(from: fileName)
-        return try await upload(data: data, mimeType: mimeType, fileName: fileName)
+        let finalMimeType = mimeType ?? guessMimeType(from: fileName)
+        return try await upload(data: data, mimeType: finalMimeType, fileName: fileName)
     }
 
-    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String) {
+    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String){
         guard let token = TokenManager.shared.accessToken else {
             throw UploadError.notAuthenticated
         }
@@ -4449,6 +4980,7 @@ class AttachmentUploader {
         case "mp4": return "video/mp4"
         case "mov": return "video/quicktime"
         case "mp3": return "audio/mpeg"
+        case "m4a": return "audio/m4a"          // <-- добавить
         case "pdf": return "application/pdf"
         case "doc", "docx": return "application/msword"
         case "xls", "xlsx": return "application/vnd.ms-excel"
@@ -7640,6 +8172,177 @@ struct WelcomeView: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Call/CallView.swift
+
+import SwiftUI
+import LiveKit
+
+struct CallView: View {
+    @ObservedObject var callService = CallService.shared
+    @Environment(\.dismiss) var dismiss
+    @State private var isCameraOn = true
+    @State private var isMicOn = true
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            // Видео удалённого участника
+            if let participant = callService.room?.remoteParticipants.first {
+                VideoView(participant: participant)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+            } else {
+                VStack {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                    Text("Ожидание подключения...")
+                        .foregroundColor(.white)
+                        .padding(.top, 20)
+                }
+            }
+            
+            VStack {
+                Spacer()
+                HStack(spacing: 40) {
+                    Button {
+                        Task {
+                            try? await callService.toggleMicrophone(enabled: !isMicOn)
+                            isMicOn.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isMicOn ? "mic.fill" : "mic.slash.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .frame(width: 60, height: 60)
+                            .background(Color.gray.opacity(0.7))
+                            .clipShape(Circle())
+                    }
+                    
+                    Button {
+                        Task {
+                            if let call = callService.currentCall {
+                                try? await callService.endCall(callId: call.callId)
+                                WebSocketService.shared.sendCallEnd(callId: call.callId)
+                                callService.disconnect()
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "phone.down.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .frame(width: 60, height: 60)
+                            .background(Color.red)
+                            .clipShape(Circle())
+                    }
+                    
+                    Button {
+                        Task {
+                            try? await callService.toggleCamera(enabled: !isCameraOn)
+                            isCameraOn.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isCameraOn ? "video.fill" : "video.slash.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .frame(width: 60, height: 60)
+                            .background(Color.gray.opacity(0.7))
+                            .clipShape(Circle())
+                    }
+                }
+                .padding(.bottom, 40)
+            }
+            
+            // Миниатюра локального видео
+            if let localParticipant = callService.room?.localParticipant, isCameraOn {
+                VideoView(participant: localParticipant, isLocal: true)
+                    .frame(width: 100, height: 150)
+                    .cornerRadius(12)
+                    .padding()
+                    .position(x: UIScreen.main.bounds.width - 70, y: 100)
+            }
+        }
+        .onAppear {
+            // Запрашиваем разрешения
+            AVCaptureDevice.requestAccess(for: .video) { _ in }
+            AVAudioSession.sharedInstance().requestRecordPermission { _ in }
+        }
+        .onDisappear {
+            if callService.currentCall != nil {
+                callService.disconnect()
+            }
+        }
+    }
+}
+
+// MARK: - VideoView (использует встроенный VideoView из LiveKit)
+struct VideoView: UIViewRepresentable {
+    let participant: Participant
+    var isLocal: Bool = false
+    
+    func makeUIView(context: Context) -> LiveKit.VideoView {
+        let view = LiveKit.VideoView()
+        if isLocal {
+            // Для локального видео используем track для камеры
+            if let track = participant.firstVideoTrack {
+                track.addRenderer(view)
+            }
+        } else {
+            participant.addRenderer(view)
+        }
+        return view
+    }
+    
+    func updateUIView(_ uiView: LiveKit.VideoView, context: Context) {}
+}
+
+./FrontDip/MessengerApp/Views/Call/IncomingCallOverlay.swift
+
+import SwiftUI
+
+struct IncomingCallOverlay: View {
+    let call: Call
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var callService = CallService.shared
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Входящий звонок")
+                .font(.title)
+            Text(call.type == "video" ? "Видеозвонок" : "Аудиозвонок")
+            HStack(spacing: 40) {
+                Button("Отклонить") {
+                    Task {
+                        try? await callService.rejectCall(callId: call.callId)
+                        WebSocketService.shared.sendCallReject(callId: call.callId)
+                        dismiss()
+                    }
+                }
+                .foregroundColor(.red)
+                Button("Принять") {
+                    Task {
+                        let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                        try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
+                        await callService.acceptCall(callId: call.callId)
+                        WebSocketService.shared.sendCallAccept(callId: call.callId)
+                        dismiss()
+                        // Показать CallView
+                        NotificationCenter.default.post(name: .showCallScreen, object: call)
+                    }
+                }
+                .foregroundColor(.green)
+            }
+        }
+        
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(20)
+        .shadow(radius: 10)
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 
 //
@@ -8517,6 +9220,7 @@ extension Notification.Name {
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
 import SwiftUI
+import CallKit
 import AVFoundation
 
 struct ChatView: View {
@@ -8546,6 +9250,8 @@ struct ChatView: View {
     @State private var replyingToMessage: Message?
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
+    
+    @State private var showCallScreen = false
     
     
     // NEW: dynamic send button
@@ -8609,6 +9315,11 @@ struct ChatView: View {
             if canSendMessage {
                 inputAreaView
             }
+        }.onReceive(NotificationCenter.default.publisher(for: .showCallScreen)) { _ in
+            showCallScreen = true
+        }
+        .fullScreenCover(isPresented: $showCallScreen) {
+            CallView()
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
@@ -8792,6 +9503,29 @@ struct ChatView: View {
             }
             
             Spacer()
+            Button {
+                Task {
+                    do {
+                        let call = try await CallService.shared.startCall(chatId: chat.id, type: "video")
+                        // Инициируем исходящий звонок через CallKit
+                        let startCallAction = CXStartCallAction(call: call.callId, handle: CXHandle(type: .generic, value: call.chatId.uuidString))
+                        let transaction = CXTransaction(action: startCallAction)
+                        CXCallController().request(transaction) { error in
+                            if let error = error {
+                                print("Start call error: \(error)")
+                            } else {
+                                showCallScreen = true
+                            }
+                        }
+                    } catch {
+                        print("Start call error: \(error)")
+                    }
+                }
+            } label: {
+                Image(systemName: "video.fill")
+                    .font(.title2)
+                    .foregroundColor(.blue)
+            }
             
             NavigationLink(destination: ChatSidebarView(chat: chat, chatViewModel: viewModel)) {
                 Image(systemName: "info.circle")
@@ -9044,9 +9778,8 @@ struct ChatView: View {
             isSending = false
             isUploading = false
         }
-        
         do {
-            let result = try await AttachmentUploader.shared.uploadFile(url: url)
+            let result = try await AttachmentUploader.shared.uploadFile(url: url, mimeType: "audio/m4a")
             let success = await viewModel.sendMessage(
                 attachmentId: result.attachmentId,
                 storagePath: result.storagePath,
@@ -9913,6 +10646,92 @@ struct VideoThumbnailView: View {
     }
 }
 
+./FrontDip/MessengerApp/Views/Common/AudioPlayerManager.swift
+
+import SwiftUI
+import AVFoundation
+
+extension Notification.Name {
+    static let shouldStopAudioPlayback = Notification.Name("shouldStopAudioPlayback")
+}
+
+class AudioPlayerManager: ObservableObject {
+    static let shared = AudioPlayerManager()
+    
+    @Published var isPlaying = false
+    @Published var currentPlayerId: String? = nil  // attachmentId
+    
+    private var player: AVPlayer?
+    private var timeObserver: Any?
+    private var endObserver: Any?
+    
+    private init() {
+        NotificationCenter.default.addObserver(self, selector: #selector(stopCurrent), name: .shouldStopAudioPlayback, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(stopCurrent), name: .shouldStopVideoPlayback, object: nil)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    func play(attachmentId: String, url: URL, onProgress: @escaping (Double) -> Void, onFinish: @escaping () -> Void) {
+        // Если это же аудио уже играет – останавливаем (сворачиваем)
+        if currentPlayerId == attachmentId && player != nil {
+            stopCurrent()
+            onFinish()
+            return
+        }
+        
+        // Останавливаем текущее воспроизведение
+        stopCurrent()
+        
+        let playerItem = AVPlayerItem(url: url)
+        let newPlayer = AVPlayer(playerItem: playerItem)
+        player = newPlayer
+        currentPlayerId = attachmentId
+        isPlaying = true
+        
+        // Прогресс
+        timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { time in
+            let duration = playerItem.asset.duration.seconds
+            if duration > 0 {
+                let progress = time.seconds / duration
+                onProgress(progress)
+            }
+        }
+        
+        // Окончание
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] _ in
+            self?.stopCurrent()
+            onFinish()
+        }
+        
+        newPlayer.play()
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+    
+    @objc func stopCurrent() {
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        if let observer = endObserver {
+            NotificationCenter.default.removeObserver(observer)
+            endObserver = nil
+        }
+        player?.pause()
+        player = nil
+        currentPlayerId = nil
+        isPlaying = false
+        try? AVAudioSession.sharedInstance().setActive(false)
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/AvaratView.swift
 
 //
@@ -10040,14 +10859,12 @@ import AVFoundation
 
 struct CircularVideoView: View {
     let attachment: Attachment
-    
     @ObservedObject private var manager = VideoCircleManager.shared
-    @State private var loopPlayer: AVQueuePlayer?
+    
     @State private var thumbnailImage: UIImage?
     @State private var isLoadingThumbnail = true
     
     private var videoId: String { attachment.attachmentId.uuidString }
-    
     private var videoURL: URL? {
         let base = AppConfig.baseURL
         let path = attachment.storagePath.hasPrefix("/") ? attachment.storagePath : "/media/" + attachment.storagePath
@@ -10062,97 +10879,75 @@ struct CircularVideoView: View {
         return URL(string: base + fullPath)
     }
     
-    private var isExpanded: Bool {
-        manager.expandedVideoId == videoId
+    private var isPlaying: Bool {
+        manager.expandedVideoId == videoId && manager.activePlayer != nil
     }
     
     var body: some View {
         ZStack {
-            if let url = videoURL {
-                // Если развёрнут – показываем однократный плеер, иначе – цикл
-                if isExpanded {
-                    SinglePlayVideoView(url: url)
-                        .frame(width: expandedSize, height: expandedSize)
-                        .clipShape(Circle())
-                } else {
-                    LoopingVideoView(player: loopPlayer)
+            if isPlaying, let player = manager.activePlayer {
+                VideoPlayerLayer(player: player)
+                    .frame(width: expandedSize, height: expandedSize)
+                    .clipShape(Circle())
+            } else {
+                if let image = thumbnailImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
                         .frame(width: collapsedSize, height: collapsedSize)
                         .clipShape(Circle())
-                        .onAppear {
-                            if loopPlayer == nil {
-                                loopPlayer = manager.registerLooper(id: videoId, url: url)
-                            } else {
-                                loopPlayer?.play()
-                            }
-                        }
-                        .onDisappear {
-                            manager.unregisterLooper(id: videoId)
-                            loopPlayer?.pause()
-                            loopPlayer = nil
-                        }
+                } else {
+                    Circle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: collapsedSize, height: collapsedSize)
+                        .overlay(isLoadingThumbnail ? ProgressView() : nil)
                 }
-            } else {
-                thumbnailPlaceholder
             }
         }
         .overlay(Circle().stroke(Color.white.opacity(0.5), lineWidth: 2))
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isExpanded)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isPlaying)
         .onTapGesture {
-            if isExpanded {
-                // Сворачиваем
-                manager.setExpanded(nil, url: nil, onFinish: {})
+            guard let url = videoURL else { return }
+            if isPlaying {
+                manager.stopCurrent()
             } else {
-                // Разворачиваем и включаем однократное воспроизведение
-                if let url = videoURL {
-                    manager.setExpanded(videoId, url: url, onFinish: {})
-                }
+                manager.play(id: videoId, url: url) { }
             }
         }
-        .onAppear(perform: loadThumbnail)
-    }
-    
-    // MARK: - Thumbnail
-    private var thumbnailPlaceholder: some View {
-        Group {
-            if let image = thumbnailImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Circle()
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        isLoadingThumbnail ?
-                            AnyView(ProgressView()) :
-                            AnyView(Image(systemName: "play.circle.fill").font(.largeTitle))
-                    )
+        .onDisappear {
+            if isPlaying {
+                manager.stopCurrent()
             }
         }
-        .frame(width: collapsedSize, height: collapsedSize)
-        .clipShape(Circle())
+        .onAppear {
+            loadThumbnail()
+        }
     }
-    
-    private var collapsedSize: CGFloat { 150 }
-    private var expandedSize: CGFloat { UIScreen.main.bounds.width * 0.7 }
     
     private func loadThumbnail() {
-        guard let url = thumbnailURL else { isLoadingThumbnail = false; return }
+        guard let url = thumbnailURL else {
+            isLoadingThumbnail = false
+            return
+        }
         URLSession.shared.dataTask(with: url) { data, _, error in
             DispatchQueue.main.async {
                 if let data = data, let image = UIImage(data: data) {
                     thumbnailImage = image
-                } else {
-                    print("❌ Thumbnail load error: \(error?.localizedDescription ?? "unknown")")
+                } else if error != nil {
+                    print("Thumbnail error: \(error!.localizedDescription)")
                 }
                 isLoadingThumbnail = false
             }
         }.resume()
     }
+    
+    private var collapsedSize: CGFloat { 150 }
+    private var expandedSize: CGFloat { UIScreen.main.bounds.width * 0.7 }
 }
 
-// MARK: - Looping Video (бесшумный цикл)
-struct LoopingVideoView: UIViewRepresentable {
-    let player: AVQueuePlayer?
+// MARK: - VideoPlayerLayer
+struct VideoPlayerLayer: UIViewRepresentable {
+    let player: AVPlayer?
     
     func makeUIView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
@@ -10163,50 +10958,15 @@ struct LoopingVideoView: UIViewRepresentable {
     
     func updateUIView(_ uiView: PlayerContainerView, context: Context) {
         uiView.player = player
-        uiView.player?.isMuted = true
-    }
-    
-    static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {
-        uiView.player?.pause()
     }
 }
 
-// MARK: - Single Play Video (один раз со звуком)
-struct SinglePlayVideoView: UIViewRepresentable {
-    let url: URL
-    @State private var player: AVPlayer?
-    
-    func makeUIView(context: Context) -> PlayerContainerView {
-        let view = PlayerContainerView()
-        let newPlayer = AVPlayer(url: url)
-        newPlayer.isMuted = false
-        view.player = newPlayer
-        view.videoGravity = .resizeAspectFill
-        newPlayer.play()
-        return view
-    }
-    
-    func updateUIView(_ uiView: PlayerContainerView, context: Context) {
-        // не нужно
-    }
-    
-    static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {
-        uiView.player?.pause()
-        uiView.player = nil
-    }
-}
-
-// MARK: - Общий вью для AVPlayerLayer
 class PlayerContainerView: UIView {
-    override class var layerClass: AnyClass {
-        AVPlayerLayer.self
-    }
-    
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
     var player: AVPlayer? {
         get { (layer as? AVPlayerLayer)?.player }
         set { (layer as? AVPlayerLayer)?.player = newValue }
     }
-    
     var videoGravity: AVLayerVideoGravity {
         get { (layer as? AVPlayerLayer)?.videoGravity ?? .resizeAspectFill }
         set { (layer as? AVPlayerLayer)?.videoGravity = newValue }
@@ -10587,105 +11347,66 @@ struct MenuItem: View {
 import SwiftUI
 import AVFoundation
 
+
 class VideoCircleManager: ObservableObject {
     static let shared = VideoCircleManager()
     
     @Published var expandedVideoId: String? = nil
     
-    // Для бесшумного циклического воспроизведения (свёрнутое состояние)
-    private var loopPlayers: [String: AVQueuePlayer] = [:]
-    private var loopers: [String: AVPlayerLooper] = [:]
+    private var _currentPlayer: AVPlayer?
+    private var currentPlayerId: String?
+    private var endObserver: Any?
     
-    // Для проигрывания одного раза (развёрнутое состояние)
-    private var singlePlayPlayers: [String: AVPlayer] = [:]
-    
-    private init() {}
-    
-    // Регистрируем видео для бесшумного цикла
-    func registerLooper(id: String, url: URL) -> AVQueuePlayer? {
-        unregisterLooper(id: id)
-        let playerItem = AVPlayerItem(url: url)
-        let player = AVQueuePlayer(playerItem: playerItem)
-        player.isMuted = true
-        guard let looper = try? AVPlayerLooper(player: player, templateItem: playerItem) else {
-            return nil
-        }
-        loopPlayers[id] = player
-        loopers[id] = looper
-        player.play()
-        return player
+    // Публичный доступ к плееру (read-only)
+    var activePlayer: AVPlayer? {
+        return _currentPlayer
     }
     
-    func unregisterLooper(id: String) {
-        loopPlayers[id]?.pause()
-        loopPlayers.removeValue(forKey: id)
-        loopers.removeValue(forKey: id)
+    private init() {
+        NotificationCenter.default.addObserver(self, selector: #selector(stopCurrent), name: .shouldStopVideoPlayback, object: nil)
     }
     
-    // Запуск однократного воспроизведения со звуком при разворачивании
-    func playSingleWithSound(id: String, url: URL, onFinish: @escaping () -> Void) {
-        // Останавливаем цикл, если он был
-        if let loopPlayer = loopPlayers[id] {
-            loopPlayer.pause()
-        }
-        // Создаём новый плеер для одного раза
-        let player = AVPlayer(url: url)
-        player.isMuted = false
-        singlePlayPlayers[id] = player
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    func play(id: String, url: URL, onFinish: @escaping () -> Void) {
+        NotificationCenter.default.post(name: .shouldStopAudioPlayback, object: nil)
+        stopCurrent()
         
-        // Подписываемся на окончание
-        NotificationCenter.default.addObserver(
+        let player = AVPlayer(url: url)
+        _currentPlayer = player
+        currentPlayerId = id
+        expandedVideoId = id
+        
+        player.isMuted = false
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        
+        endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: player.currentItem,
             queue: .main
-        ) { _ in
-            onFinish()
-            self.cleanupSinglePlay(id: id)
+        ) { [weak self] _ in
+            self?.stopCurrent()
+            DispatchQueue.main.async {
+                onFinish()
+            }
         }
         
         player.play()
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-        try? AVAudioSession.sharedInstance().setActive(true)
     }
     
-    private func cleanupSinglePlay(id: String) {
-        singlePlayPlayers[id]?.pause()
-        singlePlayPlayers.removeValue(forKey: id)
-        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: nil)
-        
-        // Возвращаем цикл, если он был
-        if let loopPlayer = loopPlayers[id] {
-            loopPlayer.play()
+    @objc func stopCurrent() {
+        if let observer = endObserver {
+            NotificationCenter.default.removeObserver(observer)
+            endObserver = nil
         }
-    }
-    
-    func setExpanded(_ id: String?, url: URL?, onFinish: @escaping () -> Void) {
-        // Если уже развёрнут этот же – ничего не делаем
-        if expandedVideoId == id { return }
-        
-        // Сворачиваем предыдущий развёрнутый
-        if let prevId = expandedVideoId {
-            // Останавливаем однократное воспроизведение
-            cleanupSinglePlay(id: prevId)
-        }
-        
-        expandedVideoId = id
-        
-        if let id = id, let url = url {
-            // Запускаем однократное воспроизведение
-            playSingleWithSound(id: id, url: url, onFinish: {
-                // Автоматически сворачиваем
-                DispatchQueue.main.async {
-                    if self.expandedVideoId == id {
-                        self.setExpanded(nil, url: nil, onFinish: {})
-                    }
-                    onFinish()
-                }
-            })
-        } else {
-            // Если свернули – просто обновляем состояние
-        }
-        objectWillChange.send()
+        _currentPlayer?.pause()
+        _currentPlayer = nil
+        currentPlayerId = nil
+        expandedVideoId = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
     }
 }
 
@@ -10958,30 +11679,31 @@ class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordin
 
 ./FrontDip/MessengerApp/Views/Common/VoiceMessageBubble.swift
 
-//
-//  VoiceMessageBubble.swift
-//  MessengerApp
-//
-
 import SwiftUI
 import AVFoundation
 
 struct VoiceMessageBubble: View {
     let attachment: Attachment
     let isCurrentUser: Bool
-
-    @State private var isPlaying = false
-    @State private var audioPlayer: AVAudioPlayer?
-    @State private var timer: Timer?
-
+    
+    @ObservedObject private var audioManager = AudioPlayerManager.shared
+    @ObservedObject private var videoManager = VideoCircleManager.shared
+    
+    @State private var progress: Double = 0
+    @State private var amplitudes: [Int] = []
+    
+    private var isPlaying: Bool {
+        audioManager.currentPlayerId == attachment.attachmentId.uuidString && audioManager.isPlaying
+    }
+    
     private var audioURL: URL? {
         let base = AppConfig.baseURL
         let path = attachment.storagePath.hasPrefix("/") ? attachment.storagePath : "/media/" + attachment.storagePath
         return URL(string: base + path)
     }
-
+    
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Button {
                 togglePlayback()
             } label: {
@@ -10989,17 +11711,10 @@ struct VoiceMessageBubble: View {
                     .font(.title2)
                     .foregroundColor(isCurrentUser ? .white : .blue)
             }
-
-            // Упрощённый waveform (динамические полоски)
-            HStack(spacing: 2) {
-                ForEach(0..<20, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(isCurrentUser ? Color.white.opacity(0.7) : Color.blue.opacity(0.7))
-                        .frame(width: 3, height: CGFloat.random(in: 8...20))
-                }
-            }
-            .frame(height: 30)
-
+            
+            waveformView
+                .frame(height: 30)
+            
             Text(formatDuration(attachment.duration ?? 0))
                 .font(.caption)
                 .foregroundColor(isCurrentUser ? .white : .primary)
@@ -11008,35 +11723,81 @@ struct VoiceMessageBubble: View {
         .padding(.vertical, 8)
         .background(isCurrentUser ? Color.blue : Color(.systemGray5))
         .cornerRadius(20)
-        .onDisappear {
-            audioPlayer?.stop()
-            timer?.invalidate()
+        .frame(maxWidth: UIScreen.main.bounds.width * 0.75, alignment: isCurrentUser ? .trailing : .leading)
+        .onAppear {
+            loadWaveform()
         }
-    }
-
-    private func togglePlayback() {
-        if isPlaying {
-            audioPlayer?.pause()
-            timer?.invalidate()
-            isPlaying = false
-        } else {
-            guard let url = audioURL else { return }
-            do {
-                audioPlayer = try AVAudioPlayer(contentsOf: url)
-                audioPlayer?.play()
-                isPlaying = true
-                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                    if let player = audioPlayer, !player.isPlaying {
-                        isPlaying = false
-                        timer?.invalidate()
-                    }
-                }
-            } catch {
-                print("Audio playback error: \(error)")
+        .onDisappear {
+            if isPlaying {
+                audioManager.stopCurrent()
             }
         }
     }
-
+    
+    @ViewBuilder
+    private var waveformView: some View {
+        let columns = amplitudes.isEmpty ? 20 : min(amplitudes.count, 20)
+        let activeCount = Int(Double(columns) * progress)
+        
+        HStack(spacing: 2) {
+            ForEach(0..<columns, id: \.self) { index in
+                let height = amplitudes.isEmpty ? CGFloat.random(in: 8...20) : CGFloat(amplitudes[index]) / 100 * 30
+                let isActive = isPlaying && index < activeCount
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(barColor(isActive: isActive))
+                    .frame(width: 3, height: height)
+                    .animation(.linear(duration: 0.05), value: isActive)
+            }
+        }
+        .frame(height: 30)
+    }
+    
+    private func barColor(isActive: Bool) -> Color {
+        if isCurrentUser {
+            return isActive ? .white : .white.opacity(0.4)
+        } else {
+            return isActive ? .blue : .blue.opacity(0.4)
+        }
+    }
+    
+    private func togglePlayback() {
+        if isPlaying {
+            audioManager.stopCurrent()
+        } else {
+            startPlayback()
+        }
+    }
+    
+    private func startPlayback() {
+        // Останавливаем видео, если играет
+        NotificationCenter.default.post(name: .shouldStopVideoPlayback, object: nil)
+        
+        guard let url = audioURL else { return }
+        audioManager.play(
+            attachmentId: attachment.attachmentId.uuidString,
+            url: url,
+            onProgress: { newProgress in
+                self.progress = newProgress
+            },
+            onFinish: {
+                self.progress = 0
+            }
+        )
+    }
+    
+    private func loadWaveform() {
+        if let waveformData = attachment.waveform,
+           let decoded = decodeWaveform(waveformData) {
+            amplitudes = decoded
+        }
+    }
+    
+    private func decodeWaveform(_ base64: String) -> [Int]? {
+        guard let data = Data(base64Encoded: base64),
+              let array = try? JSONDecoder().decode([Int].self, from: data) else { return nil }
+        return array
+    }
+    
     private func formatDuration(_ seconds: Int) -> String {
         let minutes = seconds / 60
         let secs = seconds % 60

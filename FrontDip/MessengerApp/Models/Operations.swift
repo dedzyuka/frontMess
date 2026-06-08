@@ -419,7 +419,56 @@ struct GraphQLQueries {
         }
     }
     """
-    
+    static let startCall = """
+    mutation StartCall($chatId: String!, $type: String!) {
+        call {
+            startCall(input: { chatId: $chatId, type: $type }) {
+                callId
+                chatId
+                initiatorId
+                status
+                type
+                startedAt
+                endedAt
+            }
+        }
+    }
+    """
+
+    static let acceptCall = """
+    mutation AcceptCall($callId: String!) {
+        call {
+            acceptCall(input: { callId: $callId }) {
+                callId
+                status
+            }
+        }
+    }
+    """
+
+    static let rejectCall = """
+    mutation RejectCall($callId: String!) {
+        call {
+            rejectCall(input: { callId: $callId })
+        }
+    }
+    """
+
+    static let endCall = """
+    mutation EndCall($callId: String!) {
+        call {
+            endCall(input: { callId: $callId })
+        }
+    }
+    """
+
+    static let getLiveKitToken = """
+    query GetLiveKitToken($callId: String!) {
+        call {
+            getLiveKitToken(callId: $callId)
+        }
+    }
+    """
     static let getMessage = """
     query GetMessage($messageId: Int!, $chatId: String!) {
         message {

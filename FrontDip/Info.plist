@@ -6,6 +6,8 @@
 	<string></string>
 	<key>CFBundleGetInfoString</key>
 	<string></string>
+	<key>CFBundleSignature</key>
+	<string></string>
 	<key>NSCameraReactionEffectGesturesEnabledDefault</key>
 	<false/>
 </dict>

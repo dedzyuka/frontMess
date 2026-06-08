@@ -4,6 +4,7 @@ struct AppConfig {
     static let baseURL = "http://192.168.100.247:8002"
     static let graphqlPath = "/graphql"
     static let websocketPath = "/ws/chat"
+    static let liveKitWSURL = "ws://192.168.100.247:7880"
     
     static var graphqlURL: URL {
         URL(string: baseURL + graphqlPath)!

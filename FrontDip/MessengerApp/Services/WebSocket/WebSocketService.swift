@@ -130,13 +130,105 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
             handleStatusUpdate(json)
         case "user.online":
             handleUserOnline(json)
+        case "call.incoming":
+            handleCallIncoming(json)
+        case "call.updated":
+            handleCallUpdated(json)
+        case "call.ended":
+            handleCallEnded(json)
         case "pong":
             print("Pong received")
         default:
             print("Unhandled event: \(event)")
         }
     }
-    
+    private func handleCallIncoming(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let chatIdString = payload["chat_id"] as? String,
+              let initiatorIdString = payload["initiator_id"] as? String,
+              let type = payload["type"] as? String,
+              let startedAtString = payload["started_at"] as? String,
+              let callId = UUID(uuidString: callIdString),
+              let chatId = UUID(uuidString: chatIdString),
+              let initiatorId = UUID(uuidString: initiatorIdString),
+              let startedAt = isoDateFormatter.date(from: startedAtString) else { return }
+        
+        // Игнорируем входящий вызов, если звонящий – это мы сами
+        if initiatorId == AppState.shared.currentUser?.userId {
+            print("🔇 Ignoring incoming call from self")
+            return
+        }
+        
+        let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
+                        status: "pending", type: type, startedAt: startedAt, endedAt: nil)
+        DispatchQueue.main.async {
+            CallService.shared.currentCall = call
+            NotificationCenter.default.post(name: .incomingCall, object: call)
+        }
+    }
+
+    private func handleCallUpdated(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let status = payload["status"] as? String,
+              let callId = UUID(uuidString: callIdString) else { return }
+        DispatchQueue.main.async {
+            if var call = CallService.shared.currentCall, call.callId == callId {
+                call.status = status
+                CallService.shared.currentCall = call
+                NotificationCenter.default.post(name: .callStatusChanged, object: call)
+            }
+        }
+    }
+
+    private func handleCallEnded(_ json: [String: Any]) {
+        guard let payload = json["payload"] as? [String: Any],
+              let callIdString = payload["call_id"] as? String,
+              let callId = UUID(uuidString: callIdString) else { return }
+        
+        DispatchQueue.main.async {
+            if CallService.shared.currentCall?.callId == callId {
+                CallService.shared.currentCall = nil
+                Task {                         // ← Обёртка для асинхронного вызова
+                    await CallService.shared.disconnect()
+                }
+                NotificationCenter.default.post(name: .callEnded, object: callId)
+            }
+        }
+    }
+
+    func sendCallStart(chatId: UUID, type: String = "video") {
+        let envelope: [String: Any] = [
+            "event": "call.start",
+            "payload": ["chat_id": chatId.uuidString, "type": type]
+        ]
+        send(envelope)
+    }
+
+    func sendCallAccept(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.accept",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
+
+    func sendCallReject(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.reject",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
+
+    func sendCallEnd(callId: UUID) {
+        let envelope: [String: Any] = [
+            "event": "call.end",
+            "payload": ["call_id": callId.uuidString]
+        ]
+        send(envelope)
+    }
     // MARK: - Handlers
     private func handleNewMessage(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],

@@ -31,6 +31,12 @@ extension Notification.Name {
 extension Notification.Name {
     static let shouldStopVideoPlayback = Notification.Name("shouldStopVideoPlayback")
 }
+extension Notification.Name {
+    static let incomingCall = Notification.Name("incomingCall")
+    static let callStatusChanged = Notification.Name("callStatusChanged")
+    static let callEnded = Notification.Name("callEnded")
+    static let showCallScreen = Notification.Name("showCallScreen")
+}
 
 class NotificationService {
     static let shared = NotificationService()

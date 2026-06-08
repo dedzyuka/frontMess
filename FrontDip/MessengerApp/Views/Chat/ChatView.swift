@@ -1,4 +1,10 @@
+//
+//  ChatView.swift
+//  MessengerApp
+//
+
 import SwiftUI
+import CallKit
 import AVFoundation
 
 struct ChatView: View {
@@ -29,8 +35,9 @@ struct ChatView: View {
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
     
+    @State private var showCallScreen = false
     
-    // NEW: dynamic send button
+    // Кнопка отправки (видео/аудио/текст)
     @State private var sendButtonMode: SendButtonMode = .video
     @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "video"
     @State private var showingVoiceRecorder = false
@@ -91,6 +98,12 @@ struct ChatView: View {
             if canSendMessage {
                 inputAreaView
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showCallScreen)) { _ in
+            showCallScreen = true
+        }
+        .fullScreenCover(isPresented: $showCallScreen) {
+            CallView()
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
@@ -274,6 +287,17 @@ struct ChatView: View {
             }
             
             Spacer()
+            
+            Button {
+                // Получаем данные собеседника (для приватного чата)
+                let contactName = viewModel.otherUser?.nickName ?? "Пользователь"
+                let avatarURL = viewModel.otherUser?.avatarUrl
+                CallManager.shared.startOutgoingCall(chatId: chat.id, contactName: contactName, avatarURL: avatarURL, type: "video")
+            } label: {
+                Image(systemName: "video.fill")
+                    .font(.title2)
+                    .foregroundColor(.blue)
+            }
             
             NavigationLink(destination: ChatSidebarView(chat: chat, chatViewModel: viewModel)) {
                 Image(systemName: "info.circle")
@@ -518,7 +542,6 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка голосового сообщения
     private func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: String?) async {
         isSending = true
         isUploading = true
@@ -548,9 +571,6 @@ struct ChatView: View {
             }
         }
     }
-
-    // MARK: - Отправка видеосообщения (кружок)
-
     
     // MARK: - Отправка видеосообщения (кружок)
     private func sendCircularVideo(url: URL) async {
@@ -572,13 +592,13 @@ struct ChatView: View {
             print("📹 Upload success, attachmentId: \(result.attachmentId)")
             
             let success = await viewModel.sendMessage(
-                    attachmentId: result.attachmentId,
-                    storagePath: result.storagePath,
-                    fileName: url.lastPathComponent,
-                    fileSize: nil,
-                    mimeType: "video/mp4",
-                    replyToId: replyingToMessage?.messageId,
-                    isCircular: true
+                attachmentId: result.attachmentId,
+                storagePath: result.storagePath,
+                fileName: url.lastPathComponent,
+                fileSize: nil,
+                mimeType: "video/mp4",
+                replyToId: replyingToMessage?.messageId,
+                isCircular: true
             )
             print("📹 sendMessage success: \(success)")
             if success {

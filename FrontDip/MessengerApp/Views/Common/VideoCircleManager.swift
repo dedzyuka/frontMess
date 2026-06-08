@@ -30,6 +30,7 @@ class VideoCircleManager: ObservableObject {
     }
     
     func play(id: String, url: URL, onFinish: @escaping () -> Void) {
+        NotificationCenter.default.post(name: .shouldStopAudioPlayback, object: nil)
         stopCurrent()
         
         let player = AVPlayer(url: url)

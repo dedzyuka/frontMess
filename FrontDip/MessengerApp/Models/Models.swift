@@ -352,3 +352,89 @@ struct DeleteChatResponse: Decodable {
 struct DeleteChatWrapper: Decodable {
     let delete: Bool
 }
+import Foundation
+
+struct Call: Identifiable, Codable {
+    let callId: UUID
+    let chatId: UUID
+    let initiatorId: UUID
+    var status: String
+    let type: String
+    let startedAt: Date
+    let endedAt: Date?
+    
+    var id: UUID { callId }
+    
+    var isIncoming: Bool {
+        initiatorId != AppState.shared.currentUser?.userId
+    }
+    
+    var isActive: Bool { status == "active" }
+    var isPending: Bool { status == "pending" }
+    
+    init(callId: UUID, chatId: UUID, initiatorId: UUID, status: String, type: String, startedAt: Date, endedAt: Date? = nil) {
+        self.callId = callId
+        self.chatId = chatId
+        self.initiatorId = initiatorId
+        self.status = status
+        self.type = type
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case callId, chatId, initiatorId, status, type, startedAt, endedAt
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        callId = try container.decode(UUID.self, forKey: .callId)
+        chatId = try container.decode(UUID.self, forKey: .chatId)
+        initiatorId = try container.decode(UUID.self, forKey: .initiatorId)
+        status = try container.decode(String.self, forKey: .status)
+        type = try container.decode(String.self, forKey: .type)
+        
+        let startedAtRaw = try container.decode(String.self, forKey: .startedAt)
+        startedAt = Self.parseProtobufTimestamp(startedAtRaw)
+        
+        if let endedAtRaw = try? container.decode(String.self, forKey: .endedAt), !endedAtRaw.isEmpty {
+            endedAt = Self.parseProtobufTimestamp(endedAtRaw)
+        } else {
+            endedAt = nil
+        }
+    }
+    
+    private static func parseProtobufTimestamp(_ string: String) -> Date {
+        let pattern = #"seconds:\s*(\d+)\s*\n\s*nanos:\s*(\d+)"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
+           let secondsRange = Range(match.range(at: 1), in: string),
+           let nanosRange = Range(match.range(at: 2), in: string),
+           let seconds = Int64(string[secondsRange]),
+           let nanos = Int32(string[nanosRange]) {
+            let interval = TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000
+            return Date(timeIntervalSince1970: interval)
+        }
+        // fallback: ISO8601
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: string) ?? Date()
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(callId, forKey: .callId)
+        try container.encode(chatId, forKey: .chatId)
+        try container.encode(initiatorId, forKey: .initiatorId)
+        try container.encode(status, forKey: .status)
+        try container.encode(type, forKey: .type)
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try container.encode(isoFormatter.string(from: startedAt), forKey: .startedAt)
+        if let endedAt = endedAt {
+            try container.encode(isoFormatter.string(from: endedAt), forKey: .endedAt)
+        } else {
+            try container.encodeNil(forKey: .endedAt)
+        }
+    }
+}
