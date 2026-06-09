@@ -1,16 +1,3 @@
-//
-//  OutgoingCallView.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 8.06.26.
-//
-
-
-//
-//  OutgoingCallView.swift
-//  MessengerApp
-//
-
 import SwiftUI
 
 struct OutgoingCallView: View {
@@ -18,12 +5,15 @@ struct OutgoingCallView: View {
     let contactName: String
     let avatarURL: String?
     @Environment(\.dismiss) var dismiss
-    @ObservedObject var callService = CallService.shared
+    @ObservedObject private var callService = CallService.shared
     @State private var showingActiveCall = false
-
+    @State private var connectionError: String?
+    @State private var isConnecting = true
+    
     var body: some View {
         ZStack {
             Color.black.opacity(0.85).ignoresSafeArea()
+            
             VStack(spacing: 24) {
                 Spacer()
                 AvatarView(urlString: avatarURL, size: 100)
@@ -32,10 +22,30 @@ struct OutgoingCallView: View {
                     .font(.title)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                Text("Звоним...")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.7))
+                
+                if isConnecting {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                    Text("Подключение...")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                } else if let error = connectionError {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                    Button("Повторить") {
+                        Task { await connectToRoom() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Text("Ожидание ответа...")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                
                 Spacer()
+                
                 Button {
                     Task {
                         try? await callService.endCall(callId: call.callId)
@@ -69,6 +79,23 @@ struct OutgoingCallView: View {
                 showingActiveCall = true
                 dismiss()
             }
+        }
+        .onAppear {
+            Task { await connectToRoom() }
+        }
+    }
+    
+    private func connectToRoom() async {
+        isConnecting = true
+        connectionError = nil
+        
+        do {
+            let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+            try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+            isConnecting = false
+        } catch {
+            connectionError = "Ошибка подключения: \(error.localizedDescription)"
+            isConnecting = false
         }
     }
 }

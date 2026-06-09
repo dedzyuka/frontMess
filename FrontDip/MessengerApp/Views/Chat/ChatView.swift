@@ -103,7 +103,11 @@ struct ChatView: View {
             showCallScreen = true
         }
         .fullScreenCover(isPresented: $showCallScreen) {
-            CallView()
+            if let call = CallService.shared.activeCall {
+                ActiveCallView(call: call)
+            } else {
+                Text("Нет активного звонка")
+            }
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {

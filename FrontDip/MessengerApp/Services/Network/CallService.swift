@@ -11,14 +11,17 @@ import AVFoundation
 class CallService: NSObject, ObservableObject {
     static let shared = CallService()
     
-    @Published var currentCall: Call?
+    @Published var activeCall: Call?
     @Published var room: Room?
+    @Published var isConnectingToRoom = false
     
     private let graphQL = GraphQLClient.shared
+    private var endCallTask: Task<Void, Never>?
     
     override private init() { super.init() }
     
     // MARK: - GraphQL
+    
     func startCall(chatId: UUID, type: String = "video") async throws -> Call {
         let variables: [String: Any] = ["chatId": chatId.uuidString, "type": type]
         struct Response: Decodable { let call: StartCallWrapper }
@@ -30,7 +33,7 @@ class CallService: NSObject, ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let call = response.call.startCall
-        await MainActor.run { self.currentCall = call }
+        await MainActor.run { self.activeCall = call }
         return call
     }
     
@@ -47,12 +50,10 @@ class CallService: NSObject, ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let call = response.call.acceptCall
-            await MainActor.run { self.currentCall = call }
+            await MainActor.run { self.activeCall = call }
             return call
         } catch {
-            // При любой ошибке (включая IntegrityError) сбрасываем текущий вызов,
-            // чтобы клиент мог принять следующий входящий вызов.
-            await MainActor.run { self.currentCall = nil }
+            await MainActor.run { self.activeCall = nil }
             throw error
         }
     }
@@ -67,7 +68,9 @@ class CallService: NSObject, ObservableObject {
             responseType: Response.self,
             authToken: TokenManager.shared.accessToken
         )
-        await MainActor.run { if currentCall?.callId == callId { currentCall = nil } }
+        await MainActor.run {
+            if activeCall?.callId == callId { activeCall = nil }
+        }
     }
     
     func endCall(callId: UUID) async throws {
@@ -81,10 +84,13 @@ class CallService: NSObject, ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         await MainActor.run {
-            if currentCall?.callId == callId {
-                currentCall = nil
-                Task { await room?.disconnect() }
-                room = nil
+            if activeCall?.callId == callId {
+                activeCall = nil
+                endCallTask = Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await room?.disconnect()
+                    room = nil
+                }
             }
         }
     }
@@ -105,18 +111,33 @@ class CallService: NSObject, ObservableObject {
     }
     
     // MARK: - LiveKit
-    func connectToRoom(callId: UUID, token: String, wsUrl: String) async throws {
-        guard room == nil else { return }
+    
+    func connectToRoom(callId: UUID, token: String, wsUrl: String, publishTracks: Bool = true) async throws {
+        await MainActor.run { isConnectingToRoom = true }
+        defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
+        
+        if room != nil {
+            await room?.disconnect()
+            room = nil
+        }
+        
         let newRoom = Room(delegate: self)
         self.room = newRoom
         try await newRoom.connect(url: wsUrl, token: token)
-        try await newRoom.localParticipant.setMicrophone(enabled: true)
-        try await newRoom.localParticipant.setCamera(enabled: true)
+        
+        if publishTracks {
+            // Включаем микрофон и камеру сразу после подключения
+            try await newRoom.localParticipant.setMicrophone(enabled: true)
+            try await newRoom.localParticipant.setCamera(enabled: true)
+            print("🎥 Connected to room and publishing tracks")
+        }
     }
     
     func disconnect() async {
+        endCallTask?.cancel()
         await room?.disconnect()
         room = nil
+        await MainActor.run { activeCall = nil }
     }
     
     func toggleCamera(enabled: Bool) async throws {
@@ -127,7 +148,6 @@ class CallService: NSObject, ObservableObject {
         try await room?.localParticipant.setMicrophone(enabled: enabled)
     }
     
-    // ИСПРАВЛЕННЫЙ МЕТОД
     func switchCamera() async throws {
         guard let room = room else { return }
         if let localVideoTrack = room.localParticipant.videoTracks.first(where: { $0.kind == .video })?.track as? LocalVideoTrack,
@@ -139,8 +159,32 @@ class CallService: NSObject, ObservableObject {
 
 // MARK: - RoomDelegate
 extension CallService: RoomDelegate {
+    func room(_ room: Room, participantDidJoin participant: Participant) {
+        print("👤 Participant joined: \(participant.identity)")
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+    
+    func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didSubscribeTrack track: Track) {
+        print("📹 Subscribed to \(track.kind) track from \(participant.identity)")
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+    
+    func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUnsubscribeTrack track: Track) {
+        print("📹 Unsubscribed from \(track.kind) track from \(participant.identity)")
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+    
     @MainActor
     func room(_ room: Room, didDisconnectWithError error: Error?) {
-        currentCall = nil
+        activeCall = nil
+        self.room = nil
+        isConnectingToRoom = false
+        print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
     }
 }

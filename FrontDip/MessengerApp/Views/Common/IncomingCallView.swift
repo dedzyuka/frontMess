@@ -1,8 +1,3 @@
-//
-//  IncomingCallView.swift
-//  MessengerApp
-//
-
 import SwiftUI
 
 struct IncomingCallView: View {
@@ -24,7 +19,7 @@ struct IncomingCallView: View {
                     .font(.title)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                Text("Видеозвонок...")
+                Text(call.type == "video" ? "Видеозвонок..." : "Аудиозвонок...")
                     .font(.subheadline)
                     .foregroundColor(.white.opacity(0.7))
                 Spacer()
@@ -51,14 +46,17 @@ struct IncomingCallView: View {
                     Button {
                         Task {
                             do {
+                                // 1. Принимаем звонок на бэкенде
+                                let _ = try await callService.acceptCall(callId: call.callId)
+                                // 2. Получаем токен и подключаемся к комнате
                                 let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
-                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
-                                try await callService.acceptCall(callId: call.callId)
-                                WebSocketService.shared.sendCallAccept(callId: call.callId)
+                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
                                 showingActiveCall = true
                                 dismiss()
                             } catch {
                                 print("Accept error: \(error)")
+                                await MainActor.run { callService.activeCall = nil }
+                                NotificationService.shared.showError("Не удалось принять звонок")
                             }
                         }
                     } label: {

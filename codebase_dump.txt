@@ -59,6 +59,7 @@ class AppState: ObservableObject {
 import SwiftUI
 
 import PushKit
+import LiveKit
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
@@ -66,8 +67,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = CallManager.shared
         registry.desiredPushTypes = [.voIP]
+        
         return true
     }
+    
 }
 
 @main
@@ -76,6 +79,11 @@ struct MessengerApp: App {
     @StateObject private var appState = AppState.shared
     @StateObject private var contactService = ContactService.shared
     @StateObject private var activeVideoManager = ActiveVideoManager.shared   // новая строка
+    
+    init() {
+            // Включаем детальное логирование для отладки WebRTC
+            LiveKitSDK.setLogLevel(.debug)
+        }
 
     var body: some Scene {
         WindowGroup {
@@ -88,10 +96,29 @@ struct MessengerApp: App {
     }
 }
 
+struct OutgoingCallData: Identifiable {
+    let id: UUID
+    let call: Call
+    let contactName: String
+    let avatarURL: String?
+    
+    init(call: Call, contactName: String, avatarURL: String?) {
+        self.id = call.callId
+        self.call = call
+        self.contactName = contactName
+        self.avatarURL = avatarURL
+    }
+}
+
+import SwiftUI
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var contactService = ContactService.shared
+    @StateObject private var activeVideoManager = ActiveVideoManager.shared
+    @StateObject private var callService = CallService.shared
     @State private var isChecking = true
-
+    
     var body: some View {
         Group {
             if isChecking {
@@ -105,16 +132,41 @@ struct ContentView: View {
         .onAppear {
             checkAutoLogin()
         }
+        .sheet(item: $callService.activeCall) { call in
+            if call.initiatorId == appState.currentUser?.userId {
+                // Исходящий звонок – нужно получить имя и аватар
+                OutgoingCallView(
+                    call: call,
+                    contactName: getContactName(for: call.chatId, initiatorId: call.initiatorId),
+                    avatarURL: getAvatarURL(for: call.chatId, initiatorId: call.initiatorId)
+                )
+            } else {
+                IncomingCallView(
+                    call: call,
+                    contactName: getContactName(for: call.chatId, initiatorId: call.initiatorId),
+                    avatarURL: getAvatarURL(for: call.chatId, initiatorId: call.initiatorId)
+                )
+            }
+        }
     }
-
+    
     private func checkAutoLogin() {
         Task {
             let success = await AuthViewModel().restoreSession()
             await MainActor.run {
                 isChecking = false
-                // если success == false, остаёмся на WelcomeView
             }
         }
+    }
+    
+    private func getContactName(for chatId: UUID, initiatorId: UUID) -> String {
+        // Здесь нужно получить имя контакта из кэша или БД
+        // Временная заглушка:
+        return "Контакт"
+    }
+    
+    private func getAvatarURL(for chatId: UUID, initiatorId: UUID) -> String? {
+        return nil
     }
 }
 
@@ -891,15 +943,14 @@ struct DeleteChatResponse: Decodable {
 struct DeleteChatWrapper: Decodable {
     let delete: Bool
 }
-// Models/Call.swift
 import Foundation
 
 struct Call: Identifiable, Codable {
     let callId: UUID
     let chatId: UUID
     let initiatorId: UUID
-    let status: String   // pending, active, missed, completed, declined
-    let type: String     // audio, video
+    var status: String
+    let type: String
     let startedAt: Date
     let endedAt: Date?
     
@@ -911,6 +962,72 @@ struct Call: Identifiable, Codable {
     
     var isActive: Bool { status == "active" }
     var isPending: Bool { status == "pending" }
+    
+    init(callId: UUID, chatId: UUID, initiatorId: UUID, status: String, type: String, startedAt: Date, endedAt: Date? = nil) {
+        self.callId = callId
+        self.chatId = chatId
+        self.initiatorId = initiatorId
+        self.status = status
+        self.type = type
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case callId, chatId, initiatorId, status, type, startedAt, endedAt
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        callId = try container.decode(UUID.self, forKey: .callId)
+        chatId = try container.decode(UUID.self, forKey: .chatId)
+        initiatorId = try container.decode(UUID.self, forKey: .initiatorId)
+        status = try container.decode(String.self, forKey: .status)
+        type = try container.decode(String.self, forKey: .type)
+        
+        let startedAtRaw = try container.decode(String.self, forKey: .startedAt)
+        startedAt = Self.parseProtobufTimestamp(startedAtRaw)
+        
+        if let endedAtRaw = try? container.decode(String.self, forKey: .endedAt), !endedAtRaw.isEmpty {
+            endedAt = Self.parseProtobufTimestamp(endedAtRaw)
+        } else {
+            endedAt = nil
+        }
+    }
+    
+    private static func parseProtobufTimestamp(_ string: String) -> Date {
+        let pattern = #"seconds:\s*(\d+)\s*\n\s*nanos:\s*(\d+)"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
+           let secondsRange = Range(match.range(at: 1), in: string),
+           let nanosRange = Range(match.range(at: 2), in: string),
+           let seconds = Int64(string[secondsRange]),
+           let nanos = Int32(string[nanosRange]) {
+            let interval = TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000
+            return Date(timeIntervalSince1970: interval)
+        }
+        // fallback: ISO8601
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: string) ?? Date()
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(callId, forKey: .callId)
+        try container.encode(chatId, forKey: .chatId)
+        try container.encode(initiatorId, forKey: .initiatorId)
+        try container.encode(status, forKey: .status)
+        try container.encode(type, forKey: .type)
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try container.encode(isoFormatter.string(from: startedAt), forKey: .startedAt)
+        if let endedAt = endedAt {
+            try container.encode(isoFormatter.string(from: endedAt), forKey: .endedAt)
+        } else {
+            try container.encodeNil(forKey: .endedAt)
+        }
+    }
 }
 
 ./FrontDip/MessengerApp/Models/Operations.swift
@@ -1353,15 +1470,20 @@ struct GraphQLQueries {
     """
 
     static let acceptCall = """
-    mutation AcceptCall($callId: String!) {
-        call {
-            acceptCall(input: { callId: $callId }) {
-                callId
-                status
+        mutation AcceptCall($callId: String!) {
+            call {
+                acceptCall(input: { callId: $callId }) {
+                    callId
+                    chatId
+                    initiatorId
+                    status
+                    type
+                    startedAt
+                    endedAt
+                }
             }
         }
-    }
-    """
+        """
 
     static let rejectCall = """
     mutation RejectCall($callId: String!) {
@@ -1931,10 +2053,10 @@ import Foundation
 import UIKit
 import CallKit
 import PushKit
+import AVFoundation
 
 class CallManager: NSObject, ObservableObject {
     static let shared = CallManager()
-    
     private let callController = CXCallController()
     private var provider: CXProvider?
     private var currentCallUUID: UUID?
@@ -1964,56 +2086,53 @@ class CallManager: NSObject, ObservableObject {
         registry.desiredPushTypes = [.voIP]
     }
     
-    func reportIncomingCall(call: Call) {
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: call.callId.uuidString)
-        update.hasVideo = call.type == "video"
-        update.localizedCallerName = "Входящий звонок" // можно подставить имя контакта
-        provider?.reportNewIncomingCall(with: call.callId, update: update) { error in
-            if let error = error { print("Failed to report incoming call: \(error)") }
-            else { self.currentCallUUID = call.callId }
+    func startOutgoingCall(chatId: UUID, contactName: String, avatarURL: String?, type: String = "video") {
+            Task {
+                // 1. Запрашиваем разрешения
+                let granted = await withCheckedContinuation { cont in
+                    AVCaptureDevice.requestAccess(for: .video) { videoGranted in
+                        AVAudioSession.sharedInstance().requestRecordPermission { audioGranted in
+                            cont.resume(returning: videoGranted && audioGranted)
+                        }
+                    }
+                }
+                guard granted else { return }
+                
+                // 2. Активируем аудиосессию
+                try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+                try? AVAudioSession.sharedInstance().setActive(true)
+                
+                // 3. Создаём звонок на бэкенде
+                let call = try await callService.startCall(chatId: chatId, type: type)
+                
+                // 4. Отправляем событие для отображения OutgoingCallView
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .showOutgoingCall,
+                        object: (call, contactName, avatarURL as Any)
+                    )
+                }
+            }
         }
-    }
-    
-    func endCall(callId: UUID) {
-        let action = CXEndCallAction(call: callId)
-        let transaction = CXTransaction(action: action)
-        callController.request(transaction) { error in
-            if let error = error { print("End call error: \(error)") }
-        }
-        provider?.reportCall(with: callId, endedAt: Date(), reason: .remoteEnded)
-        currentCallUUID = nil
-    }
 }
 
 extension CallManager: CXProviderDelegate {
     func providerDidReset(_ provider: CXProvider) {
         currentCallUUID = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
     }
     
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        guard let call = CallService.shared.currentCall else {
-            action.fail()
-            return
-        }
         action.fulfill()
-        currentCallUUID = call.callId
-        WebSocketService.shared.sendCallStart(chatId: call.chatId, type: call.type)
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .showCallScreen, object: call)
-        }
     }
     
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        guard let callId = currentCallUUID else {
-            action.fail()
-            return
-        }
+        guard let callId = currentCallUUID else { action.fail(); return }
         Task {
             do {
-                WebSocketService.shared.sendCallAccept(callId: callId)
                 let (token, wsUrl) = try await callService.getLiveKitToken(callId: callId)
                 try await callService.connectToRoom(callId: callId, token: token, wsUrl: wsUrl)
+                try await callService.acceptCall(callId: callId)
                 action.fulfill()
             } catch {
                 action.fail()
@@ -2022,17 +2141,14 @@ extension CallManager: CXProviderDelegate {
     }
     
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        guard let callId = currentCallUUID else {
-            action.fail()
-            return
-        }
+        guard let callId = currentCallUUID else { action.fail(); return }
         Task {
             try? await callService.endCall(callId: callId)
-            WebSocketService.shared.sendCallEnd(callId: callId)
-            callService.disconnect()
+            await callService.disconnect()
             action.fulfill()
         }
         currentCallUUID = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
     }
     
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
@@ -2046,22 +2162,18 @@ extension CallManager: CXProviderDelegate {
 extension CallManager: PKPushRegistryDelegate {
     func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
         let token = pushCredentials.token.map { String(format: "%02.2hhx", $0) }.joined()
-        print("VoIP token: \(token)")
-        Task {
-            await PushService.shared.registerVoIPToken(token)
-        }
+        Task { await PushService.shared.registerVoIPToken(token) }
     }
     
     func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
-        guard let callIdString = payload.dictionaryPayload["call_id"] as? String,
-              let callId = UUID(uuidString: callIdString),
-              let call = CallService.shared.currentCall, call.callId == callId else {
-            completion()
-            return
-        }
-        reportIncomingCall(call: call)
+        // Здесь должен быть парсинг call_id из payload и отображение IncomingCallView
+        // Реализуйте по аналогии с вашим текущим кодом, используя IncomingCallView
         completion()
     }
+}
+extension Notification.Name {
+    static let showOutgoingCall = Notification.Name("showOutgoingCall")
+
 }
 
 ./FrontDip/MessengerApp/Services/Database/LocalDatabase.swift
@@ -3015,19 +3127,24 @@ class MessageService: ObservableObject {
 
 ./FrontDip/MessengerApp/Services/Network/CallService.swift
 
+//
+//  CallService.swift
+//  MessengerApp
+//
+
 import Foundation
 import LiveKit
 import Combine
+import AVFoundation
 
 class CallService: NSObject, ObservableObject {
     static let shared = CallService()
     
-    @Published var currentCall: Call?
-    @Published var isConnecting = false
-    @Published var errorMessage: String?
+    @Published var activeCall: Call?          // nil – нет активного звонка
     @Published var room: Room?
     
     private let graphQL = GraphQLClient.shared
+    private var endCallTask: Task<Void, Never>?
     
     override private init() { super.init() }
     
@@ -3035,10 +3152,8 @@ class CallService: NSObject, ObservableObject {
     
     func startCall(chatId: UUID, type: String = "video") async throws -> Call {
         let variables: [String: Any] = ["chatId": chatId.uuidString, "type": type]
-        struct Response: Decodable {
-            let call: StartCallWrapper
-            struct StartCallWrapper: Decodable { let startCall: Call }
-        }
+        struct Response: Decodable { let call: StartCallWrapper }
+        struct StartCallWrapper: Decodable { let startCall: Call }
         let response: Response = try await graphQL.perform(
             query: GraphQLQueries.startCall,
             variables: variables,
@@ -3046,48 +3161,51 @@ class CallService: NSObject, ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let call = response.call.startCall
-        await MainActor.run { self.currentCall = call }
+        await MainActor.run { self.activeCall = call }
         return call
     }
     
     func acceptCall(callId: UUID) async throws -> Call {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable {
-            let call: AcceptCallWrapper
-            struct AcceptCallWrapper: Decodable { let acceptCall: Call }
+        struct Response: Decodable { let call: AcceptCallWrapper }
+        struct AcceptCallWrapper: Decodable { let acceptCall: Call }
+        
+        do {
+            let response: Response = try await graphQL.perform(
+                query: GraphQLQueries.acceptCall,
+                variables: variables,
+                responseType: Response.self,
+                authToken: TokenManager.shared.accessToken
+            )
+            let call = response.call.acceptCall
+            await MainActor.run { self.activeCall = call }
+            return call
+        } catch {
+            // При ошибке сбрасываем активный звонок
+            await MainActor.run { self.activeCall = nil }
+            throw error
         }
-        let response: Response = try await graphQL.perform(
-            query: GraphQLQueries.acceptCall,
-            variables: variables,
-            responseType: Response.self,
-            authToken: TokenManager.shared.accessToken
-        )
-        let call = response.call.acceptCall
-        await MainActor.run { self.currentCall = call }
-        return call
     }
     
     func rejectCall(callId: UUID) async throws {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable {
-            let call: RejectCallWrapper
-            struct RejectCallWrapper: Decodable { let rejectCall: Bool }
-        }
+        struct Response: Decodable { let call: RejectCallWrapper }
+        struct RejectCallWrapper: Decodable { let rejectCall: Bool }
         _ = try await graphQL.perform(
             query: GraphQLQueries.rejectCall,
             variables: variables,
             responseType: Response.self,
             authToken: TokenManager.shared.accessToken
         )
-        await MainActor.run { if currentCall?.callId == callId { currentCall = nil } }
+        await MainActor.run {
+            if activeCall?.callId == callId { activeCall = nil }
+        }
     }
     
     func endCall(callId: UUID) async throws {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable {
-            let call: EndCallWrapper
-            struct EndCallWrapper: Decodable { let endCall: Bool }
-        }
+        struct Response: Decodable { let call: EndCallWrapper }
+        struct EndCallWrapper: Decodable { let endCall: Bool }
         _ = try await graphQL.perform(
             query: GraphQLQueries.endCall,
             variables: variables,
@@ -3095,20 +3213,21 @@ class CallService: NSObject, ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         await MainActor.run {
-            if currentCall?.callId == callId {
-                currentCall = nil
-                room?.disconnect()
-                room = nil
+            if activeCall?.callId == callId {
+                activeCall = nil
+                endCallTask = Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    await room?.disconnect()
+                    room = nil
+                }
             }
         }
     }
-
+    
     func getLiveKitToken(callId: UUID) async throws -> (token: String, wsUrl: String) {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable {
-            let call: TokenWrapper
-            struct TokenWrapper: Decodable { let getLiveKitToken: String }
-        }
+        struct Response: Decodable { let call: TokenWrapper }
+        struct TokenWrapper: Decodable { let getLiveKitToken: String }
         let response: Response = try await graphQL.perform(
             query: GraphQLQueries.getLiveKitToken,
             variables: variables,
@@ -3116,6 +3235,7 @@ class CallService: NSObject, ObservableObject {
             authToken: TokenManager.shared.accessToken
         )
         let token = response.call.getLiveKitToken
+        // Здесь ожидаем, что бэкенд возвращает wsUrl в ответе. Если нет – используем из конфига
         let wsUrl = AppConfig.liveKitWSURL
         return (token, wsUrl)
     }
@@ -3123,7 +3243,11 @@ class CallService: NSObject, ObservableObject {
     // MARK: - LiveKit
     
     func connectToRoom(callId: UUID, token: String, wsUrl: String) async throws {
-        guard room == nil else { return }
+        // Если уже есть комната – сначала её закроем
+        if room != nil {
+            await room?.disconnect()
+            room = nil
+        }
         let newRoom = Room(delegate: self)
         self.room = newRoom
         try await newRoom.connect(url: wsUrl, token: token)
@@ -3131,9 +3255,11 @@ class CallService: NSObject, ObservableObject {
         try await newRoom.localParticipant.setCamera(enabled: true)
     }
     
-    func disconnect() {
-        room?.disconnect()
+    func disconnect() async {
+        endCallTask?.cancel()
+        await room?.disconnect()
         room = nil
+        await MainActor.run { activeCall = nil }
     }
     
     func toggleCamera(enabled: Bool) async throws {
@@ -3145,33 +3271,41 @@ class CallService: NSObject, ObservableObject {
     }
     
     func switchCamera() async throws {
-        try await room?.localParticipant.switchCameraPosition()
+        guard let room = room else { return }
+        if let localVideoTrack = room.localParticipant.videoTracks.first(where: { $0.kind == .video })?.track as? LocalVideoTrack,
+           let capturer = localVideoTrack.capturer as? CameraCapturer {
+            try await capturer.switchCameraPosition()
+        }
     }
 }
 
-// MARK: - RoomDelegate
+
+
 extension CallService: RoomDelegate {
-    func room(_ room: Room, didDisconnect error: Error?) {
-        print("Room disconnected: \(error?.localizedDescription ?? "ok")")
-        Task { @MainActor in
-            if let call = currentCall, call.isActive {
-                try? await endCall(callId: call.callId)
-            }
-            currentCall = nil
+    func room(_ room: Room, participantDidJoin participant: Participant) {
+        print("👤 Participant joined: \(participant.identity)")
+    }
+    
+    func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didSubscribeTrack track: Track) {
+        print("📹 Subscribed to \(track.kind) track from \(participant.identity)")
+        // Принудительно обновляем UI
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
         }
     }
     
-    func room(_ room: Room, participantDidConnect participant: Participant) {
-        print("Participant joined: \(participant.identity)")
+    func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUnsubscribeTrack track: Track) {
+        print("📹 Unsubscribed from \(track.kind) track from \(participant.identity)")
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
     }
     
-    func room(_ room: Room, participantDidDisconnect participant: Participant) {
-        print("Participant left: \(participant.identity)")
-        Task { @MainActor in
-            if let call = currentCall, call.isActive {
-                try? await endCall(callId: call.callId)
-            }
-        }
+    @MainActor
+    func room(_ room: Room, didDisconnectWithError error: Error?) {
+        activeCall = nil
+        self.room = nil
+        print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
     }
 }
 
@@ -4582,13 +4716,17 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let chatId = UUID(uuidString: chatIdString),
               let initiatorId = UUID(uuidString: initiatorIdString),
               let startedAt = isoDateFormatter.date(from: startedAtString) else { return }
+        
+        if initiatorId == AppState.shared.currentUser?.userId {
+            print("🔇 Ignoring incoming call from self")
+            return
+        }
+        
         let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
                         status: "pending", type: type, startedAt: startedAt, endedAt: nil)
         DispatchQueue.main.async {
-            CallService.shared.currentCall = call
+            CallService.shared.activeCall = call
             NotificationCenter.default.post(name: .incomingCall, object: call)
-            // Если CallKit настроен, он сам вызовет reportIncomingCall
-            // Но можно вызвать CallManager.shared.reportIncomingCall(call: call)
         }
     }
 
@@ -4598,9 +4736,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
         DispatchQueue.main.async {
-            if var call = CallService.shared.currentCall, call.callId == callId {
+            if var call = CallService.shared.activeCall, call.callId == callId {
                 call.status = status
-                CallService.shared.currentCall = call
+                CallService.shared.activeCall = call
                 NotificationCenter.default.post(name: .callStatusChanged, object: call)
             }
         }
@@ -4611,26 +4749,16 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let callIdString = payload["call_id"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
         DispatchQueue.main.async {
-            if CallService.shared.currentCall?.callId == callId {
-                CallService.shared.currentCall = nil
-                CallService.shared.disconnect()
+            if CallService.shared.activeCall?.callId == callId {
+                CallService.shared.activeCall = nil
+                Task {
+                    await CallService.shared.disconnect()
+                }
                 NotificationCenter.default.post(name: .callEnded, object: callId)
             }
         }
     }
 
-    private func handleCallEnded(_ json: [String: Any]) {
-        guard let payload = json["payload"] as? [String: Any],
-              let callIdString = payload["call_id"] as? String,
-              let callId = UUID(uuidString: callIdString) else { return }
-        DispatchQueue.main.async {
-            if let call = CallService.shared.currentCall, call.callId == callId {
-                CallService.shared.currentCall = nil
-                CallService.shared.disconnect()
-                NotificationCenter.default.post(name: .callEnded, object: callId)
-            }
-        }
-    }
     func sendCallStart(chatId: UUID, type: String = "video") {
         let envelope: [String: Any] = [
             "event": "call.start",
@@ -8172,177 +8300,6 @@ struct WelcomeView: View {
     }
 }
 
-./FrontDip/MessengerApp/Views/Call/CallView.swift
-
-import SwiftUI
-import LiveKit
-
-struct CallView: View {
-    @ObservedObject var callService = CallService.shared
-    @Environment(\.dismiss) var dismiss
-    @State private var isCameraOn = true
-    @State private var isMicOn = true
-    
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            
-            // Видео удалённого участника
-            if let participant = callService.room?.remoteParticipants.first {
-                VideoView(participant: participant)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black)
-            } else {
-                VStack {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        .scaleEffect(1.5)
-                    Text("Ожидание подключения...")
-                        .foregroundColor(.white)
-                        .padding(.top, 20)
-                }
-            }
-            
-            VStack {
-                Spacer()
-                HStack(spacing: 40) {
-                    Button {
-                        Task {
-                            try? await callService.toggleMicrophone(enabled: !isMicOn)
-                            isMicOn.toggle()
-                        }
-                    } label: {
-                        Image(systemName: isMicOn ? "mic.fill" : "mic.slash.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                            .frame(width: 60, height: 60)
-                            .background(Color.gray.opacity(0.7))
-                            .clipShape(Circle())
-                    }
-                    
-                    Button {
-                        Task {
-                            if let call = callService.currentCall {
-                                try? await callService.endCall(callId: call.callId)
-                                WebSocketService.shared.sendCallEnd(callId: call.callId)
-                                callService.disconnect()
-                                dismiss()
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "phone.down.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                            .frame(width: 60, height: 60)
-                            .background(Color.red)
-                            .clipShape(Circle())
-                    }
-                    
-                    Button {
-                        Task {
-                            try? await callService.toggleCamera(enabled: !isCameraOn)
-                            isCameraOn.toggle()
-                        }
-                    } label: {
-                        Image(systemName: isCameraOn ? "video.fill" : "video.slash.fill")
-                            .font(.title)
-                            .foregroundColor(.white)
-                            .frame(width: 60, height: 60)
-                            .background(Color.gray.opacity(0.7))
-                            .clipShape(Circle())
-                    }
-                }
-                .padding(.bottom, 40)
-            }
-            
-            // Миниатюра локального видео
-            if let localParticipant = callService.room?.localParticipant, isCameraOn {
-                VideoView(participant: localParticipant, isLocal: true)
-                    .frame(width: 100, height: 150)
-                    .cornerRadius(12)
-                    .padding()
-                    .position(x: UIScreen.main.bounds.width - 70, y: 100)
-            }
-        }
-        .onAppear {
-            // Запрашиваем разрешения
-            AVCaptureDevice.requestAccess(for: .video) { _ in }
-            AVAudioSession.sharedInstance().requestRecordPermission { _ in }
-        }
-        .onDisappear {
-            if callService.currentCall != nil {
-                callService.disconnect()
-            }
-        }
-    }
-}
-
-// MARK: - VideoView (использует встроенный VideoView из LiveKit)
-struct VideoView: UIViewRepresentable {
-    let participant: Participant
-    var isLocal: Bool = false
-    
-    func makeUIView(context: Context) -> LiveKit.VideoView {
-        let view = LiveKit.VideoView()
-        if isLocal {
-            // Для локального видео используем track для камеры
-            if let track = participant.firstVideoTrack {
-                track.addRenderer(view)
-            }
-        } else {
-            participant.addRenderer(view)
-        }
-        return view
-    }
-    
-    func updateUIView(_ uiView: LiveKit.VideoView, context: Context) {}
-}
-
-./FrontDip/MessengerApp/Views/Call/IncomingCallOverlay.swift
-
-import SwiftUI
-
-struct IncomingCallOverlay: View {
-    let call: Call
-    @Environment(\.dismiss) var dismiss
-    @StateObject private var callService = CallService.shared
-    
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Входящий звонок")
-                .font(.title)
-            Text(call.type == "video" ? "Видеозвонок" : "Аудиозвонок")
-            HStack(spacing: 40) {
-                Button("Отклонить") {
-                    Task {
-                        try? await callService.rejectCall(callId: call.callId)
-                        WebSocketService.shared.sendCallReject(callId: call.callId)
-                        dismiss()
-                    }
-                }
-                .foregroundColor(.red)
-                Button("Принять") {
-                    Task {
-                        let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
-                        try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
-                        await callService.acceptCall(callId: call.callId)
-                        WebSocketService.shared.sendCallAccept(callId: call.callId)
-                        dismiss()
-                        // Показать CallView
-                        NotificationCenter.default.post(name: .showCallScreen, object: call)
-                    }
-                }
-                .foregroundColor(.green)
-            }
-        }
-        
-        .padding()
-        .background(Color(.systemBackground))
-        .cornerRadius(20)
-        .shadow(radius: 10)
-    }
-}
-
 ./FrontDip/MessengerApp/Views/Chat/AddContactToChatView.swift
 
 //
@@ -9219,6 +9176,11 @@ extension Notification.Name {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
+//
+//  ChatView.swift
+//  MessengerApp
+//
+
 import SwiftUI
 import CallKit
 import AVFoundation
@@ -9253,8 +9215,7 @@ struct ChatView: View {
     
     @State private var showCallScreen = false
     
-    
-    // NEW: dynamic send button
+    // Кнопка отправки (видео/аудио/текст)
     @State private var sendButtonMode: SendButtonMode = .video
     @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "video"
     @State private var showingVoiceRecorder = false
@@ -9315,11 +9276,16 @@ struct ChatView: View {
             if canSendMessage {
                 inputAreaView
             }
-        }.onReceive(NotificationCenter.default.publisher(for: .showCallScreen)) { _ in
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showCallScreen)) { _ in
             showCallScreen = true
         }
         .fullScreenCover(isPresented: $showCallScreen) {
-            CallView()
+            if let call = CallService.shared.activeCall {
+                ActiveCallView(call: call)
+            } else {
+                Text("Нет активного звонка")
+            }
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
@@ -9503,24 +9469,12 @@ struct ChatView: View {
             }
             
             Spacer()
+            
             Button {
-                Task {
-                    do {
-                        let call = try await CallService.shared.startCall(chatId: chat.id, type: "video")
-                        // Инициируем исходящий звонок через CallKit
-                        let startCallAction = CXStartCallAction(call: call.callId, handle: CXHandle(type: .generic, value: call.chatId.uuidString))
-                        let transaction = CXTransaction(action: startCallAction)
-                        CXCallController().request(transaction) { error in
-                            if let error = error {
-                                print("Start call error: \(error)")
-                            } else {
-                                showCallScreen = true
-                            }
-                        }
-                    } catch {
-                        print("Start call error: \(error)")
-                    }
-                }
+                // Получаем данные собеседника (для приватного чата)
+                let contactName = viewModel.otherUser?.nickName ?? "Пользователь"
+                let avatarURL = viewModel.otherUser?.avatarUrl
+                CallManager.shared.startOutgoingCall(chatId: chat.id, contactName: contactName, avatarURL: avatarURL, type: "video")
             } label: {
                 Image(systemName: "video.fill")
                     .font(.title2)
@@ -9770,7 +9724,6 @@ struct ChatView: View {
         }
     }
     
-    // MARK: - Отправка голосового сообщения
     private func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: String?) async {
         isSending = true
         isUploading = true
@@ -9800,9 +9753,6 @@ struct ChatView: View {
             }
         }
     }
-
-    // MARK: - Отправка видеосообщения (кружок)
-
     
     // MARK: - Отправка видеосообщения (кружок)
     private func sendCircularVideo(url: URL) async {
@@ -9824,13 +9774,13 @@ struct ChatView: View {
             print("📹 Upload success, attachmentId: \(result.attachmentId)")
             
             let success = await viewModel.sendMessage(
-                    attachmentId: result.attachmentId,
-                    storagePath: result.storagePath,
-                    fileName: url.lastPathComponent,
-                    fileSize: nil,
-                    mimeType: "video/mp4",
-                    replyToId: replyingToMessage?.messageId,
-                    isCircular: true
+                attachmentId: result.attachmentId,
+                storagePath: result.storagePath,
+                fileName: url.lastPathComponent,
+                fileSize: nil,
+                mimeType: "video/mp4",
+                replyToId: replyingToMessage?.messageId,
+                isCircular: true
             )
             print("📹 sendMessage success: \(success)")
             if success {
@@ -10168,6 +10118,216 @@ struct JoinChatView: View {
         } catch {
             errorMessage = "Не удалось вступить: \(error.localizedDescription)"
         }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/ActiveCallView.swift
+
+import SwiftUI
+import LiveKit
+import AVFAudio
+
+struct ActiveCallView: View {
+    let call: Call
+    @ObservedObject var callService = CallService.shared
+    @Environment(\.dismiss) var dismiss
+    @State private var isMicOn = true
+    @State private var isCameraOn = true
+    @State private var isSpeakerOn = false
+    @State private var duration: TimeInterval = 0
+    @State private var timer: Timer?
+    
+    var body: some View {
+        let _ = Self._printChanges()
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            // Видео удалённого участника
+            if let remoteParticipant = callService.room?.remoteParticipants.values.first {
+                RemoteVideoView(participant: remoteParticipant)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    Text("Подключение...")
+                        .foregroundColor(.white)
+                        .padding(.top, 10)
+                }
+            }
+            
+            // Миниатюра локального видео
+            if let localParticipant = callService.room?.localParticipant, isCameraOn {
+                LocalVideoView(participant: localParticipant)
+                    .frame(width: 100, height: 150)
+                    .cornerRadius(12)
+                    .padding()
+                    .position(x: UIScreen.main.bounds.width - 70, y: 100)
+            }
+            
+            // Верхняя панель
+            VStack {
+                HStack {
+                    Button {
+                        dismiss()
+                        Task {
+                            try? await callService.endCall(callId: call.callId)
+                            WebSocketService.shared.sendCallEnd(callId: call.callId)
+                            await callService.disconnect()
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .padding()
+                            .background(Circle().fill(Color.black.opacity(0.6)))
+                    }
+                    Spacer()
+                    Text(timeString(from: duration))
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(Capsule().fill(Color.black.opacity(0.6)))
+                }
+                .padding(.horizontal)
+                .padding(.top, 60)
+                Spacer()
+            }
+            
+            // Нижняя панель управления
+            VStack {
+                Spacer()
+                HStack(spacing: 40) {
+                    // Микрофон
+                    Button {
+                        Task {
+                            try? await callService.toggleMicrophone(enabled: !isMicOn)
+                            isMicOn.toggle()
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: isMicOn ? "mic.fill" : "mic.slash.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color.gray.opacity(0.6))
+                                .clipShape(Circle())
+                            Text(isMicOn ? "Выкл" : "Вкл")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    
+                    // Динамик
+                    Button {
+                        isSpeakerOn.toggle()
+                        let audioSession = AVAudioSession.sharedInstance()
+                        try? audioSession.overrideOutputAudioPort(isSpeakerOn ? .speaker : .none)
+                    } label: {
+                        VStack {
+                            Image(systemName: isSpeakerOn ? "speaker.wave.2.fill" : "speaker.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color.gray.opacity(0.6))
+                                .clipShape(Circle())
+                            Text(isSpeakerOn ? "Громк" : "Динамик")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    
+                    // Камера (вкл/выкл)
+                    Button {
+                        Task {
+                            try? await callService.toggleCamera(enabled: !isCameraOn)
+                            isCameraOn.toggle()
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: isCameraOn ? "video.fill" : "video.slash.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color.gray.opacity(0.6))
+                                .clipShape(Circle())
+                            Text(isCameraOn ? "Выкл" : "Вкл")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    
+                    // Переключение камеры
+                    Button {
+                        Task {
+                            try? await callService.switchCamera()
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: "camera.rotate.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color.gray.opacity(0.6))
+                                .clipShape(Circle())
+                            Text("Повернуть")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    
+                    // Завершить звонок
+                    Button {
+                        dismiss()
+                        Task {
+                            try? await callService.endCall(callId: call.callId)
+                            WebSocketService.shared.sendCallEnd(callId: call.callId)
+                            await callService.disconnect()
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: "phone.down.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 50, height: 50)
+                                .background(Color.red)
+                                .clipShape(Circle())
+                            Text("Завершить")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+                .padding(.bottom, 40)
+            }
+        }.id(callService.room?.sid ?? UUID())
+        .onAppear {
+            startTimer()
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                print("Audio session error: \(error)")
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            try? AVAudioSession.sharedInstance().setActive(false)
+        }
+    }
+    
+    private func startTimer() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            if callService.activeCall?.isActive == true {
+                duration += 1
+            }
+        }
+    }
+    
+    private func timeString(from interval: TimeInterval) -> String {
+        let minutes = Int(interval) / 60
+        let seconds = Int(interval) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -10979,6 +11139,151 @@ class PlayerContainerView: UIView {
 ./FrontDip/MessengerApp/Views/Common/ErrorView.swift
 
 
+./FrontDip/MessengerApp/Views/Common/IncomingCallOverlay.swift
+
+//
+//  IncomingCallOverlay.swift
+//  MessengerApp
+//
+
+import SwiftUI
+
+struct IncomingCallOverlay: View {
+    let call: Call
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var callService = CallService.shared
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("Входящий звонок")
+                .font(.title)
+            Text(call.type == "video" ? "Видеозвонок" : "Аудиозвонок")
+            HStack(spacing: 40) {
+                Button("Отклонить") {
+                    Task {
+                        try? await callService.rejectCall(callId: call.callId)
+                        WebSocketService.shared.sendCallReject(callId: call.callId)
+                        dismiss()
+                    }
+                }
+                .foregroundColor(.red)
+                Button("Принять") {
+                    Task {
+                        do {
+                            let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                            try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
+                            try await callService.acceptCall(callId: call.callId)  // ← добавлен try
+                            WebSocketService.shared.sendCallAccept(callId: call.callId)
+                            dismiss()
+                            NotificationCenter.default.post(name: .showCallScreen, object: call)
+                        } catch {
+                            print("Failed to accept call: \(error)")
+                        }
+                    }
+                }
+                .foregroundColor(.green)
+            }
+        }
+        .padding()
+        .background(Color(.systemBackground))
+        .cornerRadius(20)
+        .shadow(radius: 10)
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/IncomingCallView.swift
+
+import SwiftUI
+
+struct IncomingCallView: View {
+    let call: Call
+    let contactName: String
+    let avatarURL: String?
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var callService = CallService.shared
+    @State private var showingActiveCall = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.7).ignoresSafeArea()
+            VStack(spacing: 24) {
+                Spacer()
+                AvatarView(urlString: avatarURL, size: 100)
+                    .padding(.top, 40)
+                Text(contactName)
+                    .font(.title)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                Text(call.type == "video" ? "Видеозвонок..." : "Аудиозвонок...")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
+                HStack(spacing: 50) {
+                    Button {
+                        Task {
+                            try? await callService.rejectCall(callId: call.callId)
+                            WebSocketService.shared.sendCallReject(callId: call.callId)
+                            dismiss()
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: "phone.down.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 60, height: 60)
+                                .background(Color.red)
+                                .clipShape(Circle())
+                            Text("Отклонить")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                    Button {
+                        Task {
+                            do {
+                                // 1. Принимаем звонок на бэкенде
+                                let updatedCall = try await callService.acceptCall(callId: call.callId)
+                                // 2. Получаем токен
+                                let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                                // 3. Подключаемся к комнате
+                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
+                                // 4. Показываем экран активного звонка
+                                showingActiveCall = true
+                                dismiss()
+                            } catch {
+                                print("Accept error: \(error)")
+                                await MainActor.run { callService.activeCall = nil }
+                                NotificationService.shared.showError("Не удалось принять звонок")
+                            }
+                        }
+                    } label: {
+                        VStack {
+                            Image(systemName: "phone.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                                .frame(width: 60, height: 60)
+                                .background(Color.green)
+                                .clipShape(Circle())
+                            Text("Принять")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                    }
+                }
+                .padding(.bottom, 50)
+            }
+        }
+        .fullScreenCover(isPresented: $showingActiveCall) {
+            ActiveCallView(call: call)
+        }
+        .onDisappear {
+            if !showingActiveCall {
+                Task { await callService.disconnect() }
+            }
+        }
+    }
+}
+
 ./FrontDip/MessengerApp/Views/Common/LoadingView.swift
 
 import SwiftUI
@@ -10996,6 +11301,75 @@ struct LoadingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/OutgoingCallView.swift
+
+import SwiftUI
+
+struct OutgoingCallView: View {
+    let call: Call
+    let contactName: String
+    let avatarURL: String?
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var callService = CallService.shared
+    @State private var showingActiveCall = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.85).ignoresSafeArea()
+            VStack(spacing: 24) {
+                Spacer()
+                AvatarView(urlString: avatarURL, size: 100)
+                    .padding(.top, 40)
+                Text(contactName)
+                    .font(.title)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                Text("Звоним...")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
+                Button {
+                    Task {
+                        try? await callService.endCall(callId: call.callId)
+                        WebSocketService.shared.sendCallEnd(callId: call.callId)
+                        await callService.disconnect()
+                        dismiss()
+                    }
+                } label: {
+                    VStack {
+                        Image(systemName: "phone.down.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                            .frame(width: 60, height: 60)
+                            .background(Color.red)
+                            .clipShape(Circle())
+                        Text("Отменить")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                    }
+                }
+                .padding(.bottom, 50)
+            }
+        }
+        .fullScreenCover(isPresented: $showingActiveCall) {
+            ActiveCallView(call: call)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .callStatusChanged)) { notification in
+            if let updatedCall = notification.object as? Call,
+               updatedCall.callId == call.callId,
+               updatedCall.status == "active" {
+                showingActiveCall = true
+                dismiss()
+            }
+        }
+        .onAppear {
+            if callService.activeCall?.callId == call.callId && callService.activeCall?.isActive == true {
+                showingActiveCall = true
+            }
+        }
     }
 }
 
@@ -11070,6 +11444,101 @@ final class PendingForwardManager {
                 data.forwardedFromUserId,
                 data.forwardedFromNickname,
                 data.attachmentId)
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/RemoteVideoView.swift
+
+import SwiftUI
+import LiveKit
+import Combine
+
+struct RemoteVideoView: View {
+    let participant: RemoteParticipant
+    @State private var videoTrack: VideoTrack?
+    @State private var cancellables = Set<AnyCancellable>()
+    
+    var body: some View {
+        Group {
+            if let track = videoTrack {
+                VideoTrackView(track: track)
+                    .onAppear {
+                        print("🎬 RemoteVideoView: displaying video track")
+                    }
+            } else {
+                VStack {
+                    ProgressView()
+                    Text("Ожидание видео...")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                }
+            }
+        }
+        .onAppear {
+            updateTrack()
+            // Подписываемся на изменения у участника
+            participant.objectWillChange
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    updateTrack()
+                }
+                .store(in: &cancellables)
+        }
+        .onDisappear {
+            cancellables.removeAll()
+        }
+    }
+    
+    private func updateTrack() {
+        // Берём первый видеотрек
+        let newTrack = participant.videoTracks.first { $0.kind == .video }?.track as? VideoTrack
+        if let newTrack = newTrack, newTrack.sid != videoTrack?.sid {
+            videoTrack = newTrack
+            print("✅ RemoteVideoView: got video track, sid=\(newTrack.sid?.stringValue ?? "unknown")")
+        } else if newTrack == nil && videoTrack != nil {
+            print("⚠️ RemoteVideoView: video track lost")
+            videoTrack = nil
+        }
+    }
+}
+
+import SwiftUI
+import LiveKit
+import Combine
+
+struct LocalVideoView: View {
+    let participant: LocalParticipant
+    @State private var videoTrack: VideoTrack?
+    @State private var cancellables = Set<AnyCancellable>()
+    
+    var body: some View {
+        Group {
+            if let track = videoTrack {
+                VideoTrackView(track: track)
+            } else {
+                ProgressView()
+            }
+        }
+        .onAppear {
+            updateTrack()
+            participant.objectWillChange
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    updateTrack()
+                }
+                .store(in: &cancellables)
+        }
+        .onDisappear {
+            cancellables.removeAll()
+        }
+    }
+    
+    private func updateTrack() {
+        let newTrack = participant.videoTracks.first { $0.kind == .video }?.track as? VideoTrack
+        if let newTrack = newTrack, newTrack.sid != videoTrack?.sid {
+            videoTrack = newTrack
+            print("✅ LocalVideoView: video track active, sid=\(newTrack.sid?.stringValue ?? "unknown")")
+        }
     }
 }
 
@@ -11673,6 +12142,38 @@ class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordin
                 print("❌ outputURL is nil")
             }
             self.dismiss(animated: true)
+        }
+    }
+}
+
+./FrontDip/MessengerApp/Views/Common/VideoTrackView.swift
+
+//
+//  VideoTrackView.swift
+//  FrontDip
+//
+//  Created by Bogdan Sakhno on 9.06.26.
+//
+
+
+import SwiftUI
+import LiveKit
+
+struct VideoTrackView: UIViewRepresentable {
+    let track: VideoTrack?
+    
+    func makeUIView(context: Context) -> LiveKit.VideoView {
+        let view = LiveKit.VideoView()
+        view.backgroundColor = .black
+        view.setPreferredFramesPerSecond(30)
+        return view
+    }
+    
+    func updateUIView(_ uiView: LiveKit.VideoView, context: Context) {
+        // Ключевое: присваиваем трек напрямую
+        uiView.track = track
+        if track != nil {
+            print("🎥 VideoTrackView: track assigned")
         }
     }
 }

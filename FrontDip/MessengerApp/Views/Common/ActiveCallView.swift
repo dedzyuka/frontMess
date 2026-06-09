@@ -1,11 +1,3 @@
-//
-//  ActiveCallView.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 8.06.26.
-//
-
-
 import SwiftUI
 import LiveKit
 import AVFAudio
@@ -21,6 +13,7 @@ struct ActiveCallView: View {
     @State private var timer: Timer?
     
     var body: some View {
+        let _ = Self._printChanges()
         ZStack {
             Color.black.ignoresSafeArea()
             
@@ -139,7 +132,7 @@ struct ActiveCallView: View {
                         }
                     }
                     
-                    // Переключение камеры (фронтальная/тыловая)
+                    // Переключение камеры
                     Button {
                         Task {
                             try? await callService.switchCamera()
@@ -182,7 +175,7 @@ struct ActiveCallView: View {
                 }
                 .padding(.bottom, 40)
             }
-        }
+        }.id(callService.room?.sid?.stringValue ?? "no-room")
         .onAppear {
             startTimer()
             do {
@@ -200,7 +193,7 @@ struct ActiveCallView: View {
     
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            if callService.currentCall?.isActive == true {
+            if callService.activeCall?.isActive == true {
                 duration += 1
             }
         }

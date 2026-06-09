@@ -154,7 +154,6 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let initiatorId = UUID(uuidString: initiatorIdString),
               let startedAt = isoDateFormatter.date(from: startedAtString) else { return }
         
-        // Игнорируем входящий вызов, если звонящий – это мы сами
         if initiatorId == AppState.shared.currentUser?.userId {
             print("🔇 Ignoring incoming call from self")
             return
@@ -163,7 +162,7 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
                         status: "pending", type: type, startedAt: startedAt, endedAt: nil)
         DispatchQueue.main.async {
-            CallService.shared.currentCall = call
+            CallService.shared.activeCall = call
             NotificationCenter.default.post(name: .incomingCall, object: call)
         }
     }
@@ -174,9 +173,9 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
         DispatchQueue.main.async {
-            if var call = CallService.shared.currentCall, call.callId == callId {
+            if var call = CallService.shared.activeCall, call.callId == callId {
                 call.status = status
-                CallService.shared.currentCall = call
+                CallService.shared.activeCall = call
                 NotificationCenter.default.post(name: .callStatusChanged, object: call)
             }
         }
@@ -186,11 +185,10 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         guard let payload = json["payload"] as? [String: Any],
               let callIdString = payload["call_id"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
-        
         DispatchQueue.main.async {
-            if CallService.shared.currentCall?.callId == callId {
-                CallService.shared.currentCall = nil
-                Task {                         // ← Обёртка для асинхронного вызова
+            if CallService.shared.activeCall?.callId == callId {
+                CallService.shared.activeCall = nil
+                Task {
                     await CallService.shared.disconnect()
                 }
                 NotificationCenter.default.post(name: .callEnded, object: callId)

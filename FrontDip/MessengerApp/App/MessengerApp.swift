@@ -53,15 +53,14 @@ struct OutgoingCallData: Identifiable {
     }
 }
 
+import SwiftUI
+
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @StateObject private var contactService = ContactService.shared
+    @StateObject private var activeVideoManager = ActiveVideoManager.shared
+    @StateObject private var callService = CallService.shared
     @State private var isChecking = true
-    
-    @State private var incomingCall: Call?
-    @State private var incomingCallerName = ""
-    @State private var incomingCallerAvatar: String?
-    
-    @State private var outgoingCallData: OutgoingCallData?   // ← исправлено
     
     var body: some View {
         Group {
@@ -76,44 +75,20 @@ struct ContentView: View {
         .onAppear {
             checkAutoLogin()
         }
-        .sheet(item: $outgoingCallData) { data in
-            OutgoingCallView(call: data.call, contactName: data.contactName, avatarURL: data.avatarURL)
-                .onDisappear {
-                            outgoingCallData = nil
-                        }
-        }
-        // Входящий вызов
-        .onReceive(NotificationCenter.default.publisher(for: .incomingCall)) { notification in
-            // Не показываем входящий вызов, если уже есть активный вызов (исходящий или входящий)
-            guard incomingCall == nil && outgoingCallData == nil else {
-                print("Already presenting a call screen, ignoring new incoming call")
-                return
-            }
-            if let call = notification.object as? Call {
-                incomingCall = call
-                Task {
-                    if let user = try? await UserService.shared.getUser(userId: call.initiatorId) {
-                        await MainActor.run {
-                            incomingCallerName = user.nickName
-                            incomingCallerAvatar = user.avatarUrl
-                        }
-                    }
-                }
-            }
-        }
-
-        .onReceive(NotificationCenter.default.publisher(for: .showOutgoingCall)) { notification in
-            guard incomingCall == nil && outgoingCallData == nil else {
-                print("Already presenting a call screen, ignoring new outgoing call")
-                return
-            }
-            if let (call, name, avatar) = notification.object as? (Call, String, String?) {
-                outgoingCallData = OutgoingCallData(call: call, contactName: name, avatarURL: avatar)
-            }
-        }
-        .sheet(item: $incomingCall) { call in
-            IncomingCallView(call: call, contactName: incomingCallerName, avatarURL: incomingCallerAvatar).onDisappear {
-                incomingCall = nil
+        .sheet(item: $callService.activeCall) { call in
+            if call.initiatorId == appState.currentUser?.userId {
+                // Исходящий звонок – нужно получить имя и аватар
+                OutgoingCallView(
+                    call: call,
+                    contactName: getContactName(for: call.chatId, initiatorId: call.initiatorId),
+                    avatarURL: getAvatarURL(for: call.chatId, initiatorId: call.initiatorId)
+                )
+            } else {
+                IncomingCallView(
+                    call: call,
+                    contactName: getContactName(for: call.chatId, initiatorId: call.initiatorId),
+                    avatarURL: getAvatarURL(for: call.chatId, initiatorId: call.initiatorId)
+                )
             }
         }
     }
@@ -125,5 +100,15 @@ struct ContentView: View {
                 isChecking = false
             }
         }
+    }
+    
+    private func getContactName(for chatId: UUID, initiatorId: UUID) -> String {
+        // Здесь нужно получить имя контакта из кэша или БД
+        // Временная заглушка:
+        return "Контакт"
+    }
+    
+    private func getAvatarURL(for chatId: UUID, initiatorId: UUID) -> String? {
+        return nil
     }
 }
