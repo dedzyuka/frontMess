@@ -470,7 +470,10 @@ struct GraphQLQueries {
     static let getLiveKitToken = """
     query GetLiveKitToken($callId: String!) {
         call {
-            getLiveKitToken(callId: $callId)
+            getLiveKitToken(callId: $callId) {
+                token
+                wsUrl
+            }
         }
     }
     """

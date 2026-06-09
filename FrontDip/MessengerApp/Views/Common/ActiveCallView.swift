@@ -175,7 +175,7 @@ struct ActiveCallView: View {
                 }
                 .padding(.bottom, 40)
             }
-        }.id(callService.room?.sid?.stringValue ?? "no-room")
+        }.id(callService.room?.sid?.stringValue ?? UUID().uuidString)
         .onAppear {
             startTimer()
             do {
@@ -188,6 +188,22 @@ struct ActiveCallView: View {
         .onDisappear {
             timer?.invalidate()
             try? AVAudioSession.sharedInstance().setActive(false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .callEnded)) { _ in
+            dismiss()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .websocketDisconnected)) { _ in
+            // Если WebSocket отвалился, пробуем переподключиться к комнате
+            Task {
+                if let call = callService.activeCall {
+                    do {
+                        let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                        try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: false)
+                    } catch {
+                        print("Failed to reconnect: \(error)")
+                    }
+                }
+            }
         }
     }
     

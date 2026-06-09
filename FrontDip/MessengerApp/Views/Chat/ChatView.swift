@@ -292,11 +292,17 @@ struct ChatView: View {
             
             Spacer()
             
+            // КНОПКА ВИДЕОЗВОНКА (исправлена)
             Button {
-                // Получаем данные собеседника (для приватного чата)
-                let contactName = viewModel.otherUser?.nickName ?? "Пользователь"
-                let avatarURL = viewModel.otherUser?.avatarUrl
-                CallManager.shared.startOutgoingCall(chatId: chat.id, contactName: contactName, avatarURL: avatarURL, type: "video")
+                Task {
+                    do {
+                        let _ = try await CallService.shared.startCall(chatId: chat.id, type: "video")
+                        // activeCall установится автоматически, ContentView покажет OutgoingCallView
+                    } catch {
+                        print("Start call error: \(error)")
+                        NotificationService.shared.showError("Не удалось начать звонок")
+                    }
+                }
             } label: {
                 Image(systemName: "video.fill")
                     .font(.title2)

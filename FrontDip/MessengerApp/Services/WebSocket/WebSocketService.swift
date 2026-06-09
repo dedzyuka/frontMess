@@ -168,16 +168,32 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     }
 
     private func handleCallUpdated(_ json: [String: Any]) {
+        print("📢 call.updated raw: \(json)")
         guard let payload = json["payload"] as? [String: Any],
               let callIdString = payload["call_id"] as? String,
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
+        
+        print("📢 call.updated -> callId=\(callId), status=\(status)")
+        
         DispatchQueue.main.async {
-            if var call = CallService.shared.activeCall, call.callId == callId {
-                call.status = status
-                CallService.shared.activeCall = call
-                NotificationCenter.default.post(name: .callStatusChanged, object: call)
+            guard let existingCall = CallService.shared.activeCall, existingCall.callId == callId else {
+                print("⚠️ No matching active call (expected \(callId))")
+                return
             }
+            // Создаём новый экземпляр Call с обновлённым статусом
+            let updatedCall = Call(
+                callId: existingCall.callId,
+                chatId: existingCall.chatId,
+                initiatorId: existingCall.initiatorId,
+                status: status,
+                type: existingCall.type,
+                startedAt: existingCall.startedAt,
+                endedAt: existingCall.endedAt
+            )
+            print("✅ Updating status from \(existingCall.status) to \(status)")
+            CallService.shared.activeCall = updatedCall
+            NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
         }
     }
 

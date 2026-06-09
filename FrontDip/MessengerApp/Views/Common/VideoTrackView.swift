@@ -11,9 +11,11 @@ struct VideoTrackView: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: LiveKit.VideoView, context: Context) {
-        if uiView.track !== track {
-            uiView.track = track
-            print("🎥 VideoTrackView: track updated, hasTrack=\(track != nil)")
+        // Ключевое: присваиваем трек
+        uiView.track = track
+        // Принудительно запрашиваем рендеринг, если трек есть
+        if track != nil && !uiView.isRendering {
+            uiView.setNeedsLayout()
         }
     }
 }

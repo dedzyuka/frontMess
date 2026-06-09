@@ -9,12 +9,13 @@ struct OutgoingCallView: View {
     @State private var showingActiveCall = false
     @State private var connectionError: String?
     @State private var isConnecting = true
-    @State private var statusCheckTimer: Timer?
-    
+    @State private var timeoutWorkItem: DispatchWorkItem?
+    @State private var hasEnded = false
+    @State private var hasBeenDismissed = false
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.85).ignoresSafeArea()
-            
             VStack(spacing: 24) {
                 Spacer()
                 AvatarView(urlString: avatarURL, size: 100)
@@ -72,41 +73,60 @@ struct OutgoingCallView: View {
         }
         .fullScreenCover(isPresented: $showingActiveCall) {
             ActiveCallView(call: call)
+                .onAppear {
+                    // Закрываем текущий экран после появления ActiveCallView
+                    DispatchQueue.main.async {
+                        dismiss()
+                    }
+                }
         }
         .onAppear {
+            hasEnded = false
+            hasBeenDismissed = false
             Task { await connectToRoom() }
-            startStatusCheckTimer()
-        }
-        .onDisappear {
-            statusCheckTimer?.invalidate()
-            statusCheckTimer = nil
-        }
-    }
-    
-    private func startStatusCheckTimer() {
-        statusCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            checkCallStatus()
-        }
-    }
-    
-    private func checkCallStatus() {
-        // Проверяем, не стал ли звонок активным
-        if let activeCall = callService.activeCall,
-           activeCall.callId == call.callId,
-           activeCall.status == "active" {
-            DispatchQueue.main.async {
-                if !showingActiveCall {
-                    showingActiveCall = true
-                    dismiss()
+            startObserving()
+            
+            // Таймаут на случай, если звонок не будет принят
+            let workItem = DispatchWorkItem {
+                if callService.activeCall?.status != "active" {
+                    Task { try? await callService.endCall(callId: call.callId) }
                 }
             }
+            timeoutWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: workItem)
         }
+        .onDisappear {
+            stopObserving()
+            timeoutWorkItem?.cancel()
+            // Вызываем endCall только если звонок всё ещё pending и мы не переключились на активный
+            if !hasBeenDismissed && callService.activeCall?.status != "active" {
+                Task { try? await callService.endCall(callId: call.callId) }
+            }
+        }
+    }
+    
+    private func startObserving() {
+        NotificationCenter.default.addObserver(
+            forName: .callStatusChanged,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let updatedCall = notification.object as? Call,
+                  updatedCall.callId == call.callId,
+                  updatedCall.status == "active" else { return }
+            hasBeenDismissed = true
+            showingActiveCall = true
+            dismiss()
+        }
+    }
+    
+    private func stopObserving() {
+        NotificationCenter.default.removeObserver(self, name: .callStatusChanged, object: nil)
     }
     
     private func connectToRoom() async {
         isConnecting = true
         connectionError = nil
-        
         do {
             let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
             try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)

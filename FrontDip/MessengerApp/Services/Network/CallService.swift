@@ -8,15 +8,22 @@ import LiveKit
 import Combine
 import AVFoundation
 
+@MainActor
 class CallService: NSObject, ObservableObject {
     static let shared = CallService()
     
-    @Published var activeCall: Call?
+    @Published var activeCall: Call? {
+        didSet {
+            print("🔄 CallService: activeCall changed to \(activeCall?.status ?? "nil")")
+        }
+    }
     @Published var room: Room?
     @Published var isConnectingToRoom = false
+    @Published var connectionError: String?
     
     private let graphQL = GraphQLClient.shared
     private var endCallTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     
     override private init() { super.init() }
     
@@ -50,10 +57,7 @@ class CallService: NSObject, ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let call = response.call.acceptCall
-            await MainActor.run {
-                self.activeCall = call
-                self.objectWillChange.send()
-            }
+            await MainActor.run { self.activeCall = call }
             return call
         } catch {
             await MainActor.run { self.activeCall = nil }
@@ -77,6 +81,13 @@ class CallService: NSObject, ObservableObject {
     }
     
     func endCall(callId: UUID) async throws {
+        guard let call = activeCall, call.callId == callId, call.status == "pending" else {
+            print("🔚 endCall ignored – call not pending (status: \(activeCall?.status ?? "nil"))")
+            return
+        }
+        print("🔚 endCall called for call \(callId)")
+        print("📞 Call stack:\n\(Thread.callStackSymbols.prefix(20).joined(separator: "\n"))")
+
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: EndCallWrapper }
         struct EndCallWrapper: Decodable { let endCall: Bool }
@@ -90,7 +101,7 @@ class CallService: NSObject, ObservableObject {
             if activeCall?.callId == callId {
                 activeCall = nil
                 endCallTask = Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                     await room?.disconnect()
                     room = nil
                 }
@@ -100,17 +111,24 @@ class CallService: NSObject, ObservableObject {
     
     func getLiveKitToken(callId: UUID) async throws -> (token: String, wsUrl: String) {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable { let call: TokenWrapper }
-        struct TokenWrapper: Decodable { let getLiveKitToken: String }
+        struct Response: Decodable {
+            let call: TokenWrapper
+        }
+        struct TokenWrapper: Decodable {
+            let getLiveKitToken: TokenResult
+        }
+        struct TokenResult: Decodable {
+            let token: String
+            let wsUrl: String
+        }
         let response: Response = try await graphQL.perform(
             query: GraphQLQueries.getLiveKitToken,
             variables: variables,
             responseType: Response.self,
             authToken: TokenManager.shared.accessToken
         )
-        let token = response.call.getLiveKitToken
-        let wsUrl = AppConfig.liveKitWSURL
-        return (token, wsUrl)
+        let result = response.call.getLiveKitToken
+        return (result.token, result.wsUrl)
     }
     
     // MARK: - LiveKit
@@ -119,9 +137,10 @@ class CallService: NSObject, ObservableObject {
         await MainActor.run { isConnectingToRoom = true }
         defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
         
+        // Если уже есть комната, не создаём новую
         if room != nil {
-            await room?.disconnect()
-            room = nil
+            print("⚠️ Already connected to room")
+            return
         }
         
         let newRoom = Room(delegate: self)
@@ -129,7 +148,7 @@ class CallService: NSObject, ObservableObject {
         try await newRoom.connect(url: wsUrl, token: token)
         
         if publishTracks {
-            // Включаем микрофон и камеру сразу после подключения
+            // Включаем микрофон и камеру сразу
             try await newRoom.localParticipant.setMicrophone(enabled: true)
             try await newRoom.localParticipant.setCamera(enabled: true)
             print("🎥 Connected to room and publishing tracks")
@@ -138,6 +157,7 @@ class CallService: NSObject, ObservableObject {
     
     func disconnect() async {
         endCallTask?.cancel()
+        reconnectTask?.cancel()
         await room?.disconnect()
         room = nil
         await MainActor.run { activeCall = nil }
@@ -158,36 +178,52 @@ class CallService: NSObject, ObservableObject {
             try await capturer.switchCameraPosition()
         }
     }
+    
+    // MARK: - Private reconnect logic
+    private func scheduleReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let call = activeCall, room == nil else { return }
+            do {
+                let (token, wsUrl) = try await getLiveKitToken(callId: call.callId)
+                try await connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+            } catch {
+                print("Reconnect failed: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - RoomDelegate
 extension CallService: RoomDelegate {
     func room(_ room: Room, participantDidJoin participant: Participant) {
         print("👤 Participant joined: \(participant.identity)")
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
     func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didSubscribeTrack track: Track) {
         print("📹 Subscribed to \(track.kind) track from \(participant.identity)")
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
     func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUnsubscribeTrack track: Track) {
         print("📹 Unsubscribed from \(track.kind) track from \(participant.identity)")
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
-    @MainActor
     func room(_ room: Room, didDisconnectWithError error: Error?) {
-        activeCall = nil
-        self.room = nil
-        isConnectingToRoom = false
         print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
+        print("🔍 Call stack: \(Thread.callStackSymbols.prefix(10).joined(separator: "\n"))")
+        DispatchQueue.main.async {
+            if let error = error, self.activeCall != nil {
+                print("🔍 Disconnect error details: \(error)")
+                // Пробуем переподключиться, а не завершать звонок
+                self.scheduleReconnect()
+            } else {
+                self.activeCall = nil
+                self.room = nil
+            }
+        }
     }
 }

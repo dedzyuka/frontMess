@@ -5,7 +5,7 @@ struct IncomingCallView: View {
     let contactName: String
     let avatarURL: String?
     @Environment(\.dismiss) var dismiss
-    @StateObject private var callService = CallService.shared
+    @ObservedObject private var callService = CallService.shared
     @State private var showingActiveCall = false
 
     var body: some View {
@@ -24,6 +24,7 @@ struct IncomingCallView: View {
                     .foregroundColor(.white.opacity(0.7))
                 Spacer()
                 HStack(spacing: 50) {
+                    // Кнопка Отклонить
                     Button {
                         Task {
                             try? await callService.rejectCall(callId: call.callId)
@@ -43,12 +44,12 @@ struct IncomingCallView: View {
                                 .foregroundColor(.white)
                         }
                     }
+                    
+                    // Кнопка Принять
                     Button {
                         Task {
                             do {
-                                // 1. Принимаем звонок на бэкенде
                                 let _ = try await callService.acceptCall(callId: call.callId)
-                                // 2. Получаем токен и подключаемся к комнате
                                 let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
                                 try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
                                 showingActiveCall = true

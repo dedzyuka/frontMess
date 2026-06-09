@@ -1504,7 +1504,10 @@ struct GraphQLQueries {
     static let getLiveKitToken = """
     query GetLiveKitToken($callId: String!) {
         call {
-            getLiveKitToken(callId: $callId)
+            getLiveKitToken(callId: $callId) {
+                token
+                wsUrl
+            }
         }
     }
     """
@@ -3140,11 +3143,14 @@ import AVFoundation
 class CallService: NSObject, ObservableObject {
     static let shared = CallService()
     
-    @Published var activeCall: Call?          // nil – нет активного звонка
+    @Published var activeCall: Call?
     @Published var room: Room?
+    @Published var isConnectingToRoom = false
+    @Published var connectionError: String?
     
     private let graphQL = GraphQLClient.shared
     private var endCallTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     
     override private init() { super.init() }
     
@@ -3181,7 +3187,6 @@ class CallService: NSObject, ObservableObject {
             await MainActor.run { self.activeCall = call }
             return call
         } catch {
-            // При ошибке сбрасываем активный звонок
             await MainActor.run { self.activeCall = nil }
             throw error
         }
@@ -3216,7 +3221,7 @@ class CallService: NSObject, ObservableObject {
             if activeCall?.callId == callId {
                 activeCall = nil
                 endCallTask = Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
                     await room?.disconnect()
                     room = nil
                 }
@@ -3226,37 +3231,53 @@ class CallService: NSObject, ObservableObject {
     
     func getLiveKitToken(callId: UUID) async throws -> (token: String, wsUrl: String) {
         let variables = ["callId": callId.uuidString]
-        struct Response: Decodable { let call: TokenWrapper }
-        struct TokenWrapper: Decodable { let getLiveKitToken: String }
+        struct Response: Decodable {
+            let call: TokenWrapper
+        }
+        struct TokenWrapper: Decodable {
+            let getLiveKitToken: TokenResult
+        }
+        struct TokenResult: Decodable {
+            let token: String
+            let wsUrl: String
+        }
         let response: Response = try await graphQL.perform(
             query: GraphQLQueries.getLiveKitToken,
             variables: variables,
             responseType: Response.self,
             authToken: TokenManager.shared.accessToken
         )
-        let token = response.call.getLiveKitToken
-        // Здесь ожидаем, что бэкенд возвращает wsUrl в ответе. Если нет – используем из конфига
-        let wsUrl = AppConfig.liveKitWSURL
-        return (token, wsUrl)
+        let result = response.call.getLiveKitToken
+        return (result.token, result.wsUrl)
     }
     
     // MARK: - LiveKit
     
-    func connectToRoom(callId: UUID, token: String, wsUrl: String) async throws {
-        // Если уже есть комната – сначала её закроем
+    func connectToRoom(callId: UUID, token: String, wsUrl: String, publishTracks: Bool = true) async throws {
+        await MainActor.run { isConnectingToRoom = true }
+        defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
+        
+        // Если уже есть комната, не создаём новую
         if room != nil {
-            await room?.disconnect()
-            room = nil
+            print("⚠️ Already connected to room")
+            return
         }
+        
         let newRoom = Room(delegate: self)
         self.room = newRoom
         try await newRoom.connect(url: wsUrl, token: token)
-        try await newRoom.localParticipant.setMicrophone(enabled: true)
-        try await newRoom.localParticipant.setCamera(enabled: true)
+        
+        if publishTracks {
+            // Включаем микрофон и камеру сразу
+            try await newRoom.localParticipant.setMicrophone(enabled: true)
+            try await newRoom.localParticipant.setCamera(enabled: true)
+            print("🎥 Connected to room and publishing tracks")
+        }
     }
     
     func disconnect() async {
         endCallTask?.cancel()
+        reconnectTask?.cancel()
         await room?.disconnect()
         room = nil
         await MainActor.run { activeCall = nil }
@@ -3277,35 +3298,50 @@ class CallService: NSObject, ObservableObject {
             try await capturer.switchCameraPosition()
         }
     }
+    
+    // MARK: - Private reconnect logic
+    private func scheduleReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let call = activeCall, room == nil else { return }
+            do {
+                let (token, wsUrl) = try await getLiveKitToken(callId: call.callId)
+                try await connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+            } catch {
+                print("Reconnect failed: \(error)")
+            }
+        }
+    }
 }
 
-
-
+// MARK: - RoomDelegate
 extension CallService: RoomDelegate {
     func room(_ room: Room, participantDidJoin participant: Participant) {
         print("👤 Participant joined: \(participant.identity)")
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
     func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didSubscribeTrack track: Track) {
         print("📹 Subscribed to \(track.kind) track from \(participant.identity)")
-        // Принудительно обновляем UI
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
     func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUnsubscribeTrack track: Track) {
         print("📹 Unsubscribed from \(track.kind) track from \(participant.identity)")
-        DispatchQueue.main.async {
-            self.objectWillChange.send()
-        }
+        DispatchQueue.main.async { self.objectWillChange.send() }
     }
     
-    @MainActor
     func room(_ room: Room, didDisconnectWithError error: Error?) {
-        activeCall = nil
-        self.room = nil
         print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
+        DispatchQueue.main.async {
+            if error != nil && self.activeCall != nil {
+                self.scheduleReconnect()
+            } else {
+                self.activeCall = nil
+                self.room = nil
+            }
+        }
     }
 }
 
@@ -9470,11 +9506,17 @@ struct ChatView: View {
             
             Spacer()
             
+            // КНОПКА ВИДЕОЗВОНКА (исправлена)
             Button {
-                // Получаем данные собеседника (для приватного чата)
-                let contactName = viewModel.otherUser?.nickName ?? "Пользователь"
-                let avatarURL = viewModel.otherUser?.avatarUrl
-                CallManager.shared.startOutgoingCall(chatId: chat.id, contactName: contactName, avatarURL: avatarURL, type: "video")
+                Task {
+                    do {
+                        let _ = try await CallService.shared.startCall(chatId: chat.id, type: "video")
+                        // activeCall установится автоматически, ContentView покажет OutgoingCallView
+                    } catch {
+                        print("Start call error: \(error)")
+                        NotificationService.shared.showError("Не удалось начать звонок")
+                    }
+                }
             } label: {
                 Image(systemName: "video.fill")
                     .font(.title2)
@@ -10300,7 +10342,7 @@ struct ActiveCallView: View {
                 }
                 .padding(.bottom, 40)
             }
-        }.id(callService.room?.sid ?? UUID())
+        }.id(callService.room?.sid?.stringValue ?? UUID().uuidString)
         .onAppear {
             startTimer()
             do {
@@ -10313,6 +10355,22 @@ struct ActiveCallView: View {
         .onDisappear {
             timer?.invalidate()
             try? AVAudioSession.sharedInstance().setActive(false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .callEnded)) { _ in
+            dismiss()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .websocketDisconnected)) { _ in
+            // Если WebSocket отвалился, пробуем переподключиться к комнате
+            Task {
+                if let call = callService.activeCall {
+                    do {
+                        let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                        try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: false)
+                    } catch {
+                        print("Failed to reconnect: \(error)")
+                    }
+                }
+            }
         }
     }
     
@@ -11200,7 +11258,7 @@ struct IncomingCallView: View {
     let contactName: String
     let avatarURL: String?
     @Environment(\.dismiss) var dismiss
-    @StateObject private var callService = CallService.shared
+    @ObservedObject private var callService = CallService.shared
     @State private var showingActiveCall = false
 
     var body: some View {
@@ -11219,6 +11277,7 @@ struct IncomingCallView: View {
                     .foregroundColor(.white.opacity(0.7))
                 Spacer()
                 HStack(spacing: 50) {
+                    // Кнопка Отклонить
                     Button {
                         Task {
                             try? await callService.rejectCall(callId: call.callId)
@@ -11238,16 +11297,14 @@ struct IncomingCallView: View {
                                 .foregroundColor(.white)
                         }
                     }
+                    
+                    // Кнопка Принять
                     Button {
                         Task {
                             do {
-                                // 1. Принимаем звонок на бэкенде
-                                let updatedCall = try await callService.acceptCall(callId: call.callId)
-                                // 2. Получаем токен
+                                let _ = try await callService.acceptCall(callId: call.callId)
                                 let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
-                                // 3. Подключаемся к комнате
-                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl)
-                                // 4. Показываем экран активного звонка
+                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
                                 showingActiveCall = true
                                 dismiss()
                             } catch {
@@ -11313,8 +11370,11 @@ struct OutgoingCallView: View {
     let contactName: String
     let avatarURL: String?
     @Environment(\.dismiss) var dismiss
-    @StateObject private var callService = CallService.shared
+    @ObservedObject private var callService = CallService.shared
     @State private var showingActiveCall = false
+    @State private var connectionError: String?
+    @State private var isConnecting = true
+    @State private var statusCheckTimer: Timer?
 
     var body: some View {
         ZStack {
@@ -11327,10 +11387,30 @@ struct OutgoingCallView: View {
                     .font(.title)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
-                Text("Звоним...")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.7))
+                
+                if isConnecting {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                    Text("Подключение...")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                } else if let error = connectionError {
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                    Button("Повторить") {
+                        Task { await connectToRoom() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Text("Ожидание ответа...")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                
                 Spacer()
+                
                 Button {
                     Task {
                         try? await callService.endCall(callId: call.callId)
@@ -11357,18 +11437,44 @@ struct OutgoingCallView: View {
         .fullScreenCover(isPresented: $showingActiveCall) {
             ActiveCallView(call: call)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .callStatusChanged)) { notification in
-            if let updatedCall = notification.object as? Call,
-               updatedCall.callId == call.callId,
-               updatedCall.status == "active" {
-                showingActiveCall = true
-                dismiss()
+        .onAppear {
+            Task { await connectToRoom() }
+            startStatusCheckTimer()
+        }
+        .onDisappear {
+            statusCheckTimer?.invalidate()
+        }
+    }
+    
+    private func startStatusCheckTimer() {
+        statusCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            checkCallStatus()
+        }
+    }
+    
+    private func checkCallStatus() {
+        if let activeCall = callService.activeCall,
+           activeCall.callId == call.callId,
+           activeCall.status == "active" {
+            DispatchQueue.main.async {
+                if !showingActiveCall {
+                    showingActiveCall = true
+                    dismiss()
+                }
             }
         }
-        .onAppear {
-            if callService.activeCall?.callId == call.callId && callService.activeCall?.isActive == true {
-                showingActiveCall = true
-            }
+    }
+    
+    private func connectToRoom() async {
+        isConnecting = true
+        connectionError = nil
+        do {
+            let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+            try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+            isConnecting = false
+        } catch {
+            connectionError = "Ошибка подключения: \(error.localizedDescription)"
+            isConnecting = false
         }
     }
 }
@@ -11472,11 +11578,14 @@ struct RemoteVideoView: View {
                         .font(.caption)
                         .foregroundColor(.white)
                 }
+                .onAppear {
+                    print("⚠️ RemoteVideoView: no video track yet, participant = \(participant.identity)")
+                    updateTrack()
+                }
             }
         }
         .onAppear {
             updateTrack()
-            // Подписываемся на изменения у участника
             participant.objectWillChange
                 .receive(on: DispatchQueue.main)
                 .sink { _ in
@@ -11490,18 +11599,22 @@ struct RemoteVideoView: View {
     }
     
     private func updateTrack() {
-        // Берём первый видеотрек
-        let newTrack = participant.videoTracks.first { $0.kind == .video }?.track as? VideoTrack
-        if let newTrack = newTrack, newTrack.sid != videoTrack?.sid {
-            videoTrack = newTrack
-            print("✅ RemoteVideoView: got video track, sid=\(newTrack.sid?.stringValue ?? "unknown")")
-        } else if newTrack == nil && videoTrack != nil {
-            print("⚠️ RemoteVideoView: video track lost")
-            videoTrack = nil
+        let tracks = participant.videoTracks
+        print("🔍 RemoteVideoView: checking \(tracks.count) video tracks")
+        guard let publication = tracks.first(where: { $0.kind == .video }),
+              let track = publication.track as? VideoTrack else {
+            if videoTrack != nil {
+                print("⚠️ RemoteVideoView: video track lost")
+                videoTrack = nil
+            }
+            return
+        }
+        if track.sid != videoTrack?.sid {
+            videoTrack = track
+            print("✅ RemoteVideoView: got video track, sid=\(track.sid?.stringValue ?? "unknown")")
         }
     }
 }
-
 import SwiftUI
 import LiveKit
 import Combine
@@ -12148,14 +12261,6 @@ class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordin
 
 ./FrontDip/MessengerApp/Views/Common/VideoTrackView.swift
 
-//
-//  VideoTrackView.swift
-//  FrontDip
-//
-//  Created by Bogdan Sakhno on 9.06.26.
-//
-
-
 import SwiftUI
 import LiveKit
 
@@ -12165,15 +12270,15 @@ struct VideoTrackView: UIViewRepresentable {
     func makeUIView(context: Context) -> LiveKit.VideoView {
         let view = LiveKit.VideoView()
         view.backgroundColor = .black
-        view.setPreferredFramesPerSecond(30)
         return view
     }
     
     func updateUIView(_ uiView: LiveKit.VideoView, context: Context) {
-        // Ключевое: присваиваем трек напрямую
+        // Ключевое: присваиваем трек
         uiView.track = track
-        if track != nil {
-            print("🎥 VideoTrackView: track assigned")
+        // Принудительно запрашиваем рендеринг, если трек есть
+        if track != nil && !uiView.isRendering {
+            uiView.setNeedsLayout()
         }
     }
 }

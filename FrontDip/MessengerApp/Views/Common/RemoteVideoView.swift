@@ -22,7 +22,7 @@ struct RemoteVideoView: View {
                         .foregroundColor(.white)
                 }
                 .onAppear {
-                    print("⚠️ RemoteVideoView: no video track yet, checking tracks...")
+                    print("⚠️ RemoteVideoView: no video track yet, participant = \(participant.identity)")
                     updateTrack()
                 }
             }
@@ -46,6 +46,10 @@ struct RemoteVideoView: View {
         print("🔍 RemoteVideoView: checking \(tracks.count) video tracks")
         guard let publication = tracks.first(where: { $0.kind == .video }),
               let track = publication.track as? VideoTrack else {
+            if videoTrack != nil {
+                print("⚠️ RemoteVideoView: video track lost")
+                videoTrack = nil
+            }
             return
         }
         if track.sid != videoTrack?.sid {
@@ -54,7 +58,6 @@ struct RemoteVideoView: View {
         }
     }
 }
-
 import SwiftUI
 import LiveKit
 import Combine
