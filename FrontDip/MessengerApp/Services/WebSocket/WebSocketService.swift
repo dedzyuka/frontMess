@@ -167,33 +167,52 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
 
+    // WebSocketService.swift
+
     private func handleCallUpdated(_ json: [String: Any]) {
-        print("📢 call.updated raw: \(json)")
         guard let payload = json["payload"] as? [String: Any],
               let callIdString = payload["call_id"] as? String,
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
         
-        print("📢 call.updated -> callId=\(callId), status=\(status)")
-        
         DispatchQueue.main.async {
-            guard let existingCall = CallService.shared.activeCall, existingCall.callId == callId else {
-                print("⚠️ No matching active call (expected \(callId))")
-                return
+            // В методе handleCallUpdated, внутри DispatchQueue.main.async
+            if let existingCall = CallService.shared.activeCall, existingCall.callId == callId {
+                // Обновляем существующий звонок
+                let updatedCall = Call(
+                    callId: existingCall.callId,
+                    chatId: existingCall.chatId,
+                    initiatorId: existingCall.initiatorId,
+                    status: status,
+                    type: existingCall.type,
+                    startedAt: existingCall.startedAt,
+                    endedAt: existingCall.endedAt
+                )
+                CallService.shared.activeCall = updatedCall
+                NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
+            } else if status == "pending" {
+                // Новый входящий вызов – проверяем, что инициатор не текущий пользователь
+                guard let chatIdString = payload["chat_id"] as? String,
+                      let initiatorIdString = payload["initiator_id"] as? String,
+                      let startedAtString = payload["started_at"] as? String,
+                      let chatId = UUID(uuidString: chatIdString),
+                      let initiatorId = UUID(uuidString: initiatorIdString),
+                      let startedAt = self.isoDateFormatter.date(from: startedAtString) else { return }
+                
+                // ✅ Добавляем проверку: не игнорируем звонок от себя
+                if initiatorId == AppState.shared.currentUser?.userId {
+                    print("🔇 Ignoring incoming call from self (updated)")
+                    return
+                }
+                
+                let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
+                                status: status, type: payload["type"] as? String ?? "video",
+                                startedAt: startedAt, endedAt: nil)
+                CallService.shared.activeCall = call
+                NotificationCenter.default.post(name: .incomingCall, object: call)
+            } else {
+                print("⚠️ call.updated for unknown call \(callId) with status \(status)")
             }
-            // Создаём новый экземпляр Call с обновлённым статусом
-            let updatedCall = Call(
-                callId: existingCall.callId,
-                chatId: existingCall.chatId,
-                initiatorId: existingCall.initiatorId,
-                status: status,
-                type: existingCall.type,
-                startedAt: existingCall.startedAt,
-                endedAt: existingCall.endedAt
-            )
-            print("✅ Updating status from \(existingCall.status) to \(status)")
-            CallService.shared.activeCall = updatedCall
-            NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
         }
     }
 

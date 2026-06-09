@@ -3140,10 +3140,15 @@ import LiveKit
 import Combine
 import AVFoundation
 
+@MainActor
 class CallService: NSObject, ObservableObject {
     static let shared = CallService()
     
-    @Published var activeCall: Call?
+    @Published var activeCall: Call? {
+        didSet {
+            print("🔄 CallService: activeCall changed to \(activeCall?.status ?? "nil")")
+        }
+    }
     @Published var room: Room?
     @Published var isConnectingToRoom = false
     @Published var connectionError: String?
@@ -3208,6 +3213,13 @@ class CallService: NSObject, ObservableObject {
     }
     
     func endCall(callId: UUID) async throws {
+        guard let call = activeCall, call.callId == callId, call.status != "active" else {
+            print("🔚 endCall ignored – call not pending (status: \(activeCall?.status ?? "nil"))")
+            return
+        }
+        print("🔚 endCall called for call \(callId)")
+        print("📞 Call stack:\n\(Thread.callStackSymbols.prefix(20).joined(separator: "\n"))")
+
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: EndCallWrapper }
         struct EndCallWrapper: Decodable { let endCall: Bool }
@@ -3334,8 +3346,11 @@ extension CallService: RoomDelegate {
     
     func room(_ room: Room, didDisconnectWithError error: Error?) {
         print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
+        print("🔍 Call stack: \(Thread.callStackSymbols.prefix(10).joined(separator: "\n"))")
         DispatchQueue.main.async {
-            if error != nil && self.activeCall != nil {
+            if let error = error, self.activeCall != nil {
+                print("🔍 Disconnect error details: \(error)")
+                // Пробуем переподключиться, а не завершать звонок
                 self.scheduleReconnect()
             } else {
                 self.activeCall = nil
@@ -4767,16 +4782,32 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
     }
 
     private func handleCallUpdated(_ json: [String: Any]) {
+        print("📢 call.updated raw: \(json)")
         guard let payload = json["payload"] as? [String: Any],
               let callIdString = payload["call_id"] as? String,
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
+        
+        print("📢 call.updated -> callId=\(callId), status=\(status)")
+        
         DispatchQueue.main.async {
-            if var call = CallService.shared.activeCall, call.callId == callId {
-                call.status = status
-                CallService.shared.activeCall = call
-                NotificationCenter.default.post(name: .callStatusChanged, object: call)
+            guard let existingCall = CallService.shared.activeCall, existingCall.callId == callId else {
+                print("⚠️ No matching active call (expected \(callId))")
+                return
             }
+            // Создаём новый экземпляр Call с обновлённым статусом
+            let updatedCall = Call(
+                callId: existingCall.callId,
+                chatId: existingCall.chatId,
+                initiatorId: existingCall.initiatorId,
+                status: status,
+                type: existingCall.type,
+                startedAt: existingCall.startedAt,
+                endedAt: existingCall.endedAt
+            )
+            print("✅ Updating status from \(existingCall.status) to \(status)")
+            CallService.shared.activeCall = updatedCall
+            NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
         }
     }
 
@@ -11257,6 +11288,7 @@ struct IncomingCallView: View {
     let call: Call
     let contactName: String
     let avatarURL: String?
+    @State private var isProcessing = false
     @Environment(\.dismiss) var dismiss
     @ObservedObject private var callService = CallService.shared
     @State private var showingActiveCall = false
@@ -11300,6 +11332,8 @@ struct IncomingCallView: View {
                     
                     // Кнопка Принять
                     Button {
+                        guard !isProcessing else { return }
+                        isProcessing = true
                         Task {
                             do {
                                 let _ = try await callService.acceptCall(callId: call.callId)
@@ -11312,6 +11346,7 @@ struct IncomingCallView: View {
                                 await MainActor.run { callService.activeCall = nil }
                                 NotificationService.shared.showError("Не удалось принять звонок")
                             }
+                            isProcessing = false
                         }
                     } label: {
                         VStack {
@@ -11374,7 +11409,8 @@ struct OutgoingCallView: View {
     @State private var showingActiveCall = false
     @State private var connectionError: String?
     @State private var isConnecting = true
-    @State private var statusCheckTimer: Timer?
+    @State private var timeoutWorkItem: DispatchWorkItem?
+    @State private var callAccepted = false   // <-- новый флаг
 
     var body: some View {
         ZStack {
@@ -11439,30 +11475,41 @@ struct OutgoingCallView: View {
         }
         .onAppear {
             Task { await connectToRoom() }
-            startStatusCheckTimer()
-        }
-        .onDisappear {
-            statusCheckTimer?.invalidate()
-        }
-    }
-    
-    private func startStatusCheckTimer() {
-        statusCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            checkCallStatus()
-        }
-    }
-    
-    private func checkCallStatus() {
-        if let activeCall = callService.activeCall,
-           activeCall.callId == call.callId,
-           activeCall.status == "active" {
-            DispatchQueue.main.async {
-                if !showingActiveCall {
-                    showingActiveCall = true
-                    dismiss()
+            startObserving()
+            let workItem = DispatchWorkItem {
+                if !callAccepted && callService.activeCall?.status != "active" {
+                    Task { try? await callService.endCall(callId: call.callId) }
                 }
             }
+            timeoutWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: workItem)
         }
+        .onDisappear {
+            stopObserving()
+            timeoutWorkItem?.cancel()
+            if !callAccepted {
+                Task { try? await callService.endCall(callId: call.callId) }
+            }
+        }
+    }
+    
+    private func startObserving() {
+        NotificationCenter.default.addObserver(
+            forName: .callStatusChanged,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let updatedCall = notification.object as? Call,
+                  updatedCall.callId == call.callId,
+                  updatedCall.status == "active" else { return }
+            callAccepted = true
+            showingActiveCall = true
+            dismiss()
+        }
+    }
+    
+    private func stopObserving() {
+        NotificationCenter.default.removeObserver(self, name: .callStatusChanged, object: nil)
     }
     
     private func connectToRoom() async {

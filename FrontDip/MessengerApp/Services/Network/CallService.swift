@@ -30,6 +30,10 @@ class CallService: NSObject, ObservableObject {
     // MARK: - GraphQL
     
     func startCall(chatId: UUID, type: String = "video") async throws -> Call {
+        if let existing = activeCall, existing.status == "pending" || existing.status == "active" {
+            await resetCallState()
+        }
+        
         let variables: [String: Any] = ["chatId": chatId.uuidString, "type": type]
         struct Response: Decodable { let call: StartCallWrapper }
         struct StartCallWrapper: Decodable { let startCall: Call }
@@ -45,6 +49,7 @@ class CallService: NSObject, ObservableObject {
     }
     
     func acceptCall(callId: UUID) async throws -> Call {
+        // ❌ НЕ вызываем await resetCallState()
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: AcceptCallWrapper }
         struct AcceptCallWrapper: Decodable { let acceptCall: Call }
@@ -66,6 +71,7 @@ class CallService: NSObject, ObservableObject {
     }
     
     func rejectCall(callId: UUID) async throws {
+        await resetCallState()
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: RejectCallWrapper }
         struct RejectCallWrapper: Decodable { let rejectCall: Bool }
@@ -81,7 +87,7 @@ class CallService: NSObject, ObservableObject {
     }
     
     func endCall(callId: UUID) async throws {
-        guard let call = activeCall, call.callId == callId, call.status == "pending" else {
+        guard let call = activeCall, call.callId == callId, call.status != "active" else {
             print("🔚 endCall ignored – call not pending (status: \(activeCall?.status ?? "nil"))")
             return
         }
@@ -108,6 +114,20 @@ class CallService: NSObject, ObservableObject {
             }
         }
     }
+    func resetCallState() async {
+        await disconnect(keepActiveCall: false)
+    }
+    func disconnect(keepActiveCall: Bool = false) async {
+        endCallTask?.cancel()
+        reconnectTask?.cancel()
+        await room?.disconnect()
+        room = nil
+        if !keepActiveCall {
+            await MainActor.run { activeCall = nil }
+        }
+    }
+
+
     
     func getLiveKitToken(callId: UUID) async throws -> (token: String, wsUrl: String) {
         let variables = ["callId": callId.uuidString]
@@ -134,24 +154,24 @@ class CallService: NSObject, ObservableObject {
     // MARK: - LiveKit
     
     func connectToRoom(callId: UUID, token: String, wsUrl: String, publishTracks: Bool = true) async throws {
+        // Если уже есть комната (возможно, от предыдущего звонка), закрываем её
+        if room != nil {
+            print("⚠️ Already connected to a room, disconnecting first")
+            await room?.disconnect()
+            room = nil
+            // Не обнуляем activeCall – это может быть активный звонок
+        }
+        
         await MainActor.run { isConnectingToRoom = true }
         defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
-        
-        // Если уже есть комната, не создаём новую
-        if room != nil {
-            print("⚠️ Already connected to room")
-            return
-        }
         
         let newRoom = Room(delegate: self)
         self.room = newRoom
         try await newRoom.connect(url: wsUrl, token: token)
         
         if publishTracks {
-            // Включаем микрофон и камеру сразу
             try await newRoom.localParticipant.setMicrophone(enabled: true)
             try await newRoom.localParticipant.setCamera(enabled: true)
-            print("🎥 Connected to room and publishing tracks")
         }
     }
     

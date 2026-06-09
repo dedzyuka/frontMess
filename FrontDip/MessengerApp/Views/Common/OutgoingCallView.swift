@@ -10,8 +10,7 @@ struct OutgoingCallView: View {
     @State private var connectionError: String?
     @State private var isConnecting = true
     @State private var timeoutWorkItem: DispatchWorkItem?
-    @State private var hasEnded = false
-    @State private var hasBeenDismissed = false
+    @State private var callAccepted = false   // <-- новый флаг
 
     var body: some View {
         ZStack {
@@ -73,22 +72,12 @@ struct OutgoingCallView: View {
         }
         .fullScreenCover(isPresented: $showingActiveCall) {
             ActiveCallView(call: call)
-                .onAppear {
-                    // Закрываем текущий экран после появления ActiveCallView
-                    DispatchQueue.main.async {
-                        dismiss()
-                    }
-                }
         }
         .onAppear {
-            hasEnded = false
-            hasBeenDismissed = false
             Task { await connectToRoom() }
             startObserving()
-            
-            // Таймаут на случай, если звонок не будет принят
             let workItem = DispatchWorkItem {
-                if callService.activeCall?.status != "active" {
+                if !callAccepted && callService.activeCall?.status != "active" {
                     Task { try? await callService.endCall(callId: call.callId) }
                 }
             }
@@ -98,8 +87,7 @@ struct OutgoingCallView: View {
         .onDisappear {
             stopObserving()
             timeoutWorkItem?.cancel()
-            // Вызываем endCall только если звонок всё ещё pending и мы не переключились на активный
-            if !hasBeenDismissed && callService.activeCall?.status != "active" {
+            if !callAccepted {
                 Task { try? await callService.endCall(callId: call.callId) }
             }
         }
@@ -114,7 +102,8 @@ struct OutgoingCallView: View {
             guard let updatedCall = notification.object as? Call,
                   updatedCall.callId == call.callId,
                   updatedCall.status == "active" else { return }
-            hasBeenDismissed = true
+            callAccepted = true
+            self.timeoutWorkItem?.cancel() 
             showingActiveCall = true
             dismiss()
         }
