@@ -50,7 +50,10 @@ class CallService: NSObject, ObservableObject {
                 authToken: TokenManager.shared.accessToken
             )
             let call = response.call.acceptCall
-            await MainActor.run { self.activeCall = call }
+            await MainActor.run {
+                self.activeCall = call
+                self.objectWillChange.send()
+            }
             return call
         } catch {
             await MainActor.run { self.activeCall = nil }

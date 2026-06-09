@@ -9,6 +9,7 @@ struct OutgoingCallView: View {
     @State private var showingActiveCall = false
     @State private var connectionError: String?
     @State private var isConnecting = true
+    @State private var statusCheckTimer: Timer?
     
     var body: some View {
         ZStack {
@@ -72,16 +73,33 @@ struct OutgoingCallView: View {
         .fullScreenCover(isPresented: $showingActiveCall) {
             ActiveCallView(call: call)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .callStatusChanged)) { notification in
-            if let updatedCall = notification.object as? Call,
-               updatedCall.callId == call.callId,
-               updatedCall.status == "active" {
-                showingActiveCall = true
-                dismiss()
-            }
-        }
         .onAppear {
             Task { await connectToRoom() }
+            startStatusCheckTimer()
+        }
+        .onDisappear {
+            statusCheckTimer?.invalidate()
+            statusCheckTimer = nil
+        }
+    }
+    
+    private func startStatusCheckTimer() {
+        statusCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            checkCallStatus()
+        }
+    }
+    
+    private func checkCallStatus() {
+        // Проверяем, не стал ли звонок активным
+        if let activeCall = callService.activeCall,
+           activeCall.callId == call.callId,
+           activeCall.status == "active" {
+            DispatchQueue.main.async {
+                if !showingActiveCall {
+                    showingActiveCall = true
+                    dismiss()
+                }
+            }
         }
     }
     
