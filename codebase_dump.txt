@@ -3156,12 +3156,19 @@ class CallService: NSObject, ObservableObject {
     private let graphQL = GraphQLClient.shared
     private var endCallTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempts = 0
+    private let maxReconnectAttempts = 3
     
     override private init() { super.init() }
     
     // MARK: - GraphQL
     
     func startCall(chatId: UUID, type: String = "video") async throws -> Call {
+        // Если уже есть активный звонок (pending или active), завершаем его
+        if let existing = activeCall, existing.status == "pending" || existing.status == "active" {
+            await resetCallState()
+        }
+        
         let variables: [String: Any] = ["chatId": chatId.uuidString, "type": type]
         struct Response: Decodable { let call: StartCallWrapper }
         struct StartCallWrapper: Decodable { let startCall: Call }
@@ -3177,6 +3184,7 @@ class CallService: NSObject, ObservableObject {
     }
     
     func acceptCall(callId: UUID) async throws -> Call {
+        // Не вызываем resetCallState() – звонок уже существует
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: AcceptCallWrapper }
         struct AcceptCallWrapper: Decodable { let acceptCall: Call }
@@ -3217,9 +3225,6 @@ class CallService: NSObject, ObservableObject {
             print("🔚 endCall ignored – call not pending (status: \(activeCall?.status ?? "nil"))")
             return
         }
-        print("🔚 endCall called for call \(callId)")
-        print("📞 Call stack:\n\(Thread.callStackSymbols.prefix(20).joined(separator: "\n"))")
-
         let variables = ["callId": callId.uuidString]
         struct Response: Decodable { let call: EndCallWrapper }
         struct EndCallWrapper: Decodable { let endCall: Bool }
@@ -3266,33 +3271,52 @@ class CallService: NSObject, ObservableObject {
     // MARK: - LiveKit
     
     func connectToRoom(callId: UUID, token: String, wsUrl: String, publishTracks: Bool = true) async throws {
-        await MainActor.run { isConnectingToRoom = true }
-        defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
-        
-        // Если уже есть комната, не создаём новую
-        if room != nil {
-            print("⚠️ Already connected to room")
+        // Если комната уже подключена и активна, не пересоздаём
+        if let existingRoom = room, existingRoom.connectionState == .connected {
+            print("✅ Already connected to room, skipping duplicate connection")
             return
         }
         
+        // Если есть старая комната в любом другом состоянии, принудительно закрываем
+        if room != nil {
+            print("⚠️ Closing existing room (state: \(room?.connectionState.description ?? "unknown")) before new connection")
+            await disconnect()
+        }
+        
+        await MainActor.run { isConnectingToRoom = true }
+        defer { Task { await MainActor.run { self.isConnectingToRoom = false } } }
+        
         let newRoom = Room(delegate: self)
-        self.room = newRoom
+        await MainActor.run { self.room = newRoom }
         try await newRoom.connect(url: wsUrl, token: token)
         
         if publishTracks {
-            // Включаем микрофон и камеру сразу
             try await newRoom.localParticipant.setMicrophone(enabled: true)
             try await newRoom.localParticipant.setCamera(enabled: true)
             print("🎥 Connected to room and publishing tracks")
         }
+        
+        // Сброс счётчика попыток переподключения
+        await MainActor.run { self.reconnectAttempts = 0 }
     }
     
     func disconnect() async {
+        print("🔴 disconnect called", Thread.callStackSymbols.prefix(5).joined(separator: "\n"))
         endCallTask?.cancel()
         reconnectTask?.cancel()
         await room?.disconnect()
-        room = nil
-        await MainActor.run { activeCall = nil }
+        await MainActor.run { room = nil }
+    }
+    
+    func resetCallState() async {
+        print("🔴 resetCallState called", Thread.callStackSymbols.prefix(5).joined(separator: "\n"))
+        await disconnect()
+        await MainActor.run {
+            activeCall = nil
+            connectionError = nil
+            isConnectingToRoom = false
+            reconnectAttempts = 0
+        }
     }
     
     func toggleCamera(enabled: Bool) async throws {
@@ -3313,15 +3337,34 @@ class CallService: NSObject, ObservableObject {
     
     // MARK: - Private reconnect logic
     private func scheduleReconnect() {
+        guard reconnectAttempts < maxReconnectAttempts else {
+            print("Max reconnect attempts reached, ending call")
+            if let call = activeCall {
+                Task { try? await endCall(callId: call.callId) }
+            }
+            return
+        }
+        
+        // Не переподключаемся, если комната уже в процессе соединения или уже подключена
+        if let currentRoom = room, currentRoom.connectionState == .connected || currentRoom.connectionState == .connecting {
+            print("🔄 Room already connected/connecting, skipping reconnect")
+            return
+        }
+        
+        reconnectAttempts += 1
+        let delay = TimeInterval(pow(2.0, Double(reconnectAttempts - 1))) // 1, 2, 4 сек
+        print("🔄 Scheduling reconnect attempt \(reconnectAttempts) in \(delay) seconds")
         reconnectTask?.cancel()
         reconnectTask = Task {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let call = activeCall, room == nil else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let call = activeCall else { return }
             do {
                 let (token, wsUrl) = try await getLiveKitToken(callId: call.callId)
                 try await connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+                await MainActor.run { self.reconnectAttempts = 0 }
             } catch {
-                print("Reconnect failed: \(error)")
+                print("Reconnect attempt \(reconnectAttempts) failed: \(error)")
+                await scheduleReconnect()
             }
         }
     }
@@ -3329,6 +3372,34 @@ class CallService: NSObject, ObservableObject {
 
 // MARK: - RoomDelegate
 extension CallService: RoomDelegate {
+    func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, oldState: ConnectionState) {
+        print("📡 Room connection state: \(oldState) -> \(connectionState)")
+    }
+    
+    func room(_ room: Room, didDisconnectWithError error: Error?) {
+        print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
+        print("🔍 activeCall before handling: \(self.activeCall?.callId.uuidString ?? "nil")")
+        print("🔍 Call stack:\n\(Thread.callStackSymbols.prefix(10).joined(separator: "\n"))")
+        DispatchQueue.main.async {
+            if let error = error {
+                if self.activeCall != nil {
+                    self.scheduleReconnect()
+                } else {
+                    self.activeCall = nil
+                    self.room = nil
+                }
+            } else {
+                if let call = self.activeCall, call.status == "active" {
+                    self.scheduleReconnect()
+                } else {
+                    print("⚠️ No active call or call not active, setting activeCall to nil")
+                    self.activeCall = nil
+                    self.room = nil
+                }
+            }
+        }
+    }
+    
     func room(_ room: Room, participantDidJoin participant: Participant) {
         print("👤 Participant joined: \(participant.identity)")
         DispatchQueue.main.async { self.objectWillChange.send() }
@@ -3342,21 +3413,6 @@ extension CallService: RoomDelegate {
     func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUnsubscribeTrack track: Track) {
         print("📹 Unsubscribed from \(track.kind) track from \(participant.identity)")
         DispatchQueue.main.async { self.objectWillChange.send() }
-    }
-    
-    func room(_ room: Room, didDisconnectWithError error: Error?) {
-        print("❌ Room disconnected: \(error?.localizedDescription ?? "no error")")
-        print("🔍 Call stack: \(Thread.callStackSymbols.prefix(10).joined(separator: "\n"))")
-        DispatchQueue.main.async {
-            if let error = error, self.activeCall != nil {
-                print("🔍 Disconnect error details: \(error)")
-                // Пробуем переподключиться, а не завершать звонок
-                self.scheduleReconnect()
-            } else {
-                self.activeCall = nil
-                self.room = nil
-            }
-        }
     }
 }
 
@@ -4781,33 +4837,52 @@ class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDelegate 
         }
     }
 
+    // WebSocketService.swift
+
     private func handleCallUpdated(_ json: [String: Any]) {
-        print("📢 call.updated raw: \(json)")
         guard let payload = json["payload"] as? [String: Any],
               let callIdString = payload["call_id"] as? String,
               let status = payload["status"] as? String,
               let callId = UUID(uuidString: callIdString) else { return }
         
-        print("📢 call.updated -> callId=\(callId), status=\(status)")
-        
         DispatchQueue.main.async {
-            guard let existingCall = CallService.shared.activeCall, existingCall.callId == callId else {
-                print("⚠️ No matching active call (expected \(callId))")
-                return
+            // В методе handleCallUpdated, внутри DispatchQueue.main.async
+            if let existingCall = CallService.shared.activeCall, existingCall.callId == callId {
+                // Обновляем существующий звонок
+                let updatedCall = Call(
+                    callId: existingCall.callId,
+                    chatId: existingCall.chatId,
+                    initiatorId: existingCall.initiatorId,
+                    status: status,
+                    type: existingCall.type,
+                    startedAt: existingCall.startedAt,
+                    endedAt: existingCall.endedAt
+                )
+                CallService.shared.activeCall = updatedCall
+                NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
+            } else if status == "pending" {
+                // Новый входящий вызов – проверяем, что инициатор не текущий пользователь
+                guard let chatIdString = payload["chat_id"] as? String,
+                      let initiatorIdString = payload["initiator_id"] as? String,
+                      let startedAtString = payload["started_at"] as? String,
+                      let chatId = UUID(uuidString: chatIdString),
+                      let initiatorId = UUID(uuidString: initiatorIdString),
+                      let startedAt = self.isoDateFormatter.date(from: startedAtString) else { return }
+                
+                // ✅ Добавляем проверку: не игнорируем звонок от себя
+                if initiatorId == AppState.shared.currentUser?.userId {
+                    print("🔇 Ignoring incoming call from self (updated)")
+                    return
+                }
+                
+                let call = Call(callId: callId, chatId: chatId, initiatorId: initiatorId,
+                                status: status, type: payload["type"] as? String ?? "video",
+                                startedAt: startedAt, endedAt: nil)
+                CallService.shared.activeCall = call
+                NotificationCenter.default.post(name: .incomingCall, object: call)
+            } else {
+                print("⚠️ call.updated for unknown call \(callId) with status \(status)")
             }
-            // Создаём новый экземпляр Call с обновлённым статусом
-            let updatedCall = Call(
-                callId: existingCall.callId,
-                chatId: existingCall.chatId,
-                initiatorId: existingCall.initiatorId,
-                status: status,
-                type: existingCall.type,
-                startedAt: existingCall.startedAt,
-                endedAt: existingCall.endedAt
-            )
-            print("✅ Updating status from \(existingCall.status) to \(status)")
-            CallService.shared.activeCall = updatedCall
-            NotificationCenter.default.post(name: .callStatusChanged, object: updatedCall)
         }
     }
 
@@ -11294,83 +11369,87 @@ struct IncomingCallView: View {
     @State private var showingActiveCall = false
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.7).ignoresSafeArea()
-            VStack(spacing: 24) {
-                Spacer()
-                AvatarView(urlString: avatarURL, size: 100)
-                    .padding(.top, 40)
-                Text(contactName)
-                    .font(.title)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.white)
-                Text(call.type == "video" ? "Видеозвонок..." : "Аудиозвонок...")
-                    .font(.subheadline)
-                    .foregroundColor(.white.opacity(0.7))
-                Spacer()
-                HStack(spacing: 50) {
-                    // Кнопка Отклонить
-                    Button {
-                        Task {
-                            try? await callService.rejectCall(callId: call.callId)
-                            WebSocketService.shared.sendCallReject(callId: call.callId)
-                            dismiss()
-                        }
-                    } label: {
-                        VStack {
-                            Image(systemName: "phone.down.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                                .frame(width: 60, height: 60)
-                                .background(Color.red)
-                                .clipShape(Circle())
-                            Text("Отклонить")
-                                .font(.caption)
-                                .foregroundColor(.white)
-                        }
-                    }
-                    
-                    // Кнопка Принять
-                    Button {
-                        guard !isProcessing else { return }
-                        isProcessing = true
-                        Task {
-                            do {
-                                let _ = try await callService.acceptCall(callId: call.callId)
-                                let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
-                                try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
-                                showingActiveCall = true
+        if call.initiatorId == AppState.shared.currentUser?.userId {
+            EmptyView()
+        } else {
+            ZStack {
+                Color.black.opacity(0.7).ignoresSafeArea()
+                VStack(spacing: 24) {
+                    Spacer()
+                    AvatarView(urlString: avatarURL, size: 100)
+                        .padding(.top, 40)
+                    Text(contactName)
+                        .font(.title)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.white)
+                    Text(call.type == "video" ? "Видеозвонок..." : "Аудиозвонок...")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+                    HStack(spacing: 50) {
+                        // Кнопка Отклонить
+                        Button {
+                            Task {
+                                try? await callService.rejectCall(callId: call.callId)
+                                WebSocketService.shared.sendCallReject(callId: call.callId)
                                 dismiss()
-                            } catch {
-                                print("Accept error: \(error)")
-                                await MainActor.run { callService.activeCall = nil }
-                                NotificationService.shared.showError("Не удалось принять звонок")
                             }
-                            isProcessing = false
+                        } label: {
+                            VStack {
+                                Image(systemName: "phone.down.fill")
+                                    .font(.title)
+                                    .foregroundColor(.white)
+                                    .frame(width: 60, height: 60)
+                                    .background(Color.red)
+                                    .clipShape(Circle())
+                                Text("Отклонить")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                            }
                         }
-                    } label: {
-                        VStack {
-                            Image(systemName: "phone.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                                .frame(width: 60, height: 60)
-                                .background(Color.green)
-                                .clipShape(Circle())
-                            Text("Принять")
-                                .font(.caption)
-                                .foregroundColor(.white)
+                        
+                        // Кнопка Принять
+                        Button{
+                            guard !isProcessing else { return }
+                            isProcessing = true
+                            Task {
+                                do {
+                                    let _ = try await callService.acceptCall(callId: call.callId)
+                                    let (token, wsUrl) = try await callService.getLiveKitToken(callId: call.callId)
+                                    try await callService.connectToRoom(callId: call.callId, token: token, wsUrl: wsUrl, publishTracks: true)
+                                    showingActiveCall = true
+                                    dismiss()
+                                } catch {
+                                    print("Accept error: \(error)")
+                                    await MainActor.run { callService.activeCall = nil }
+                                    NotificationService.shared.showError("Не удалось принять звонок")
+                                }
+                                isProcessing = false
+                            }
+                        } label: {
+                            VStack {
+                                Image(systemName: "phone.fill")
+                                    .font(.title)
+                                    .foregroundColor(.white)
+                                    .frame(width: 60, height: 60)
+                                    .background(Color.green)
+                                    .clipShape(Circle())
+                                Text("Принять")
+                                    .font(.caption)
+                                    .foregroundColor(.white)
+                            }
                         }
                     }
+                    .padding(.bottom, 50)
                 }
-                .padding(.bottom, 50)
             }
-        }
-        .fullScreenCover(isPresented: $showingActiveCall) {
-            ActiveCallView(call: call)
-        }
-        .onDisappear {
-            if !showingActiveCall {
-                Task { await callService.disconnect() }
+            .fullScreenCover(isPresented: $showingActiveCall) {
+                ActiveCallView(call: call)
+            }
+            .onDisappear {
+                if !showingActiveCall {
+                    Task { await callService.disconnect() }
+                }
             }
         }
     }
@@ -11503,6 +11582,7 @@ struct OutgoingCallView: View {
                   updatedCall.callId == call.callId,
                   updatedCall.status == "active" else { return }
             callAccepted = true
+            self.timeoutWorkItem?.cancel() 
             showingActiveCall = true
             dismiss()
         }
