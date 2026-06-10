@@ -149,7 +149,10 @@ struct AttachmentView: View {
             } else if fileData != nil {
                 createTempFileAndShare()
             }
+        }.onAppear {
+            loadImageURL()
         }
+        
     }
     
     @ViewBuilder

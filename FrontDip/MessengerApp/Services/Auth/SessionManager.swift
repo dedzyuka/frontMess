@@ -53,11 +53,11 @@ class SessionManager: ObservableObject {
     func login(login: String, password: String) async -> Bool {
         return await authViewModel.login(login: login, password: password)
     }
-    
+    @MainActor
     func logout() {
         authViewModel.logout()
     }
-    
+    @MainActor
     func wipeAllData() {
         authViewModel.wipeAllData()
     }

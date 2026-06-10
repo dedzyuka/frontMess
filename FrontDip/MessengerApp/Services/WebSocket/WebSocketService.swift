@@ -16,6 +16,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     private var userId: UUID?
     private var accessToken: String?
     private var isManualDisconnect = false
+    private var isReconnectingWithFreshToken = false
 
     private let isoDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -35,19 +36,79 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         connectInternal()
     }
 
-    private func connectInternal() {
-        guard let token = accessToken, userId != nil else { return }
+    func reconnectWithFreshToken(userId: UUID) {
+        guard let token = TokenManager.shared.accessToken else {
+            print("No fresh access token for WebSocket reconnect")
+            return
+        }
+
+        print("🔄 Reconnecting WebSocket with fresh token")
+        self.userId = userId
+        self.accessToken = token
+        self.isManualDisconnect = false
+        self.isReconnectingWithFreshToken = true
+        self.reconnectAttempts = 0
 
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+
+        pingTimer?.invalidate()
+        pingTimer = nil
 
         if let currentTask = webSocketTask {
             currentTask.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
         }
 
-        let urlString = "\(AppConfig.websocketURL.absoluteString)?access_token=\(token)"
-        guard let url = URL(string: urlString) else { return }
+        session?.invalidateAndCancel()
+        session = nil
+        isConnected = false
+
+        connectInternal()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.isReconnectingWithFreshToken = false
+        }
+    }
+
+    private func connectInternal() {
+        if let latestToken = TokenManager.shared.accessToken {
+            accessToken = latestToken
+        }
+
+        guard let token = accessToken, userId != nil else {
+            print("❌ WebSocket connect skipped: no token or userId")
+            return
+        }
+
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+
+        pingTimer?.invalidate()
+        pingTimer = nil
+
+        if let currentTask = webSocketTask {
+            currentTask.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+        }
+
+        session?.invalidateAndCancel()
+        session = nil
+
+        guard var components = URLComponents(url: AppConfig.websocketURL, resolvingAgainstBaseURL: false) else {
+            print("❌ Failed to build WebSocket URL components")
+            return
+        }
+
+        var queryItems = components.queryItems ?? []
+        queryItems.removeAll { $0.name == "access_token" }
+        queryItems.append(URLQueryItem(name: "access_token", value: token))
+        components.queryItems = queryItems
+
+        guard let url = components.url else {
+            print("❌ Failed to build WebSocket URL")
+            return
+        }
 
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
@@ -66,14 +127,20 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     func disconnect() {
         isManualDisconnect = true
+        isReconnectingWithFreshToken = false
+
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+
         pingTimer?.invalidate()
         pingTimer = nil
+
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
+
         session?.invalidateAndCancel()
         session = nil
+
         isConnected = false
         reconnectAttempts = 0
     }
@@ -81,6 +148,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     private func scheduleReconnect() {
         guard !isManualDisconnect else {
             print("WebSocket reconnect skipped: manual disconnect")
+            return
+        }
+
+        guard !isReconnectingWithFreshToken else {
+            print("WebSocket reconnect skipped: fresh-token reconnect in progress")
             return
         }
 
@@ -95,6 +167,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.reconnectAttempts += 1
+            self.accessToken = TokenManager.shared.accessToken
             self.connectInternal()
         }
     }
@@ -112,6 +185,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 print("WebSocket receive error: \(error)")
                 DispatchQueue.main.async {
                     self.isConnected = false
+                    NotificationCenter.default.post(name: .websocketDisconnected, object: nil)
                     self.scheduleReconnect()
                 }
             }
@@ -123,12 +197,14 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         case .string(let text):
             print("📨 WebSocket string message: \(text.prefix(200))")
             processJSON(text)
+
         case .data(let data):
             if let text = String(data: data, encoding: .utf8) {
                 processJSON(text)
             } else {
                 print("📨 WebSocket binary message, length: \(data.count)")
             }
+
         @unknown default:
             break
         }
@@ -147,34 +223,48 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         switch event {
         case "message.new":
             handleNewMessage(json)
+
         case "message.update":
             handleMessageUpdate(json)
+
         case "message.delete":
             handleMessageDelete(json)
+
         case "chat.created":
             handleChatCreated(json)
+
         case "typing.start", "typing.stop":
             let payload = json["payload"] as? [String: Any] ?? [:]
             print("📢 Received typing event: \(event), payload: \(payload)")
             handleTyping(json, event: event)
+
         case "message.ack":
             handleAck(json)
+
         case "reaction.add":
             handleReactionAdd(json)
+
         case "reaction.remove":
             handleReactionRemove(json)
+
         case "status.update":
             handleStatusUpdate(json)
+
         case "user.online":
             handleUserOnline(json)
+
         case "call.incoming":
             handleCallIncoming(json)
+
         case "call.updated":
             handleCallUpdated(json)
+
         case "call.ended":
             handleCallEnded(json)
+
         case "pong":
             print("Pong received")
+
         default:
             print("Unhandled event: \(event)")
         }
@@ -210,7 +300,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         )
 
         DispatchQueue.main.async {
-            // Почему поменял: не перетираем активный/живой чужой звонок другим событием.
             if let existing = CallService.shared.activeCall,
                existing.callId != call.callId,
                ["pending", "active"].contains(existing.status.lowercased()) {
@@ -263,7 +352,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 return
             }
 
-            // Почему поменял: pending для неизвестного звонка создаём только если это реально входящий звонок.
             if status.lowercased() == "pending" {
                 guard let chatIdString = payload["chat_id"] as? String,
                       let initiatorIdString = payload["initiator_id"] as? String,
@@ -294,8 +382,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 return
             }
 
-            // Почему поменял: terminal-статусы для неизвестного звонка молча не игнорируем,
-            // но и не создаём новый call из воздуха.
             if ["ended", "declined", "missed", "completed"].contains(status.lowercased()) {
                 NotificationCenter.default.post(name: .callEnded, object: callId)
                 return
@@ -332,7 +418,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallStart(chatId: UUID, type: String = "video") {
         let envelope: [String: Any] = [
             "event": "call.start",
-            "payload": ["chat_id": chatId.uuidString, "type": type]
+            "payload": [
+                "chat_id": chatId.uuidString,
+                "type": type
+            ]
         ]
         send(envelope)
     }
@@ -340,7 +429,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallAccept(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.accept",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -348,7 +439,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallReject(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.reject",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -356,7 +449,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallEnd(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.end",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -365,7 +460,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleNewMessage(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
               let senderIdString = payload["sender_id"] as? String,
               let createdAtString = payload["created_at"] as? String,
@@ -390,12 +485,12 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                     let attachment = Attachment(
                         attachmentId: attachmentId,
                         fileName: fileName,
-                        fileSize: attDict["file_size"] as? Int,
+                        fileSize: (attDict["file_size"] as? NSNumber)?.intValue,
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
                         uploadedAt: Date(),
                         messageCreatedAt: createdAt,
-                        duration: attDict["duration"] as? Int,
+                        duration: (attDict["duration"] as? NSNumber)?.intValue,
                         waveform: attDict["waveform"] as? String,
                         thumbnailUrl: attDict["thumbnail_url"] as? String,
                         isCircular: attDict["is_circular"] as? Bool
@@ -413,7 +508,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             senderId: senderId,
             replyToId: replyToId,
             content: content,
-            type: "text",
+            type: payload["type"] as? String ?? "text",
             createdAt: createdAt,
             updatedAt: createdAt,
             deletedAt: nil,
@@ -421,11 +516,16 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             deliveredAt: nil,
             readAt: nil,
             reactions: nil,
-            attachments: attachments
+            attachments: attachments,
+            forwardedFromUserId: (payload["forwarded_from_user_id"] as? String).flatMap(UUID.init),
+            forwardedFromNickname: payload["forwarded_from_nickname"] as? String,
+            senderNickname: payload["sender_nickname"] as? String,
+            replyToSenderName: nil,
+            replyToContent: nil
         )
 
         if !LocalDatabase.shared.messageExists(messageId) {
-            print("💾 About to save message \(message.messageId), attachment isCircular=\(attachments.first?.isCircular ?? false)")
+            print("💾 About to save message \(message.messageId), attachment isCircular = \(attachments.first?.isCircular ?? false)")
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
                 _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
@@ -439,7 +539,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleStatusUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let chatIdString = payload["chat_id"] as? String,
               let chatId = UUID(uuidString: chatIdString),
@@ -459,17 +559,19 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             "readAt": readAt as Any
         ]
 
-        print("📢 Posting .statusUpdated for message \(messageId), delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+        print("📢 Posting .statusUpdated for message \(messageId), delivered = \(deliveredAt != nil), read = \(readAt != nil)")
         NotificationCenter.default.post(name: .statusUpdated, object: update)
     }
 
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
               let content = payload["content"] as? String,
               let isEdited = payload["is_edited"] as? Bool,
-              let chatId = UUID(uuidString: chatIdString) else { return }
+              let chatId = UUID(uuidString: chatIdString) else {
+            return
+        }
 
         let updateInfo: [String: Any] = [
             "messageId": messageId,
@@ -483,9 +585,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleMessageDelete(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
-              let chatId = UUID(uuidString: chatIdString) else { return }
+              let chatId = UUID(uuidString: chatIdString) else {
+            return
+        }
 
         NotificationCenter.default.post(name: .messageDeleted, object: (messageId, chatId))
     }
@@ -494,7 +598,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         guard let payload = json["payload"] as? [String: Any],
               let chatJSON = payload["chat"] as? [String: Any],
               let chatData = try? JSONSerialization.data(withJSONObject: chatJSON),
-              let chat = try? JSONDecoder.snakeCaseDecoder.decode(Chat.self, from: chatData) else { return }
+              let chat = try? JSONDecoder.snakeCaseDecoder.decode(Chat.self, from: chatData) else {
+            return
+        }
 
         NotificationCenter.default.post(name: .chatCreated, object: chat)
     }
@@ -504,26 +610,35 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
               let chatIdString = payload["chat_id"] as? String,
               let userIdString = payload["user_id"] as? String,
               let chatId = UUID(uuidString: chatIdString),
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
         let name = event == "typing.start" ? Notification.Name.typingStarted : .typingStopped
-        NotificationCenter.default.post(name: name, object: nil, userInfo: ["chatId": chatId, "userId": userId])
+        NotificationCenter.default.post(name: name, object: nil, userInfo: [
+            "chatId": chatId,
+            "userId": userId
+        ])
     }
 
     private func handleAck(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64 else { return }
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value else {
+            return
+        }
 
         NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
     }
 
     private func handleReactionAdd(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let createdAtString = payload["created_at"] as? String,
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
         let createdAt = isoDateFormatter.date(from: createdAtString) ?? Date()
         let reaction = Reaction(messageId: messageId, userId: userId, emoji: emoji, createdAt: createdAt)
@@ -533,7 +648,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let userId = UUID(uuidString: userIdString) else {
@@ -548,7 +663,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             print("⚠️ Reaction not found for deletion")
         }
 
-        let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
+        let removalInfo: [String: Any] = [
+            "messageId": messageId,
+            "userId": userId,
+            "emoji": emoji
+        ]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
 
@@ -556,9 +675,14 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         guard let payload = json["payload"] as? [String: Any],
               let userIdString = payload["user_id"] as? String,
               let isOnline = payload["is_online"] as? Bool,
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
-        let update: [String: Any] = ["userId": userId, "is_online": isOnline]
+        let update: [String: Any] = [
+            "userId": userId,
+            "is_online": isOnline
+        ]
         NotificationCenter.default.post(name: .statusUpdated, object: update)
     }
 
@@ -567,7 +691,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendMessage(chatId: UUID, content: String) {
         let envelope: [String: Any] = [
             "event": "message.send",
-            "payload": ["chat_id": chatId.uuidString, "content": content]
+            "payload": [
+                "chat_id": chatId.uuidString,
+                "content": content
+            ]
         ]
         send(envelope)
     }
@@ -576,7 +703,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         let event = isTyping ? "typing.start" : "typing.stop"
         let envelope: [String: Any] = [
             "event": event,
-            "payload": ["chat_id": chatId.uuidString]
+            "payload": [
+                "chat_id": chatId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -584,7 +713,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendAck(messageId: Int64, chatId: UUID) {
         let envelope: [String: Any] = [
             "event": "message.ack",
-            "payload": ["message_id": messageId, "chat_id": chatId.uuidString]
+            "payload": [
+                "message_id": messageId,
+                "chat_id": chatId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -598,7 +730,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func send(_ envelope: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: envelope),
-              let string = String(data: data, encoding: .utf8) else { return }
+              let string = String(data: data, encoding: .utf8) else {
+            return
+        }
 
         webSocketTask?.send(.string(string)) { error in
             if let error = error {

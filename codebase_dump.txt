@@ -1995,11 +1995,11 @@ class SessionManager: ObservableObject {
     func login(login: String, password: String) async -> Bool {
         return await authViewModel.login(login: login, password: password)
     }
-    
+    @MainActor
     func logout() {
         authViewModel.logout()
     }
-    
+    @MainActor
     func wipeAllData() {
         authViewModel.wipeAllData()
     }
@@ -2008,11 +2008,16 @@ class SessionManager: ObservableObject {
 ./FrontDip/MessengerApp/Services/Auth/TokenManager.swift
 
 import Foundation
-class TokenManager {
+
+final class TokenManager {
     static let shared = TokenManager()
+
     private let accessKey = "access_token"
     private let refreshKey = "refresh_token"
-    
+    private let expiresAtKey = "access_token_expires_at"
+
+    private init() {}
+
     var accessToken: String? {
         get {
             let token = UserDefaults.standard.string(forKey: accessKey)
@@ -2024,7 +2029,7 @@ class TokenManager {
             UserDefaults.standard.set(newValue, forKey: accessKey)
         }
     }
-    
+
     var refreshToken: String? {
         get {
             let token = UserDefaults.standard.string(forKey: refreshKey)
@@ -2036,11 +2041,99 @@ class TokenManager {
             UserDefaults.standard.set(newValue, forKey: refreshKey)
         }
     }
-    
+
+    var accessTokenExpiresAt: Date? {
+        get {
+            UserDefaults.standard.object(forKey: expiresAtKey) as? Date
+        }
+        set {
+            print("🔑 TokenManager set accessTokenExpiresAt: \(String(describing: newValue))")
+            UserDefaults.standard.set(newValue, forKey: expiresAtKey)
+        }
+    }
+
+    var isAccessTokenExpired: Bool {
+        guard let expiresAt = accessTokenExpiresAt else { return true }
+        return Date() >= expiresAt
+    }
+
+    func saveSession(accessToken: String, refreshToken: String, expiresIn: Int) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.accessTokenExpiresAt = Date().addingTimeInterval(TimeInterval(expiresIn))
+        print("🔑 Session saved. Expires in: \(expiresIn) sec")
+    }
+
     func clear() {
         accessToken = nil
         refreshToken = nil
+        accessTokenExpiresAt = nil
         print("🔑 TokenManager cleared")
+    }
+}
+
+./FrontDip/MessengerApp/Services/Auth/TokenRefreshManager.swift
+
+import Foundation
+
+@MainActor
+final class TokenRefreshManager {
+    static let shared = TokenRefreshManager()
+
+    private var refreshTask: Task<Void, Never>?
+    private let refreshSkew: TimeInterval = 60
+    private var isStarting = false
+
+    private init() {}
+
+    func start() {
+        guard !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
+
+        scheduleNextRefresh()
+    }
+
+    func stop() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        print("⏱ Token refresh timer stopped")
+    }
+
+    func restart() {
+        stop()
+        start()
+    }
+
+    private func scheduleNextRefresh() {
+        refreshTask?.cancel()
+
+        guard let expiresAt = TokenManager.shared.accessTokenExpiresAt else {
+            print("⏱ No accessTokenExpiresAt, timer not scheduled")
+            return
+        }
+
+        guard TokenManager.shared.refreshToken != nil else {
+            print("⏱ No refresh token, timer not scheduled")
+            return
+        }
+
+        let delay = max(5, expiresAt.timeIntervalSinceNow - refreshSkew)
+        print("⏱ Next token refresh scheduled in \(delay) sec")
+
+        refreshTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+
+                let success = await AuthViewModel().refreshAccessTokenByTimer()
+                guard success, !Task.isCancelled else { return }
+
+                self?.scheduleNextRefresh()
+            } catch {
+                print("⏱ Token refresh task cancelled or failed: \(error.localizedDescription)")
+            }
+        }
     }
 }
 
@@ -4862,6 +4955,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     private var userId: UUID?
     private var accessToken: String?
     private var isManualDisconnect = false
+    private var isReconnectingWithFreshToken = false
 
     private let isoDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -4881,19 +4975,79 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         connectInternal()
     }
 
-    private func connectInternal() {
-        guard let token = accessToken, userId != nil else { return }
+    func reconnectWithFreshToken(userId: UUID) {
+        guard let token = TokenManager.shared.accessToken else {
+            print("No fresh access token for WebSocket reconnect")
+            return
+        }
+
+        print("🔄 Reconnecting WebSocket with fresh token")
+        self.userId = userId
+        self.accessToken = token
+        self.isManualDisconnect = false
+        self.isReconnectingWithFreshToken = true
+        self.reconnectAttempts = 0
 
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+
+        pingTimer?.invalidate()
+        pingTimer = nil
 
         if let currentTask = webSocketTask {
             currentTask.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
         }
 
-        let urlString = "\(AppConfig.websocketURL.absoluteString)?access_token=\(token)"
-        guard let url = URL(string: urlString) else { return }
+        session?.invalidateAndCancel()
+        session = nil
+        isConnected = false
+
+        connectInternal()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.isReconnectingWithFreshToken = false
+        }
+    }
+
+    private func connectInternal() {
+        if let latestToken = TokenManager.shared.accessToken {
+            accessToken = latestToken
+        }
+
+        guard let token = accessToken, userId != nil else {
+            print("❌ WebSocket connect skipped: no token or userId")
+            return
+        }
+
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+
+        pingTimer?.invalidate()
+        pingTimer = nil
+
+        if let currentTask = webSocketTask {
+            currentTask.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+        }
+
+        session?.invalidateAndCancel()
+        session = nil
+
+        guard var components = URLComponents(url: AppConfig.websocketURL, resolvingAgainstBaseURL: false) else {
+            print("❌ Failed to build WebSocket URL components")
+            return
+        }
+
+        var queryItems = components.queryItems ?? []
+        queryItems.removeAll { $0.name == "access_token" }
+        queryItems.append(URLQueryItem(name: "access_token", value: token))
+        components.queryItems = queryItems
+
+        guard let url = components.url else {
+            print("❌ Failed to build WebSocket URL")
+            return
+        }
 
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
@@ -4912,14 +5066,20 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     func disconnect() {
         isManualDisconnect = true
+        isReconnectingWithFreshToken = false
+
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+
         pingTimer?.invalidate()
         pingTimer = nil
+
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
+
         session?.invalidateAndCancel()
         session = nil
+
         isConnected = false
         reconnectAttempts = 0
     }
@@ -4927,6 +5087,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     private func scheduleReconnect() {
         guard !isManualDisconnect else {
             print("WebSocket reconnect skipped: manual disconnect")
+            return
+        }
+
+        guard !isReconnectingWithFreshToken else {
+            print("WebSocket reconnect skipped: fresh-token reconnect in progress")
             return
         }
 
@@ -4941,6 +5106,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.reconnectAttempts += 1
+            self.accessToken = TokenManager.shared.accessToken
             self.connectInternal()
         }
     }
@@ -4958,6 +5124,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 print("WebSocket receive error: \(error)")
                 DispatchQueue.main.async {
                     self.isConnected = false
+                    NotificationCenter.default.post(name: .websocketDisconnected, object: nil)
                     self.scheduleReconnect()
                 }
             }
@@ -4969,12 +5136,14 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         case .string(let text):
             print("📨 WebSocket string message: \(text.prefix(200))")
             processJSON(text)
+
         case .data(let data):
             if let text = String(data: data, encoding: .utf8) {
                 processJSON(text)
             } else {
                 print("📨 WebSocket binary message, length: \(data.count)")
             }
+
         @unknown default:
             break
         }
@@ -4993,34 +5162,48 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         switch event {
         case "message.new":
             handleNewMessage(json)
+
         case "message.update":
             handleMessageUpdate(json)
+
         case "message.delete":
             handleMessageDelete(json)
+
         case "chat.created":
             handleChatCreated(json)
+
         case "typing.start", "typing.stop":
             let payload = json["payload"] as? [String: Any] ?? [:]
             print("📢 Received typing event: \(event), payload: \(payload)")
             handleTyping(json, event: event)
+
         case "message.ack":
             handleAck(json)
+
         case "reaction.add":
             handleReactionAdd(json)
+
         case "reaction.remove":
             handleReactionRemove(json)
+
         case "status.update":
             handleStatusUpdate(json)
+
         case "user.online":
             handleUserOnline(json)
+
         case "call.incoming":
             handleCallIncoming(json)
+
         case "call.updated":
             handleCallUpdated(json)
+
         case "call.ended":
             handleCallEnded(json)
+
         case "pong":
             print("Pong received")
+
         default:
             print("Unhandled event: \(event)")
         }
@@ -5056,7 +5239,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         )
 
         DispatchQueue.main.async {
-            // Почему поменял: не перетираем активный/живой чужой звонок другим событием.
             if let existing = CallService.shared.activeCall,
                existing.callId != call.callId,
                ["pending", "active"].contains(existing.status.lowercased()) {
@@ -5109,7 +5291,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 return
             }
 
-            // Почему поменял: pending для неизвестного звонка создаём только если это реально входящий звонок.
             if status.lowercased() == "pending" {
                 guard let chatIdString = payload["chat_id"] as? String,
                       let initiatorIdString = payload["initiator_id"] as? String,
@@ -5140,8 +5321,6 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                 return
             }
 
-            // Почему поменял: terminal-статусы для неизвестного звонка молча не игнорируем,
-            // но и не создаём новый call из воздуха.
             if ["ended", "declined", "missed", "completed"].contains(status.lowercased()) {
                 NotificationCenter.default.post(name: .callEnded, object: callId)
                 return
@@ -5178,7 +5357,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallStart(chatId: UUID, type: String = "video") {
         let envelope: [String: Any] = [
             "event": "call.start",
-            "payload": ["chat_id": chatId.uuidString, "type": type]
+            "payload": [
+                "chat_id": chatId.uuidString,
+                "type": type
+            ]
         ]
         send(envelope)
     }
@@ -5186,7 +5368,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallAccept(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.accept",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -5194,7 +5378,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallReject(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.reject",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -5202,7 +5388,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendCallEnd(callId: UUID) {
         let envelope: [String: Any] = [
             "event": "call.end",
-            "payload": ["call_id": callId.uuidString]
+            "payload": [
+                "call_id": callId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -5211,7 +5399,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleNewMessage(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
               let senderIdString = payload["sender_id"] as? String,
               let createdAtString = payload["created_at"] as? String,
@@ -5236,12 +5424,12 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
                     let attachment = Attachment(
                         attachmentId: attachmentId,
                         fileName: fileName,
-                        fileSize: attDict["file_size"] as? Int,
+                        fileSize: (attDict["file_size"] as? NSNumber)?.intValue,
                         mimeType: attDict["mime_type"] as? String,
                         storagePath: storagePath,
                         uploadedAt: Date(),
                         messageCreatedAt: createdAt,
-                        duration: attDict["duration"] as? Int,
+                        duration: (attDict["duration"] as? NSNumber)?.intValue,
                         waveform: attDict["waveform"] as? String,
                         thumbnailUrl: attDict["thumbnail_url"] as? String,
                         isCircular: attDict["is_circular"] as? Bool
@@ -5259,7 +5447,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             senderId: senderId,
             replyToId: replyToId,
             content: content,
-            type: "text",
+            type: payload["type"] as? String ?? "text",
             createdAt: createdAt,
             updatedAt: createdAt,
             deletedAt: nil,
@@ -5267,11 +5455,16 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             deliveredAt: nil,
             readAt: nil,
             reactions: nil,
-            attachments: attachments
+            attachments: attachments,
+            forwardedFromUserId: (payload["forwarded_from_user_id"] as? String).flatMap(UUID.init),
+            forwardedFromNickname: payload["forwarded_from_nickname"] as? String,
+            senderNickname: payload["sender_nickname"] as? String,
+            replyToSenderName: nil,
+            replyToContent: nil
         )
 
         if !LocalDatabase.shared.messageExists(messageId) {
-            print("💾 About to save message \(message.messageId), attachment isCircular=\(attachments.first?.isCircular ?? false)")
+            print("💾 About to save message \(message.messageId), attachment isCircular = \(attachments.first?.isCircular ?? false)")
             _ = LocalDatabase.shared.saveMessage(message)
             if !attachments.isEmpty {
                 _ = LocalDatabase.shared.saveAttachments(attachments, for: messageId, messageCreatedAt: createdAt)
@@ -5285,7 +5478,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleStatusUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let chatIdString = payload["chat_id"] as? String,
               let chatId = UUID(uuidString: chatIdString),
@@ -5305,17 +5498,19 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             "readAt": readAt as Any
         ]
 
-        print("📢 Posting .statusUpdated for message \(messageId), delivered=\(deliveredAt != nil), read=\(readAt != nil)")
+        print("📢 Posting .statusUpdated for message \(messageId), delivered = \(deliveredAt != nil), read = \(readAt != nil)")
         NotificationCenter.default.post(name: .statusUpdated, object: update)
     }
 
     private func handleMessageUpdate(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
               let content = payload["content"] as? String,
               let isEdited = payload["is_edited"] as? Bool,
-              let chatId = UUID(uuidString: chatIdString) else { return }
+              let chatId = UUID(uuidString: chatIdString) else {
+            return
+        }
 
         let updateInfo: [String: Any] = [
             "messageId": messageId,
@@ -5329,9 +5524,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleMessageDelete(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let chatIdString = payload["chat_id"] as? String,
-              let chatId = UUID(uuidString: chatIdString) else { return }
+              let chatId = UUID(uuidString: chatIdString) else {
+            return
+        }
 
         NotificationCenter.default.post(name: .messageDeleted, object: (messageId, chatId))
     }
@@ -5340,7 +5537,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         guard let payload = json["payload"] as? [String: Any],
               let chatJSON = payload["chat"] as? [String: Any],
               let chatData = try? JSONSerialization.data(withJSONObject: chatJSON),
-              let chat = try? JSONDecoder.snakeCaseDecoder.decode(Chat.self, from: chatData) else { return }
+              let chat = try? JSONDecoder.snakeCaseDecoder.decode(Chat.self, from: chatData) else {
+            return
+        }
 
         NotificationCenter.default.post(name: .chatCreated, object: chat)
     }
@@ -5350,26 +5549,35 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
               let chatIdString = payload["chat_id"] as? String,
               let userIdString = payload["user_id"] as? String,
               let chatId = UUID(uuidString: chatIdString),
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
         let name = event == "typing.start" ? Notification.Name.typingStarted : .typingStopped
-        NotificationCenter.default.post(name: name, object: nil, userInfo: ["chatId": chatId, "userId": userId])
+        NotificationCenter.default.post(name: name, object: nil, userInfo: [
+            "chatId": chatId,
+            "userId": userId
+        ])
     }
 
     private func handleAck(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64 else { return }
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value else {
+            return
+        }
 
         NotificationCenter.default.post(name: .messageAcknowledged, object: messageId)
     }
 
     private func handleReactionAdd(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let createdAtString = payload["created_at"] as? String,
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
         let createdAt = isoDateFormatter.date(from: createdAtString) ?? Date()
         let reaction = Reaction(messageId: messageId, userId: userId, emoji: emoji, createdAt: createdAt)
@@ -5379,7 +5587,7 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func handleReactionRemove(_ json: [String: Any]) {
         guard let payload = json["payload"] as? [String: Any],
-              let messageId = payload["message_id"] as? Int64,
+              let messageId = (payload["message_id"] as? NSNumber)?.int64Value,
               let userIdString = payload["user_id"] as? String,
               let emoji = payload["emoji"] as? String,
               let userId = UUID(uuidString: userIdString) else {
@@ -5394,7 +5602,11 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
             print("⚠️ Reaction not found for deletion")
         }
 
-        let removalInfo: [String: Any] = ["messageId": messageId, "userId": userId, "emoji": emoji]
+        let removalInfo: [String: Any] = [
+            "messageId": messageId,
+            "userId": userId,
+            "emoji": emoji
+        ]
         NotificationCenter.default.post(name: .reactionRemoved, object: removalInfo)
     }
 
@@ -5402,9 +5614,14 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         guard let payload = json["payload"] as? [String: Any],
               let userIdString = payload["user_id"] as? String,
               let isOnline = payload["is_online"] as? Bool,
-              let userId = UUID(uuidString: userIdString) else { return }
+              let userId = UUID(uuidString: userIdString) else {
+            return
+        }
 
-        let update: [String: Any] = ["userId": userId, "is_online": isOnline]
+        let update: [String: Any] = [
+            "userId": userId,
+            "is_online": isOnline
+        ]
         NotificationCenter.default.post(name: .statusUpdated, object: update)
     }
 
@@ -5413,7 +5630,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendMessage(chatId: UUID, content: String) {
         let envelope: [String: Any] = [
             "event": "message.send",
-            "payload": ["chat_id": chatId.uuidString, "content": content]
+            "payload": [
+                "chat_id": chatId.uuidString,
+                "content": content
+            ]
         ]
         send(envelope)
     }
@@ -5422,7 +5642,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
         let event = isTyping ? "typing.start" : "typing.stop"
         let envelope: [String: Any] = [
             "event": event,
-            "payload": ["chat_id": chatId.uuidString]
+            "payload": [
+                "chat_id": chatId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -5430,7 +5652,10 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
     func sendAck(messageId: Int64, chatId: UUID) {
         let envelope: [String: Any] = [
             "event": "message.ack",
-            "payload": ["message_id": messageId, "chat_id": chatId.uuidString]
+            "payload": [
+                "message_id": messageId,
+                "chat_id": chatId.uuidString
+            ]
         ]
         send(envelope)
     }
@@ -5444,7 +5669,9 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 
     private func send(_ envelope: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: envelope),
-              let string = String(data: data, encoding: .utf8) else { return }
+              let string = String(data: data, encoding: .utf8) else {
+            return
+        }
 
         webSocketTask?.send(.string(string)) { error in
             if let error = error {
@@ -5860,39 +6087,47 @@ class AuthViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var currentUser: User?
-    
+
     private let cryptoService = CryptoService.shared
     private let keychainService = KeychainService.shared
     private let graphQL = GraphQLClient.shared
-    
+
     var deviceId: String { cryptoService.generateDeviceId() }
+
     var canRegister: Bool {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !password.isEmpty
     }
-    
+
     // MARK: - Registration
     func register(nickname: String, email: String, password: String, phone: String = "") async -> Bool {
-        await MainActor.run { isLoading = true; errorMessage = nil }
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
 
         let variables: [String: Any] = [
-                "nickName": nickname.trimmingCharacters(in: .whitespaces),
-                "email": email.trimmingCharacters(in: .whitespaces),
-                "password": password,
-                "phone": phone.trimmingCharacters(in: .whitespaces)  // всегда строка
-            ]
+            "nickName": nickname.trimmingCharacters(in: .whitespaces),
+            "email": email.trimmingCharacters(in: .whitespaces),
+            "password": password,
+            "phone": phone.trimmingCharacters(in: .whitespaces)
+        ]
 
         do {
-            // Ожидаем правильный тип ответа
             let _: CreateUserResponse = try await graphQL.perform(
                 query: GraphQLQueries.createUser,
                 variables: variables,
                 responseType: CreateUserResponse.self,
                 authToken: nil
             )
+
             let loginSuccess = await login(login: nickname, password: password)
-            await MainActor.run { isLoading = false }
+
+            await MainActor.run {
+                isLoading = false
+            }
+
             return loginSuccess
         } catch {
             await MainActor.run {
@@ -5902,13 +6137,19 @@ class AuthViewModel: ObservableObject {
             return false
         }
     }
-    
+
     // MARK: - Login
     func login(login: String, password: String) async -> Bool {
-        await MainActor.run { isLoading = true; errorMessage = nil }
-        
-        let variables: [String: Any] = ["login": login, "password": password]
-        
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+
+        let variables: [String: Any] = [
+            "login": login,
+            "password": password
+        ]
+
         do {
             let response: LoginResponse = try await graphQL.perform(
                 query: GraphQLQueries.login,
@@ -5916,19 +6157,23 @@ class AuthViewModel: ObservableObject {
                 responseType: LoginResponse.self,
                 authToken: nil
             )
+
             let loginResult = response.auth.login
-            let accessToken = loginResult.accessToken
-            let refreshToken = loginResult.refreshToken
             let userData = loginResult.user
-            
+
             await MainActor.run {
-                TokenManager.shared.accessToken = accessToken
-                TokenManager.shared.refreshToken = refreshToken
-                
+                TokenManager.shared.saveSession(
+                    accessToken: loginResult.accessToken,
+                    refreshToken: loginResult.refreshToken,
+                    expiresIn: loginResult.expiresIn
+                )
+
                 let user = User(
                     userId: userData.userId,
                     nickName: userData.nickName,
-                    firstName: nil, lastName: nil, middleName: nil,
+                    firstName: nil,
+                    lastName: nil,
+                    middleName: nil,
                     email: userData.email,
                     phone: nil,
                     avatarUrl: userData.avatarUrl,
@@ -5942,15 +6187,17 @@ class AuthViewModel: ObservableObject {
                     createdAt: Date(),
                     updatedAt: Date()
                 )
-                
+
                 AppState.shared.currentUser = user
                 AppState.shared.login()
                 self.isLoading = false
-                
+
                 WebSocketService.shared.connect(userId: user.id)
                 ContactService.shared.loadContacts()
                 ContactService.shared.loadPendingRequests()
+                TokenRefreshManager.shared.start()
             }
+
             return true
         } catch {
             await MainActor.run {
@@ -5960,7 +6207,7 @@ class AuthViewModel: ObservableObject {
             return false
         }
     }
-    
+
     // MARK: - Restore session
     func restoreSession() async -> Bool {
         guard let refreshToken = TokenManager.shared.refreshToken else {
@@ -5968,7 +6215,9 @@ class AuthViewModel: ObservableObject {
             return false
         }
 
-        let variables: [String: Any] = ["refreshToken": refreshToken]
+        let variables: [String: Any] = [
+            "refreshToken": refreshToken
+        ]
 
         do {
             let response: RefreshResponse = try await graphQL.perform(
@@ -5979,15 +6228,16 @@ class AuthViewModel: ObservableObject {
             )
 
             let refreshResult = response.auth.refreshToken
-            let newAccessToken = refreshResult.accessToken
-            let newRefreshToken = refreshResult.refreshToken
             let userData = refreshResult.user
 
-            print("✅ Session restored, new access token: \(newAccessToken.prefix(20))...")
+            print("✅ Session restored, new access token: \(refreshResult.accessToken.prefix(20))...")
 
             await MainActor.run {
-                TokenManager.shared.accessToken = newAccessToken
-                TokenManager.shared.refreshToken = newRefreshToken
+                TokenManager.shared.saveSession(
+                    accessToken: refreshResult.accessToken,
+                    refreshToken: refreshResult.refreshToken,
+                    expiresIn: refreshResult.expiresIn
+                )
 
                 let user = User(
                     userId: userData.userId,
@@ -6015,25 +6265,97 @@ class AuthViewModel: ObservableObject {
 
                 ContactService.shared.loadContacts()
                 ContactService.shared.loadPendingRequests()
+                TokenRefreshManager.shared.start()
             }
+
             return true
         } catch {
             print("Failed to restore session: \(error)")
             return false
         }
     }
-    
-    func autoLogin() {
-        Task { await restoreSession() }
+
+    // MARK: - Timer refresh
+    @MainActor
+    func refreshAccessTokenByTimer() async -> Bool {
+        guard let refreshToken = TokenManager.shared.refreshToken else {
+            print("⏱ No refresh token for timer refresh")
+            return false
+        }
+
+        let variables: [String: Any] = [
+            "refreshToken": refreshToken
+        ]
+
+        do {
+            let response: RefreshResponse = try await graphQL.perform(
+                query: GraphQLQueries.refreshToken,
+                variables: variables,
+                responseType: RefreshResponse.self,
+                authToken: nil
+            )
+
+            let result = response.auth.refreshToken
+            let userData = result.user
+
+            TokenManager.shared.saveSession(
+                accessToken: result.accessToken,
+                refreshToken: result.refreshToken,
+                expiresIn: result.expiresIn
+            )
+
+            let user = User(
+                userId: userData.userId,
+                nickName: userData.nickName,
+                firstName: nil,
+                lastName: nil,
+                middleName: nil,
+                email: userData.email,
+                phone: nil,
+                avatarUrl: userData.avatarUrl,
+                bio: nil,
+                lastSeen: nil,
+                isOnline: userData.isOnline,
+                status: "active",
+                emailVerified: false,
+                phoneVerified: false,
+                isAdmin: false,
+                createdAt: Date(),
+                updatedAt: Date()
+            )
+
+            AppState.shared.currentUser = user
+
+            if let userId = AppState.shared.currentUser?.userId {
+                WebSocketService.shared.reconnectWithFreshToken(userId: userId)
+            }
+
+            print("⏱ Access token refreshed by timer")
+            return true
+        } catch {
+            print("⏱ Timer refresh failed: \(error.localizedDescription)")
+            logout()
+            return false
+        }
     }
-    
+
+    func autoLogin() {
+        Task {
+            await restoreSession()
+        }
+    }
+
+    @MainActor
     func logout() {
+        TokenRefreshManager.shared.stop()
         WebSocketService.shared.disconnect()
         TokenManager.shared.clear()
         AppState.shared.logout()
     }
-    
+
+    @MainActor
     func wipeAllData() {
+        TokenRefreshManager.shared.stop()
         WebSocketService.shared.disconnect()
         TokenManager.shared.clear()
         keychainService.wipeAllData()
@@ -6047,7 +6369,7 @@ class AuthViewModel: ObservableObject {
         AppState.shared.logout()
         cryptoService.resetDeviceId()
     }
-    
+
     func hasSavedUser() -> Bool {
         return TokenManager.shared.refreshToken != nil
     }
@@ -9632,11 +9954,6 @@ extension Notification.Name {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatView.swift
 
-//
-//  ChatView.swift
-//  MessengerApp
-//
-
 import SwiftUI
 import CallKit
 import AVFoundation
@@ -9645,7 +9962,7 @@ struct ChatView: View {
     let chat: Chat
     @StateObject private var viewModel: ChatViewModel
     @Environment(\.presentationMode) var presentationMode
-    
+
     @State private var selectedImage: UIImage?
     @State private var selectedVideoURL: URL?
     @State private var selectedDocumentURL: URL?
@@ -9654,69 +9971,84 @@ struct ChatView: View {
     @State private var showingDocumentPicker = false
     @State private var isUploading = false
     @State private var isSending = false
-    
+
     @State private var selectedMessage: Message?
     @State private var editText = ""
     @State private var showEditAlert = false
     @State private var showDeleteConfirmation = false
-    
+
     @State private var typingTimer: Timer?
     @State private var isTyping = false
-    @State private var highlightedMessageId: Int64?
-    @State private var highlightTimer: Timer?
-    
+
     @State private var replyingToMessage: Message?
     @State private var showForwardChatSelection = false
     @State private var forwardMessage: Message?
-    
+
     @State private var showCallScreen = false
-    
-    // Кнопка отправки (видео/аудио/текст)
-    @State private var sendButtonMode: SendButtonMode = .video
-    @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "video"
+
+    @State private var sendButtonMode: SendButtonMode = .audio
+    @AppStorage("lastSendButtonMode") private var lastSendButtonModeRaw: String = "audio"
+
     @State private var showingVoiceRecorder = false
     @State private var showingVideoRecorder = false
-    
     @State private var scrollProxy: ScrollViewProxy?
-    
+
     private var canSendMessage: Bool {
         if chat.isChannel {
             return viewModel.myRole == "owner" || viewModel.myRole == "admin"
         }
         return true
     }
-    
+
     private var canSend: Bool {
-        (!viewModel.newMessageText.isEmpty ||
-         selectedImage != nil ||
-         selectedVideoURL != nil ||
-         selectedDocumentURL != nil ||
-         viewModel.pendingForward?.attachmentId != nil) && !isSending
+        (
+            !viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+            selectedImage != nil ||
+            selectedVideoURL != nil ||
+            selectedDocumentURL != nil ||
+            viewModel.pendingForward?.attachmentId != nil
+        ) && !isSending
     }
-    
+
     private var shouldShowSend: Bool {
         !viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-        selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil ||
+        selectedImage != nil ||
+        selectedVideoURL != nil ||
+        selectedDocumentURL != nil ||
         viewModel.pendingForward != nil
     }
-    
+
     enum SendButtonMode: String {
-        case video, audio, send
+        case video
+        case audio
     }
-    
+
+    private var recorderButtonIcon: String {
+        sendButtonMode == .audio ? "mic.circle.fill" : "video.circle.fill"
+    }
+
+    private var recorderToggleIcon: String {
+        sendButtonMode == .audio ? "video.fill" : "mic.fill"
+    }
+
+    private var recorderToggleTitle: String {
+        sendButtonMode == .audio ? "Видео" : "Аудио"
+    }
+
     init(chat: Chat) {
         self.chat = chat
         _viewModel = StateObject(wrappedValue: ChatViewModel(chat: chat))
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             headerView
             messagesListView
+
             if selectedImage != nil || selectedVideoURL != nil || selectedDocumentURL != nil {
                 AttachmentPreviewBar(
                     type: previewTypeForSelected(),
-                    onCancel: { clearSelectedAttachments() }
+                    onCancel: clearSelectedAttachments
                 )
             } else if let pending = viewModel.pendingForward {
                 AttachmentPreviewBar(
@@ -9725,10 +10057,14 @@ struct ChatView: View {
                         fromNickname: pending.forwardedFromNickname,
                         attachmentId: pending.attachmentId
                     ),
-                    onCancel: { viewModel.pendingForward = nil }
+                    onCancel: {
+                        viewModel.pendingForward = nil
+                    }
                 )
             }
+
             replyPreviewBar
+
             if canSendMessage {
                 inputAreaView
             }
@@ -9745,14 +10081,24 @@ struct ChatView: View {
         }
         .navigationBarHidden(true)
         .actionSheet(isPresented: $showingActionSheet) {
-            ActionSheet(title: Text("Вложение"), buttons: [
-                .default(Text("Фото или видео")) { showingMediaPicker = true },
-                .default(Text("Документ")) { showingDocumentPicker = true },
-                .cancel()
-            ])
+            ActionSheet(
+                title: Text("Вложение"),
+                buttons: [
+                    .default(Text("Фото или видео")) {
+                        showingMediaPicker = true
+                    },
+                    .default(Text("Документ")) {
+                        showingDocumentPicker = true
+                    },
+                    .cancel()
+                ]
+            )
         }
         .sheet(isPresented: $showingMediaPicker) {
-            MediaPicker(selectedImage: $selectedImage, selectedVideoURL: $selectedVideoURL)
+            MediaPicker(
+                selectedImage: $selectedImage,
+                selectedVideoURL: $selectedVideoURL
+            )
         }
         .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker(selectedURL: $selectedDocumentURL)
@@ -9763,53 +10109,67 @@ struct ChatView: View {
                 forwardMessage = nil
             }
         }
-        .sheet(isPresented: $showingVoiceRecorder) {
-            VoiceRecorderView { url, duration, waveform in
+        .fullScreenCover(isPresented: $showingVoiceRecorder) {
+            VoiceRecorderView(onComplete: { url, duration, waveform in
                 Task {
                     await sendVoiceMessage(url: url, duration: duration, waveform: waveform)
                 }
-            }
+            })
+            .ignoresSafeArea()
         }
-        .sheet(isPresented: $showingVideoRecorder) {
+        .fullScreenCover(isPresented: $showingVideoRecorder) {
             VideoRecorderView { url in
                 Task {
                     await sendCircularVideo(url: url)
                 }
             }
+            .ignoresSafeArea()
         }
         .alert("Редактировать сообщение", isPresented: $showEditAlert, actions: {
-            TextField("Новый текст", text: $editText)
-            Button("Отмена", role: .cancel) { }
+            TextField("Текст", text: $editText)
+
+            Button("Отмена", role: .cancel) {}
+
             Button("Сохранить") {
                 if let message = selectedMessage {
-                    Task { _ = await viewModel.editMessage(message, newContent: editText) }
+                    Task {
+                        _ = await viewModel.editMessage(message, newContent: editText)
+                    }
                 }
             }
+        }, message: {
+            Text("Измените текст сообщения")
         })
-        .alert("Удалить сообщение", isPresented: $showDeleteConfirmation) {
-            Button("Отмена", role: .cancel) { }
+        .alert("Удалить сообщение?", isPresented: $showDeleteConfirmation, actions: {
+            Button("Отмена", role: .cancel) {}
+
             Button("Удалить", role: .destructive) {
                 if let message = selectedMessage {
-                    Task { _ = await viewModel.deleteMessage(message) }
+                    Task {
+                        _ = await viewModel.deleteMessage(message)
+                    }
                 }
             }
-        } message: {
-            Text("Это сообщение будет удалено для всех участников чата. Отменить действие будет невозможно.")
+        }, message: {
+            Text("Это действие нельзя отменить.")
+        })
+        .overlay {
+            if isSending {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .overlay(
+                        ProgressView()
+                            .scaleEffect(1.5)
+                    )
+            }
         }
-        .overlay(
-            Group {
-                if isSending {
-                    Color.black.opacity(0.3)
-                        .ignoresSafeArea()
-                        .overlay(ProgressView().scaleEffect(1.5))
-                }
-            }
-        )
         .onAppear {
             NotificationCenter.default.post(name: .chatOpened, object: chat.id)
+
             Task {
                 await viewModel.refreshOtherUserStatus()
             }
+
             if let pending = PendingForwardManager.shared.consumePendingForward(for: chat.id) {
                 viewModel.pendingForward = ChatViewModel.PendingForward(
                     originalContent: pending.content,
@@ -9819,7 +10179,7 @@ struct ChatView: View {
                 )
                 viewModel.newMessageText = pending.content
             }
-            
+
             if let pendingId = AppState.shared.pendingScrollToMessageId {
                 AppState.shared.pendingScrollToMessageId = nil
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -9833,12 +10193,13 @@ struct ChatView: View {
                     }
                 }
             }
-            
-            sendButtonMode = SendButtonMode(rawValue: lastSendButtonModeRaw) ?? .video
+
+            sendButtonMode = SendButtonMode(rawValue: lastSendButtonModeRaw) ?? .audio
         }
         .onReceive(AppState.shared.$pendingScrollToMessageId) { newId in
             guard let id = newId else { return }
             AppState.shared.pendingScrollToMessageId = nil
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 viewModel.scrollToMessage(messageId: id) {
                     DispatchQueue.main.async {
@@ -9854,9 +10215,9 @@ struct ChatView: View {
             viewModel.clearPendingForward()
         }
     }
-    
+
     // MARK: - Subviews
-    
+
     private var headerView: some View {
         HStack(spacing: 12) {
             Button {
@@ -9865,21 +10226,27 @@ struct ChatView: View {
                 Image(systemName: "chevron.left")
                     .font(.title2)
                     .foregroundColor(.blue)
+                    .frame(width: 44, height: 44)
             }
-            .frame(width: 44, height: 44)
-            
+
             if chat.isPrivate, let otherUser = viewModel.otherUser {
                 Button {
                     let profileView = UserProfileView(userId: otherUser.userId)
                     let hosting = UIHostingController(rootView: profileView)
-                    UIApplication.shared.windows.first?.rootViewController?.present(hosting, animated: true)
+                    UIApplication.shared.windows.first?.rootViewController?.present(
+                        hosting,
+                        animated: true,
+                        completion: nil
+                    )
                 } label: {
                     HStack(spacing: 8) {
                         AvatarView(urlString: otherUser.avatarUrl, size: 40)
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text(otherUser.nickName)
                                 .font(.headline)
                                 .foregroundColor(.primary)
+
                             if viewModel.isSomeoneTyping {
                                 Text("печатает...")
                                     .font(.caption)
@@ -9889,6 +10256,7 @@ struct ChatView: View {
                                     Circle()
                                         .fill(viewModel.isOtherUserOnline ? Color.green : Color.gray)
                                         .frame(width: 8, height: 8)
+
                                     Text(viewModel.isOtherUserOnline ? "онлайн" : "офлайн")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
@@ -9911,30 +10279,30 @@ struct ChatView: View {
                                     .foregroundColor(chat.isGroup ? .blue : .purple)
                             )
                     }
+
                     VStack(alignment: .leading, spacing: 2) {
                         Text(viewModel.chatTitle)
                             .font(.headline)
                             .lineLimit(1)
+
                         if viewModel.isSomeoneTyping {
-                            Text("печатает...")
+                            Text("кто-то печатает...")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
                 }
             }
-            
+
             Spacer()
-            
-            // КНОПКА ВИДЕОЗВОНКА (исправлена)
+
             Button {
                 Task {
                     do {
-                        let _ = try await CallService.shared.startCall(chatId: chat.id, type: "video")
-                        // activeCall установится автоматически, ContentView покажет OutgoingCallView
+                        _ = try await CallService.shared.startCall(chatId: chat.id, type: "video")
                     } catch {
                         print("Start call error: \(error)")
-                        NotificationService.shared.showError("Не удалось начать звонок")
+                        NotificationService.shared.showError(error.localizedDescription)
                     }
                 }
             } label: {
@@ -9942,28 +10310,28 @@ struct ChatView: View {
                     .font(.title2)
                     .foregroundColor(.blue)
             }
-            
+
             NavigationLink(destination: ChatSidebarView(chat: chat, chatViewModel: viewModel)) {
                 Image(systemName: "info.circle")
                     .font(.title2)
                     .foregroundColor(.blue)
+                    .frame(width: 44, height: 44)
             }
-            .frame(width: 44, height: 44)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(Color(.systemBackground))
     }
-    
+
     private var messagesListView: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(viewModel.messages) { message in
                         messageView(for: message, proxy: proxy)
+                            .padding(.horizontal)
                     }
                 }
-                .padding(.horizontal)
                 .padding(.vertical, 12)
             }
             .onAppear {
@@ -9974,13 +10342,15 @@ struct ChatView: View {
             }
             .onChange(of: viewModel.messages.count) { _ in
                 if let last = viewModel.messages.last {
-                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    withAnimation {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                 }
             }
+            .background(Color(.systemGroupedBackground))
         }
-        .background(Color(.systemGroupedBackground))
     }
-    
+
     @ViewBuilder
     private func messageView(for message: Message, proxy: ScrollViewProxy) -> some View {
         MessageBubbleView(
@@ -10015,9 +10385,13 @@ struct ChatView: View {
             isPrivateChat: chat.isPrivate
         )
         .id(message.messageId)
-        .background(viewModel.highlightMessageId == message.messageId ? Color.yellow.opacity(0.3) : Color.clear)
+        .background(
+            viewModel.highlightMessageId == message.messageId
+            ? Color.yellow.opacity(0.3)
+            : Color.clear
+        )
     }
-    
+
     private var replyPreviewBar: some View {
         Group {
             if let reply = replyingToMessage {
@@ -10025,11 +10399,16 @@ struct ChatView: View {
                     Image(systemName: "arrowshape.turn.up.left.fill")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                    Text(reply.content ?? (reply.attachments != nil ? "[Вложение]" : ""))
+
+                    Text(reply.content ?? (reply.attachments != nil ? "Вложение" : "Сообщение"))
                         .font(.caption)
                         .lineLimit(1)
+
                     Spacer(minLength: 0)
-                    Button { replyingToMessage = nil } label: {
+
+                    Button {
+                        replyingToMessage = nil
+                    } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.caption2)
                             .foregroundColor(.gray)
@@ -10037,21 +10416,23 @@ struct ChatView: View {
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 12)
-                .background(Color(.clear))
+                .background(Color.clear)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
             }
         }
     }
-    
+
     private var inputAreaView: some View {
         HStack(spacing: 12) {
-            Button { showingActionSheet = true } label: {
+            Button {
+                showingActionSheet = true
+            } label: {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 32))
                     .foregroundColor(.blue)
             }
-            
+
             TextField("Сообщение", text: $viewModel.newMessageText)
                 .padding(12)
                 .background(Color(.systemGray6))
@@ -10060,104 +10441,141 @@ struct ChatView: View {
                 .onChange(of: viewModel.newMessageText) { newValue in
                     handleTyping(newValue)
                 }
-            
+
             if isUploading || isSending {
-                ProgressView().frame(width: 32, height: 32)
-            } else {
+                ProgressView()
+                    .frame(width: 32, height: 32)
+            } else if shouldShowSend {
                 Button {
-                    if shouldShowSend {
-                        sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
-                        replyingToMessage = nil
-                    } else {
-                        switch sendButtonMode {
-                        case .video:
-                            showingVideoRecorder = true
-                            sendButtonMode = .audio
-                        case .audio:
-                            showingVoiceRecorder = true
-                            sendButtonMode = .video
-                        case .send:
-                            break
-                        }
-                        lastSendButtonModeRaw = sendButtonMode.rawValue
-                    }
+                    sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
+                    replyingToMessage = nil
                 } label: {
-                    if shouldShowSend {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(canSend ? .blue : .gray)
-                    } else {
-                        Image(systemName: sendButtonMode == .video ? "video.circle.fill" : "mic.circle.fill")
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(canSend ? .blue : .gray)
+                }
+                .disabled(!canSend)
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        toggleRecorderMode()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: recorderToggleIcon)
+                                .font(.system(size: 13, weight: .semibold))
+                            Text(recorderToggleTitle)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+
+                    Button {
+                        openCurrentRecorder()
+                    } label: {
+                        Image(systemName: recorderButtonIcon)
                             .font(.system(size: 32))
                             .foregroundColor(.blue)
                     }
                 }
-                .disabled(!shouldShowSend && sendButtonMode == .send)
             }
         }
         .padding()
         .background(Color(.systemBackground))
     }
-    
+
+    // MARK: - Actions
+
+    private func toggleRecorderMode() {
+        sendButtonMode = sendButtonMode == .audio ? .video : .audio
+        lastSendButtonModeRaw = sendButtonMode.rawValue
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func openCurrentRecorder() {
+        switch sendButtonMode {
+        case .audio:
+            showingVoiceRecorder = true
+        case .video:
+            showingVideoRecorder = true
+        }
+    }
+
     private func sendMessageWithAttachment(replyToId: Int64? = nil) {
         Task {
             isSending = true
             isUploading = true
-            
+
             var attachmentId: UUID? = nil
             var storagePath: String? = nil
             var fileName: String? = nil
             var fileSize: Int? = nil
             var mimeType: String? = nil
-            
+
             if let pending = viewModel.pendingForward, let pendingAttachId = pending.attachmentId {
                 attachmentId = pendingAttachId
-            } else {
-                if let image = selectedImage {
-                    do {
-                        let result = try await AttachmentUploader.shared.uploadImage(image)
-                        attachmentId = result.attachmentId
-                        storagePath = result.storagePath
-                        fileName = "image.jpg"
-                        if let data = image.jpegData(compressionQuality: 0.8) { fileSize = data.count }
-                        mimeType = "image/jpeg"
-                    } catch {
-                        await MainActor.run { isSending = false; isUploading = false }
-                        return
+            } else if let image = selectedImage {
+                do {
+                    let result = try await AttachmentUploader.shared.uploadImage(image)
+                    attachmentId = result.attachmentId
+                    storagePath = result.storagePath
+                    fileName = "image.jpg"
+
+                    if let data = image.jpegData(compressionQuality: 0.8) {
+                        fileSize = data.count
                     }
-                } else if let videoURL = selectedVideoURL {
-                    do {
-                        let result = try await AttachmentUploader.shared.uploadFile(url: videoURL)
-                        attachmentId = result.attachmentId
-                        storagePath = result.storagePath
-                        fileName = videoURL.lastPathComponent
-                        let attributes = try FileManager.default.attributesOfItem(atPath: videoURL.path)
-                        fileSize = attributes[.size] as? Int
-                        mimeType = "video/mp4"
-                    } catch {
-                        await MainActor.run { isSending = false; isUploading = false }
-                        return
+
+                    mimeType = "image/jpeg"
+                } catch {
+                    await MainActor.run {
+                        isSending = false
+                        isUploading = false
                     }
-                } else if let documentURL = selectedDocumentURL {
-                    do {
-                        let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
-                        attachmentId = result.attachmentId
-                        storagePath = result.storagePath
-                        fileName = documentURL.lastPathComponent
-                        let attributes = try FileManager.default.attributesOfItem(atPath: documentURL.path)
-                        fileSize = attributes[.size] as? Int
-                        mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
-                    } catch {
-                        await MainActor.run { isSending = false; isUploading = false }
-                        return
+                    return
+                }
+            } else if let videoURL = selectedVideoURL {
+                do {
+                    let result = try await AttachmentUploader.shared.uploadFile(url: videoURL)
+                    attachmentId = result.attachmentId
+                    storagePath = result.storagePath
+                    fileName = videoURL.lastPathComponent
+
+                    let attributes = try FileManager.default.attributesOfItem(atPath: videoURL.path)
+                    fileSize = attributes[.size] as? Int
+                    mimeType = "video/mp4"
+                } catch {
+                    await MainActor.run {
+                        isSending = false
+                        isUploading = false
                     }
+                    return
+                }
+            } else if let documentURL = selectedDocumentURL {
+                do {
+                    let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
+                    attachmentId = result.attachmentId
+                    storagePath = result.storagePath
+                    fileName = documentURL.lastPathComponent
+
+                    let attributes = try FileManager.default.attributesOfItem(atPath: documentURL.path)
+                    fileSize = attributes[.size] as? Int
+                    mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
+                } catch {
+                    await MainActor.run {
+                        isSending = false
+                        isUploading = false
+                    }
+                    return
                 }
             }
-            
+
             let contentToSend = viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
             let forwardUserId = viewModel.pendingForward?.forwardedFromUserId
             let forwardNickname = viewModel.pendingForward?.forwardedFromNickname
-            
+
             let success = await viewModel.sendMessage(
                 attachmentId: attachmentId,
                 storagePath: storagePath,
@@ -10169,7 +10587,7 @@ struct ChatView: View {
                 forwardedFromNickname: forwardNickname,
                 customContent: contentToSend
             )
-            
+
             await MainActor.run {
                 viewModel.pendingForward = nil
                 isSending = false
@@ -10177,6 +10595,7 @@ struct ChatView: View {
                 selectedImage = nil
                 selectedVideoURL = nil
                 selectedDocumentURL = nil
+
                 if success {
                     viewModel.newMessageText = ""
                 } else {
@@ -10185,16 +10604,19 @@ struct ChatView: View {
             }
         }
     }
-    
+
     private func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: String?) async {
         isSending = true
         isUploading = true
+
         defer {
             isSending = false
             isUploading = false
         }
+
         do {
             let result = try await AttachmentUploader.shared.uploadFile(url: url, mimeType: "audio/m4a")
+
             let success = await viewModel.sendMessage(
                 attachmentId: result.attachmentId,
                 storagePath: result.storagePath,
@@ -10206,35 +10628,36 @@ struct ChatView: View {
                 forwardedFromNickname: nil,
                 customContent: nil
             )
+
             if success {
                 replyingToMessage = nil
             }
         } catch {
             await MainActor.run {
-                NotificationService.shared.showError("Ошибка загрузки голосового: \(error.localizedDescription)")
+                NotificationService.shared.showError(error.localizedDescription)
             }
         }
     }
-    
-    // MARK: - Отправка видеосообщения (кружок)
+
     private func sendCircularVideo(url: URL) async {
-        print("📹 sendCircularVideo called with url: \(url)")
+        print("sendCircularVideo called with url: \(url)")
         isSending = true
         isUploading = true
+
         defer {
             isSending = false
             isUploading = false
         }
-        
+
         let asset = AVAsset(url: url)
         let duration = CMTimeGetSeconds(asset.duration)
-        print("📹 Video duration: \(duration)")
-        
+        print("Video duration: \(duration)")
+
         do {
-            print("📹 Uploading video to server...")
+            print("Uploading video to server...")
             let result = try await AttachmentUploader.shared.uploadFile(url: url)
-            print("📹 Upload success, attachmentId: \(result.attachmentId)")
-            
+            print("Upload success, attachmentId: \(result.attachmentId)")
+
             let success = await viewModel.sendMessage(
                 attachmentId: result.attachmentId,
                 storagePath: result.storagePath,
@@ -10244,23 +10667,26 @@ struct ChatView: View {
                 replyToId: replyingToMessage?.messageId,
                 isCircular: true
             )
-            print("📹 sendMessage success: \(success)")
+
+            print("sendMessage success: \(success)")
+
             if success {
                 replyingToMessage = nil
             }
         } catch {
             await MainActor.run {
-                NotificationService.shared.showError("Ошибка загрузки видео: \(error.localizedDescription)")
+                NotificationService.shared.showError(error.localizedDescription)
             }
-            print("❌ Video upload error: \(error)")
+            print("Video upload error: \(error)")
         }
     }
-    
+
     private func handleTyping(_ text: String) {
         if !text.isEmpty && !isTyping && canSendMessage {
             isTyping = true
             WebSocketService.shared.sendTyping(chatId: chat.id, isTyping: true)
         }
+
         typingTimer?.invalidate()
         typingTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
             if self.isTyping {
@@ -10269,7 +10695,7 @@ struct ChatView: View {
             }
         }
     }
-    
+
     private func previewTypeForSelected() -> AttachmentPreviewBar.AttachmentType {
         if let image = selectedImage {
             return .image(image)
@@ -10278,20 +10704,21 @@ struct ChatView: View {
         } else if let docURL = selectedDocumentURL {
             return .document(docURL)
         }
+
         fatalError("No attachment selected")
     }
-    
+
     private func clearSelectedAttachments() {
         selectedImage = nil
         selectedVideoURL = nil
         selectedDocumentURL = nil
     }
-    
+
     private func forwardMessageToChat(_ message: Message?, _ targetChat: Chat) {
         guard let message = message else { return }
-        
+
         let senderNick = viewModel.getNicknameForForward(for: message.senderId)
-        
+
         if targetChat.id == chat.id {
             viewModel.newMessageText = message.content ?? ""
             viewModel.pendingForward = nil
@@ -10303,7 +10730,9 @@ struct ChatView: View {
                 fromNickname: senderNick,
                 attachmentId: message.attachments?.first?.attachmentId
             )
+
             presentationMode.wrappedValue.dismiss()
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NotificationCenter.default.post(name: .openChat, object: targetChat)
             }
@@ -11091,7 +11520,10 @@ struct AttachmentView: View {
             } else if fileData != nil {
                 createTempFileAndShare()
             }
+        }.onAppear {
+            loadImageURL()
         }
+        
     }
     
     @ViewBuilder
@@ -12758,198 +13190,421 @@ struct VideoPlayerView: View {
 
 ./FrontDip/MessengerApp/Views/Common/VideoRecorderView.swift
 
-//
-//  VideoRecorderView.swift
-//  MessengerApp
-//
-
 import SwiftUI
+import UIKit
 import AVFoundation
 
-// MARK: - SwiftUI обёртка
 struct VideoRecorderView: UIViewControllerRepresentable {
     let onRecordingFinished: (URL) -> Void
-    
+
     func makeUIViewController(context: Context) -> VideoRecorderViewController {
         let controller = VideoRecorderViewController()
         controller.onRecordingFinished = onRecordingFinished
+        controller.modalPresentationStyle = .overFullScreen
         return controller
     }
-    
+
     func updateUIViewController(_ uiViewController: VideoRecorderViewController, context: Context) {}
 }
 
-// MARK: - UIViewController с камерой
-class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordingDelegate {
-    
+final class VideoRecorderViewController: UIViewController, AVCaptureFileOutputRecordingDelegate {
     var onRecordingFinished: ((URL) -> Void)?
-    
-    private var session: AVCaptureSession?
+
+    private let session = AVCaptureSession()
+    private let movieOutput = AVCaptureMovieFileOutput()
     private var previewLayer: AVCaptureVideoPreviewLayer?
-    private var movieOutput: AVCaptureMovieFileOutput?
+    private var currentVideoInput: AVCaptureDeviceInput?
+    private var audioInput: AVCaptureDeviceInput?
+    private var currentCameraPosition: AVCaptureDevice.Position = .front
     private var outputURL: URL?
     private var isRecording = false
-    
+    private var timer: Timer?
+    private var secondsElapsed = 0
+
+    private let backgroundView = UIView()
+    private let previewContainer = UIView()
+    private let ringView = UIView()
+    private let topGradient = CAGradientLayer()
+
+    private let closeButton = UIButton(type: .system)
+    private let flipButton = UIButton(type: .system)
+    private let timerBadge = UIView()
+    private let timerDot = UIView()
+    private let timerLabel = UILabel()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+
+    private let shutterOuter = UIView()
+    private let shutterInner = UIView()
+    private let shutterButton = UIButton(type: .system)
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.backgroundColor = .black
+        setupUI()
         checkPermissionsAndSetup()
     }
-    
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        previewLayer?.frame = view.bounds
+
+        previewLayer?.frame = previewContainer.bounds
+        previewContainer.layer.cornerRadius = previewContainer.bounds.width / 2
+        ringView.layer.cornerRadius = ringView.bounds.width / 2
+        shutterOuter.layer.cornerRadius = shutterOuter.bounds.width / 2
+        shutterInner.layer.cornerRadius = shutterInner.bounds.width / 2
+
+        topGradient.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 180)
     }
-    
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        timer?.invalidate()
+        if session.isRunning {
+            session.stopRunning()
+        }
+        try? AVAudioSession.sharedInstance().setActive(false)
+    }
+
+    private func setupUI() {
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.backgroundColor = .black
+        view.addSubview(backgroundView)
+
+        topGradient.colors = [
+            UIColor.black.withAlphaComponent(0.58).cgColor,
+            UIColor.clear.cgColor
+        ]
+        view.layer.addSublayer(topGradient)
+
+        previewContainer.translatesAutoresizingMaskIntoConstraints = false
+        previewContainer.backgroundColor = UIColor(white: 0.14, alpha: 1)
+        previewContainer.clipsToBounds = true
+        view.addSubview(previewContainer)
+
+        ringView.translatesAutoresizingMaskIntoConstraints = false
+        ringView.layer.borderWidth = 4
+        ringView.layer.borderColor = UIColor.white.withAlphaComponent(0.92).cgColor
+        ringView.backgroundColor = .clear
+        view.addSubview(ringView)
+
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        closeButton.tintColor = .white
+        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.34)
+        closeButton.layer.cornerRadius = 22
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        view.addSubview(closeButton)
+
+        flipButton.translatesAutoresizingMaskIntoConstraints = false
+        flipButton.setImage(UIImage(systemName: "arrow.triangle.2.circlepath.camera"), for: .normal)
+        flipButton.tintColor = .white
+        flipButton.backgroundColor = UIColor.black.withAlphaComponent(0.34)
+        flipButton.layer.cornerRadius = 22
+        flipButton.addTarget(self, action: #selector(flipTapped), for: .touchUpInside)
+        view.addSubview(flipButton)
+
+        timerBadge.translatesAutoresizingMaskIntoConstraints = false
+        timerBadge.backgroundColor = UIColor.black.withAlphaComponent(0.38)
+        timerBadge.layer.cornerRadius = 18
+        view.addSubview(timerBadge)
+
+        timerDot.translatesAutoresizingMaskIntoConstraints = false
+        timerDot.backgroundColor = .systemRed
+        timerDot.layer.cornerRadius = 5
+        timerBadge.addSubview(timerDot)
+
+        timerLabel.translatesAutoresizingMaskIntoConstraints = false
+        timerLabel.text = "00:00"
+        timerLabel.textColor = .white
+        timerLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+        timerBadge.addSubview(timerLabel)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.text = "Видеосообщение"
+        titleLabel.textColor = .white
+        titleLabel.font = .systemFont(ofSize: 24, weight: .semibold)
+        titleLabel.textAlignment = .center
+        view.addSubview(titleLabel)
+
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.text = ""
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.68)
+        subtitleLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        subtitleLabel.textAlignment = .center
+        view.addSubview(subtitleLabel)
+
+        shutterOuter.translatesAutoresizingMaskIntoConstraints = false
+        shutterOuter.backgroundColor = UIColor.white.withAlphaComponent(0.18)
+        shutterOuter.layer.borderWidth = 2
+        shutterOuter.layer.borderColor = UIColor.white.withAlphaComponent(0.78).cgColor
+        view.addSubview(shutterOuter)
+
+        shutterInner.translatesAutoresizingMaskIntoConstraints = false
+        shutterInner.backgroundColor = .white
+        shutterOuter.addSubview(shutterInner)
+
+        shutterButton.translatesAutoresizingMaskIntoConstraints = false
+        shutterButton.backgroundColor = .clear
+        shutterButton.addTarget(self, action: #selector(shutterTapped), for: .touchUpInside)
+        shutterOuter.addSubview(shutterButton)
+
+        NSLayoutConstraint.activate([
+            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            closeButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            closeButton.widthAnchor.constraint(equalToConstant: 44),
+            closeButton.heightAnchor.constraint(equalToConstant: 44),
+
+            flipButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+            flipButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            flipButton.widthAnchor.constraint(equalToConstant: 44),
+            flipButton.heightAnchor.constraint(equalToConstant: 44),
+
+            timerBadge.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            timerBadge.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            timerBadge.heightAnchor.constraint(equalToConstant: 36),
+            timerBadge.widthAnchor.constraint(greaterThanOrEqualToConstant: 92),
+
+            timerDot.leadingAnchor.constraint(equalTo: timerBadge.leadingAnchor, constant: 12),
+            timerDot.centerYAnchor.constraint(equalTo: timerBadge.centerYAnchor),
+            timerDot.widthAnchor.constraint(equalToConstant: 10),
+            timerDot.heightAnchor.constraint(equalToConstant: 10),
+
+            timerLabel.leadingAnchor.constraint(equalTo: timerDot.trailingAnchor, constant: 8),
+            timerLabel.trailingAnchor.constraint(equalTo: timerBadge.trailingAnchor, constant: -12),
+            timerLabel.centerYAnchor.constraint(equalTo: timerBadge.centerYAnchor),
+
+            titleLabel.topAnchor.constraint(equalTo: timerBadge.bottomAnchor, constant: 26),
+            titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            subtitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            subtitleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+
+            previewContainer.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            previewContainer.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -12),
+            previewContainer.widthAnchor.constraint(equalToConstant: 290),
+            previewContainer.heightAnchor.constraint(equalToConstant: 290),
+
+            ringView.centerXAnchor.constraint(equalTo: previewContainer.centerXAnchor),
+            ringView.centerYAnchor.constraint(equalTo: previewContainer.centerYAnchor),
+            ringView.widthAnchor.constraint(equalTo: previewContainer.widthAnchor, constant: 10),
+            ringView.heightAnchor.constraint(equalTo: previewContainer.heightAnchor, constant: 10),
+
+            shutterOuter.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            shutterOuter.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -34),
+            shutterOuter.widthAnchor.constraint(equalToConstant: 92),
+            shutterOuter.heightAnchor.constraint(equalToConstant: 92),
+
+            shutterInner.centerXAnchor.constraint(equalTo: shutterOuter.centerXAnchor),
+            shutterInner.centerYAnchor.constraint(equalTo: shutterOuter.centerYAnchor),
+            shutterInner.widthAnchor.constraint(equalToConstant: 72),
+            shutterInner.heightAnchor.constraint(equalToConstant: 72),
+
+            shutterButton.leadingAnchor.constraint(equalTo: shutterOuter.leadingAnchor),
+            shutterButton.trailingAnchor.constraint(equalTo: shutterOuter.trailingAnchor),
+            shutterButton.topAnchor.constraint(equalTo: shutterOuter.topAnchor),
+            shutterButton.bottomAnchor.constraint(equalTo: shutterOuter.bottomAnchor)
+        ])
+    }
+
     private func checkPermissionsAndSetup() {
-        // Проверка камеры
+        let group = DispatchGroup()
+        var videoAllowed = false
+        var audioAllowed = false
+
+        group.enter()
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            break
+            videoAllowed = true
+            group.leave()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
-                if granted {
-                    DispatchQueue.main.async {
-                        self.checkPermissionsAndSetup()
-                    }
-                } else {
-                    self.showAccessDeniedAlert()
-                }
+                videoAllowed = granted
+                group.leave()
             }
-            return
         default:
-            showAccessDeniedAlert()
-            return
+            group.leave()
         }
-        
-        // Проверка микрофона
+
+        group.enter()
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            break
+            audioAllowed = true
+            group.leave()
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                audioAllowed = granted
+                group.leave()
+            }
         default:
-            print("⚠️ Микрофон запрещён – видео будет без звука")
+            group.leave()
         }
-        
-        setupCamera()
+
+        group.notify(queue: .main) {
+            guard videoAllowed, audioAllowed else {
+                self.presentPermissionAlert()
+                return
+            }
+            self.setupCameraSession()
+        }
     }
-    
-    private func setupCamera() {
-        // Создаём сессию
-        let session = AVCaptureSession()
+
+    private func setupCameraSession() {
+        session.beginConfiguration()
         session.sessionPreset = .hd1280x720
-        
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            print("❌ Нет камеры")
+
+        session.inputs.forEach { session.removeInput($0) }
+        session.outputs.forEach { session.removeOutput($0) }
+
+        guard
+            let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: currentCameraPosition),
+            let videoInput = try? AVCaptureDeviceInput(device: videoDevice)
+        else {
+            session.commitConfiguration()
             return
         }
-        
-        guard let videoInput = try? AVCaptureDeviceInput(device: device) else {
-            print("❌ Не удалось создать видеовход")
-            return
+
+        if session.canAddInput(videoInput) {
+            session.addInput(videoInput)
+            currentVideoInput = videoInput
         }
-        
-        session.addInput(videoInput)
-        
-        // Аудио вход (если разрешён)
-        if let audioDevice = AVCaptureDevice.default(for: .audio),
-           let audioInput = try? AVCaptureDeviceInput(device: audioDevice) {
-            session.addInput(audioInput)
+
+        if let mic = AVCaptureDevice.default(for: .audio),
+           let micInput = try? AVCaptureDeviceInput(device: mic),
+           session.canAddInput(micInput) {
+            session.addInput(micInput)
+            audioInput = micInput
         }
-        
-        let output = AVCaptureMovieFileOutput()
-        session.addOutput(output)
-        movieOutput = output
-        
-        // Запускаем сессию в фоновом потоке, чтобы не блокировать UI
+
+        if session.canAddOutput(movieOutput) {
+            session.addOutput(movieOutput)
+        }
+
+        session.commitConfiguration()
+
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = previewContainer.bounds
+
+        previewLayer?.removeFromSuperlayer()
+        previewLayer = preview
+        previewContainer.layer.insertSublayer(preview, at: 0)
+
         DispatchQueue.global(qos: .userInitiated).async {
-            session.startRunning()
-            DispatchQueue.main.async {
-                self.session = session
-                self.previewLayer = AVCaptureVideoPreviewLayer(session: session)
-                self.previewLayer?.videoGravity = .resizeAspectFill
-                self.previewLayer?.frame = self.view.bounds
-                if let layer = self.previewLayer {
-                    self.view.layer.addSublayer(layer)
-                }
-                self.setupUI()
+            if !self.session.isRunning {
+                self.session.startRunning()
             }
         }
     }
-    
-    private func setupUI() {
-        let button = UIButton(type: .system)
-        button.setTitle("⏺ Записать", for: .normal)
-        button.setTitleColor(.white, for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
-        button.backgroundColor = UIColor.red.withAlphaComponent(0.8)
-        button.layer.cornerRadius = 30
-        button.frame = CGRect(x: 0, y: 0, width: 140, height: 60)
-        button.center = CGPoint(x: view.bounds.midX, y: view.bounds.height - 100)
-        button.addTarget(self, action: #selector(recordButtonTapped), for: .touchUpInside)
-        view.addSubview(button)
-        
-        let cancelButton = UIButton(type: .system)
-        cancelButton.setTitle("Отмена", for: .normal)
-        cancelButton.setTitleColor(.white, for: .normal)
-        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
-        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
-        cancelButton.frame = CGRect(x: 20, y: 40, width: 80, height: 40)
-        view.addSubview(cancelButton)
-    }
-    
-    @objc private func recordButtonTapped() {
+
+    @objc private func closeTapped() {
         if isRecording {
             stopRecording()
         } else {
-            startRecording()
+            dismiss(animated: true)
         }
     }
-    
-    @objc private func cancelTapped() {
-        dismiss(animated: true)
+
+    @objc private func flipTapped() {
+        guard !isRecording else { return }
+        currentCameraPosition = currentCameraPosition == .front ? .back : .front
+        setupCameraSession()
     }
-    
+
+    @objc private func shutterTapped() {
+        isRecording ? stopRecording() : startRecording()
+    }
+
     private func startRecording() {
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".mp4")
-        outputURL = fileURL
-        movieOutput?.startRecording(to: fileURL, recordingDelegate: self)
+        guard !movieOutput.isRecording else { return }
+
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {}
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).mp4")
+        outputURL = url
+
+        if let connection = movieOutput.connection(with: .video), connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = .auto
+        }
+
+        movieOutput.startRecording(to: url, recordingDelegate: self)
         isRecording = true
-        
-        if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "⏺ Записать" }) as? UIButton {
-            button.setTitle("⏹ Остановить", for: .normal)
-            button.backgroundColor = UIColor.gray.withAlphaComponent(0.8)
+        secondsElapsed = 0
+        timerLabel.text = "00:00"
+
+        UIView.animate(withDuration: 0.18) {
+            self.shutterInner.backgroundColor = .systemRed
+            self.shutterInner.layer.cornerRadius = 16
+            self.shutterInner.transform = CGAffineTransform(scaleX: 0.62, y: 0.62)
+            self.ringView.layer.borderColor = UIColor.systemRed.cgColor
+        }
+
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.secondsElapsed += 1
+            let m = self.secondsElapsed / 60
+            let s = self.secondsElapsed % 60
+            self.timerLabel.text = String(format: "%02d:%02d", m, s)
+
+            if self.secondsElapsed >= 60 {
+                self.stopRecording()
+            }
+        }
+
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+    }
+
+    private func stopRecording() {
+        guard movieOutput.isRecording else { return }
+        movieOutput.stopRecording()
+        isRecording = false
+        timer?.invalidate()
+        timer = nil
+
+        UIView.animate(withDuration: 0.18) {
+            self.shutterInner.backgroundColor = .white
+            self.shutterInner.layer.cornerRadius = self.shutterInner.bounds.width / 2
+            self.shutterInner.transform = .identity
+            self.ringView.layer.borderColor = UIColor.white.withAlphaComponent(0.92).cgColor
         }
     }
-    
-    private func stopRecording() {
-        movieOutput?.stopRecording()
-        isRecording = false
+
+    func fileOutput(_ output: AVCaptureFileOutput,
+                    didFinishRecordingTo outputFileURL: URL,
+                    from connections: [AVCaptureConnection],
+                    error: Error?) {
+        guard error == nil else {
+            dismiss(animated: true)
+            return
+        }
+
+        dismiss(animated: true) { [weak self] in
+            self?.onRecordingFinished?(outputFileURL)
+        }
     }
-    
-    private func showAccessDeniedAlert() {
-        let alert = UIAlertController(title: "Нет доступа к камере",
-                                      message: "Разрешите доступ в настройках iPhone",
-                                      preferredStyle: .alert)
+
+    private func presentPermissionAlert() {
+        let alert = UIAlertController(
+            title: "Нет доступа к камере или микрофону",
+            message: "Разреши доступ к камере и микрофону в настройках iPhone.",
+            preferredStyle: .alert
+        )
         alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
             self.dismiss(animated: true)
         })
         present(alert, animated: true)
-    }
-    
-    // MARK: - AVCaptureFileOutputRecordingDelegate
-    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
-        print("📹 didFinishRecordingTo called, error: \(error?.localizedDescription ?? "none")")
-        DispatchQueue.main.async {
-            if let url = self.outputURL {
-                print("📹 Calling onRecordingFinished with url: \(url)")
-                self.onRecordingFinished?(url)
-            } else {
-                print("❌ outputURL is nil")
-            }
-            self.dismiss(animated: true)
-        }
     }
 }
 
@@ -13223,145 +13878,572 @@ extension String {
 
 ./FrontDip/MessengerApp/Views/Common/VoiceRecorderView.swift
 
-//
-//  VoiceRecorderView.swift
-//  MessengerApp
-//
-
 import SwiftUI
 import AVFoundation
 
-struct VoiceRecorderView: UIViewControllerRepresentable {
-    let onRecordingFinished: (URL, TimeInterval, String?) -> Void
-    
-    func makeUIViewController(context: Context) -> VoiceRecorderViewController {
-        let controller = VoiceRecorderViewController()
-        controller.onRecordingFinished = onRecordingFinished
-        return controller
+struct VoiceRecorderView: View {
+    let onComplete: (URL, TimeInterval, String?) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    @StateObject private var recorder = VoiceRecorderViewModel()
+
+    @State private var buttonFrame: CGRect = .zero
+    @State private var dragOffset: CGSize = .zero
+
+    @State private var isPressingToRecord = false
+    @State private var isLocked = false
+    @State private var didCancelByGesture = false
+
+    private let cancelThreshold: CGFloat = 100
+    private let lockThreshold: CGFloat = 90
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.96)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                topBar
+                Spacer()
+                centerContent
+                Spacer()
+                bottomPanel
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 28)
+        }
+        .task {
+            await recorder.requestPermissionsIfNeeded()
+        }
+        .onDisappear {
+            recorder.cleanup()
+        }
     }
-    
-    func updateUIViewController(_ uiViewController: VoiceRecorderViewController, context: Context) {}
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                if recorder.isRecording {
+                    recorder.cancelRecording()
+                }
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Circle())
+            }
+
+            Spacer()
+
+            Text(titleText)
+                .font(.headline)
+                .foregroundColor(.white)
+
+            Spacer()
+
+            Color.clear
+                .frame(width: 40, height: 40)
+        }
+    }
+
+    private var centerContent: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .fill(mainCircleColor.opacity(0.18))
+                    .frame(width: 220, height: 220)
+
+                Circle()
+                    .fill(mainCircleColor.opacity(0.28))
+                    .frame(width: 170, height: 170)
+                    .scaleEffect(recorder.isRecording ? 1.06 : 1.0)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: recorder.isRecording)
+
+                Circle()
+                    .fill(mainCircleColor)
+                    .frame(width: 120, height: 120)
+                    .shadow(color: mainCircleColor.opacity(0.35), radius: 18, y: 10)
+
+                Image(systemName: recorderIcon)
+                    .font(.system(size: 40, weight: .medium))
+                    .foregroundColor(.white)
+            }
+
+            VStack(spacing: 8) {
+                Text(recorder.formattedDuration)
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+
+                Text(statusText)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.75))
+            }
+
+            waveformView
+        }
+    }
+
+    private var waveformView: some View {
+        HStack(alignment: .center, spacing: 4) {
+            ForEach(Array(recorder.meterLevels.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 4, height: max(8, CGFloat(level) * 56))
+            }
+        }
+        .frame(height: 60)
+        .padding(.horizontal, 8)
+    }
+
+    private var bottomPanel: some View {
+        VStack(spacing: 18) {
+            if recorder.isRecording && !isLocked {
+                gestureHints
+            }
+
+            if isLocked && recorder.isRecording {
+                lockedControls
+            } else {
+                recordButton
+            }
+
+            if let errorText = recorder.errorText {
+                Text(errorText)
+                    .font(.footnote)
+                    .foregroundColor(.red.opacity(0.95))
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    private var gestureHints: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill")
+                Text("Свайп вверх — зафиксировать")
+            }
+            .font(.footnote)
+            .foregroundColor(readyToLock ? .yellow : .white.opacity(0.7))
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.left")
+                Text("Свайп влево — отмена")
+            }
+            .font(.footnote)
+            .foregroundColor(readyToCancel ? .red : .white.opacity(0.7))
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private var lockedControls: some View {
+        HStack(spacing: 14) {
+            Button {
+                didCancelByGesture = true
+                isLocked = false
+                recorder.cancelRecording()
+                dismiss()
+            } label: {
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 56, height: 56)
+                    .background(Color.red)
+                    .clipShape(Circle())
+            }
+
+            Button {
+                finishLockedRecording()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                    Text("Отправить")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 56)
+                .background(Color.blue)
+                .clipShape(Capsule())
+            }
+
+            Button {
+                recorder.stopRecording(shouldSave: false)
+                isLocked = false
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 56, height: 56)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(Circle())
+            }
+        }
+    }
+
+    private var recordButton: some View {
+        ZStack {
+            Circle()
+                .fill(readyToCancel ? Color.red : mainCircleColor)
+                .frame(width: 84, height: 84)
+                .overlay(
+                    Image(systemName: recorder.isRecording ? "mic.fill" : "mic")
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundColor(.white)
+                )
+                .scaleEffect(isPressingToRecord ? 1.08 : 1.0)
+                .offset(x: dragOffset.width, y: dragOffset.height)
+                .animation(.spring(response: 0.22, dampingFraction: 0.78), value: dragOffset)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear {
+                                buttonFrame = proxy.frame(in: .global)
+                            }
+                            .onChange(of: proxy.frame(in: .global)) { newValue in
+                                buttonFrame = newValue
+                            }
+                    }
+                )
+                .gesture(recordGesture)
+
+            if recorder.isRecording && !isLocked {
+                lockIndicator
+                    .offset(y: -116)
+            }
+        }
+        .frame(height: 120)
+    }
+
+    private var lockIndicator: some View {
+        VStack(spacing: 6) {
+            Image(systemName: readyToLock ? "lock.fill" : "lock.open.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(readyToLock ? .yellow : .white.opacity(0.85))
+
+            Text(readyToLock ? "Отпусти для lock" : "Потяни вверх")
+                .font(.caption2)
+                .foregroundColor(readyToLock ? .yellow : .white.opacity(0.7))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.10))
+        .clipShape(Capsule())
+    }
+
+    private var recordGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { value in
+                if !isPressingToRecord {
+                    beginPressRecording()
+                }
+
+                dragOffset = CGSize(
+                    width: min(0, value.translation.width),
+                    height: min(0, value.translation.height)
+                )
+            }
+            .onEnded { value in
+                let translation = value.translation
+
+                if readyToCancelWith(translation) {
+                    didCancelByGesture = true
+                    recorder.cancelRecording()
+                    resetGestureState()
+                    dismiss()
+                    return
+                }
+
+                if readyToLockWith(translation) {
+                    isLocked = true
+                    isPressingToRecord = false
+                    dragOffset = .zero
+                    return
+                }
+
+                if recorder.isRecording {
+                    completePressRecording()
+                } else {
+                    resetGestureState()
+                }
+            }
+    }
+
+    private var readyToCancel: Bool {
+        readyToCancelWith(dragOffset)
+    }
+
+    private var readyToLock: Bool {
+        readyToLockWith(dragOffset)
+    }
+
+    private func readyToCancelWith(_ translation: CGSize) -> Bool {
+        translation.width < -cancelThreshold
+    }
+
+    private func readyToLockWith(_ translation: CGSize) -> Bool {
+        translation.height < -lockThreshold
+    }
+
+    private func beginPressRecording() {
+        didCancelByGesture = false
+        isPressingToRecord = true
+
+        if !recorder.isRecording {
+            recorder.startRecording()
+        }
+    }
+
+    private func completePressRecording() {
+        recorder.stopRecording(shouldSave: true) { url, duration, waveform in
+            resetGestureState()
+            onComplete(url, duration, waveform)
+            dismiss()
+        }
+    }
+
+    private func finishLockedRecording() {
+        recorder.stopRecording(shouldSave: true) { url, duration, waveform in
+            isLocked = false
+            resetGestureState()
+            onComplete(url, duration, waveform)
+            dismiss()
+        }
+    }
+
+    private func resetGestureState() {
+        isPressingToRecord = false
+        dragOffset = .zero
+    }
+
+    private var mainCircleColor: Color {
+        if readyToCancel { return .red }
+        if recorder.isRecording { return .blue }
+        return .blue
+    }
+
+    private var recorderIcon: String {
+        if isLocked && recorder.isRecording {
+            return "lock.fill"
+        }
+        return recorder.isRecording ? "waveform" : "mic.fill"
+    }
+
+    private var titleText: String {
+        if isLocked && recorder.isRecording {
+            return "Запись зафиксирована"
+        }
+        return recorder.isRecording ? "Запись голосового" : "Голосовое сообщение"
+    }
+
+    private var statusText: String {
+        if recorder.isRecording && isLocked {
+            return "Нажми отправить, когда закончишь"
+        }
+        if recorder.isRecording {
+            return "Удерживай, влево — отмена, вверх — lock"
+        }
+        return "Зажми кнопку для записи"
+    }
 }
 
-class VoiceRecorderViewController: UIViewController, AVAudioRecorderDelegate {
-    
-    var onRecordingFinished: ((URL, TimeInterval, String?) -> Void)?
-    
+final class VoiceRecorderViewModel: NSObject, ObservableObject, AVAudioRecorderDelegate {
+    @Published var isRecording = false
+    @Published var duration: TimeInterval = 0
+    @Published var errorText: String?
+    @Published var meterLevels: [Float] = Array(repeating: 0.12, count: 24)
+
     private var audioRecorder: AVAudioRecorder?
-    private var recordingURL: URL?
-    private var recordingStartTime: Date?
-    
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-        setupUI()
+    private var timer: Timer?
+    private var meterTimer: Timer?
+    private var startedAt: Date?
+    private var outputURL: URL?
+
+    private(set) var waveformSamples: [Float] = []
+
+    var formattedDuration: String {
+        let total = Int(duration)
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
-    
-    private func setupUI() {
-        let button = UIButton(type: .system)
-        button.setTitle("🎙 Записать", for: .normal)
-        button.setTitleColor(.white, for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
-        button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
-        button.layer.cornerRadius = 30
-        button.frame = CGRect(x: 0, y: 0, width: 160, height: 60)
-        button.center = CGPoint(x: view.bounds.midX, y: view.bounds.height - 100)
-        button.addTarget(self, action: #selector(recordButtonTapped), for: .touchUpInside)
-        view.addSubview(button)
-        
-        // Кнопка отмены
-        let cancelButton = UIButton(type: .system)
-        cancelButton.setTitle("Отмена", for: .normal)
-        cancelButton.setTitleColor(.white, for: .normal)
-        cancelButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
-        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
-        cancelButton.frame = CGRect(x: 20, y: 40, width: 80, height: 40)
-        view.addSubview(cancelButton)
-    }
-    
-    @objc private func recordButtonTapped() {
-        if audioRecorder?.isRecording == true {
-            stopRecording()
-        } else {
-            startRecording()
+
+    func requestPermissionsIfNeeded() async {
+        await MainActor.run {
+            errorText = nil
         }
-    }
-    
-    @objc private func cancelTapped() {
-        dismiss(animated: true)
-    }
-    
-    private func startRecording() {
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileName = UUID().uuidString + ".m4a"
-        recordingURL = tempDir.appendingPathComponent(fileName)
-        
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-        
-        do {
-            audioRecorder = try AVAudioRecorder(url: recordingURL!, settings: settings)
-            audioRecorder?.delegate = self
-            audioRecorder?.record()
-            recordingStartTime = Date()
-            
-            if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "🎙 Записать" }) as? UIButton {
-                button.setTitle("⏹ Остановить", for: .normal)
-                button.backgroundColor = UIColor.systemRed.withAlphaComponent(0.8)
+
+        let session = AVAudioSession.sharedInstance()
+        let granted = await withCheckedContinuation { continuation in
+            session.requestRecordPermission { allowed in
+                continuation.resume(returning: allowed)
             }
+        }
+
+        if !granted {
+            await MainActor.run {
+                self.errorText = "Нет доступа к микрофону. Разреши доступ в Settings."
+            }
+        }
+    }
+
+    func startRecording() {
+        errorText = nil
+
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true)
+
+            let url = Self.makeOutputURL()
+            outputURL = url
+
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+
+            let recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder.delegate = self
+            recorder.isMeteringEnabled = true
+            recorder.prepareToRecord()
+
+            guard recorder.record() else {
+                errorText = "Не удалось начать запись."
+                return
+            }
+
+            audioRecorder = recorder
+            startedAt = Date()
+            duration = 0
+            waveformSamples = []
+            meterLevels = Array(repeating: 0.12, count: 24)
+            isRecording = true
+
+            startTimers()
         } catch {
-            print("Recording failed: \(error)")
+            errorText = error.localizedDescription
+            cleanupSession()
         }
     }
-    
-    private func stopRecording() {
-        audioRecorder?.stop()
-        
-        if let button = view.subviews.first(where: { $0 is UIButton && ($0 as? UIButton)?.title(for: .normal) == "⏹ Остановить" }) as? UIButton {
-            button.setTitle("🎙 Записать", for: .normal)
-            button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
-        }
-    }
-    
-    // MARK: - AVAudioRecorderDelegate
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        guard flag, let url = recordingURL, let startTime = recordingStartTime else {
-            dismiss(animated: true)
+
+    func stopRecording(
+        shouldSave: Bool,
+        completion: ((URL, TimeInterval, String?) -> Void)? = nil
+    ) {
+        guard let recorder = audioRecorder else {
+            isRecording = false
             return
         }
-        let duration = Date().timeIntervalSince(startTime)
-        
-        // Генерация упрощённого waveform (массив амплитуд)
-        var waveform: String? = nil
-        if let audioFile = try? AVAudioFile(forReading: url) {
-            let format = audioFile.processingFormat
-            let frameCount = AVAudioFrameCount(audioFile.length)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-            try? audioFile.read(into: buffer)
-            if let channelData = buffer.floatChannelData {
-                let channelDataPointer = channelData.pointee
-                let frameLength = Int(buffer.frameLength)
-                let step = max(1, frameLength / 100) // 100 точек
-                var amplitudes: [Float] = []
-                for i in stride(from: 0, to: frameLength, by: step) {
-                    let amplitude = abs(channelDataPointer[i])
-                    amplitudes.append(amplitude)
-                }
-                // Нормализуем и кодируем в base64
-                let maxAmp = amplitudes.max() ?? 1.0
-                let normalized = amplitudes.map { Int(($0 / maxAmp) * 100) }
-                if let jsonData = try? JSONSerialization.data(withJSONObject: normalized) {
-                    waveform = jsonData.base64EncodedString()
-                }
-            }
+
+        stopTimers()
+        recorder.stop()
+
+        let finalDuration = duration
+        let finalURL = recorder.url
+        let waveform = encodeWaveform()
+
+        audioRecorder = nil
+        isRecording = false
+        cleanupSession()
+
+        if shouldSave, finalDuration >= 0.35 {
+            completion?(finalURL, finalDuration, waveform)
+        } else {
+            try? FileManager.default.removeItem(at: finalURL)
         }
-        
-        onRecordingFinished?(url, duration, waveform)
-        dismiss(animated: true)
+    }
+
+    func cancelRecording() {
+        stopRecording(shouldSave: false, completion: nil)
+    }
+
+    func cleanup() {
+        if isRecording {
+            cancelRecording()
+        } else {
+            stopTimers()
+            cleanupSession()
+        }
+    }
+
+    private func startTimers() {
+        stopTimers()
+
+        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, let startedAt = self.startedAt else { return }
+            self.duration = Date().timeIntervalSince(startedAt)
+        }
+
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            guard let self, let recorder = self.audioRecorder, recorder.isRecording else { return }
+
+            recorder.updateMeters()
+            let power = recorder.averagePower(forChannel: 0)
+            let normalized = self.normalizedPowerLevel(from: power)
+
+            self.waveformSamples.append(normalized)
+            if self.waveformSamples.count > 120 {
+                self.waveformSamples.removeFirst(self.waveformSamples.count - 120)
+            }
+
+            var levels = self.meterLevels
+            levels.append(max(0.08, normalized))
+            if levels.count > 24 {
+                levels.removeFirst(levels.count - 24)
+            }
+            self.meterLevels = levels
+        }
+    }
+
+    private func stopTimers() {
+        timer?.invalidate()
+        timer = nil
+        meterTimer?.invalidate()
+        meterTimer = nil
+    }
+
+    private func cleanupSession() {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func normalizedPowerLevel(from decibels: Float) -> Float {
+        if decibels < -50 { return 0.08 }
+        if decibels >= 0 { return 1.0 }
+
+        let minDb: Float = -50
+        let level = (decibels - minDb) / abs(minDb)
+        return max(0.08, min(1.0, level))
+    }
+
+    private func encodeWaveform() -> String? {
+        guard !waveformSamples.isEmpty else { return nil }
+
+        let targetCount = 48
+        let chunkSize = max(1, waveformSamples.count / targetCount)
+
+        let reduced: [Int] = stride(from: 0, to: waveformSamples.count, by: chunkSize).map { start in
+            let end = min(start + chunkSize, waveformSamples.count)
+            let chunk = waveformSamples[start..<end]
+            let avg = chunk.reduce(0, +) / Float(chunk.count)
+            return Int(max(1, min(100, avg * 100)))
+        }
+
+        return reduced.map(String.init).joined(separator: ",")
+    }
+
+    static private func makeOutputURL() -> URL {
+        let dir = FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("voice-\(UUID().uuidString).m4a")
     }
 }
 
