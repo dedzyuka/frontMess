@@ -375,9 +375,12 @@ struct MessageBubbleView: View {
                     .font(.caption2)
                     .foregroundColor(.blue)
                 } else if message.deliveredAt != nil {
-                    Image(systemName: "checkmark")
-                        .font(.caption2)
-                        .foregroundColor(.gray)
+                    HStack(spacing: 2) {
+                        Image(systemName: "checkmark")
+                        Image(systemName: "checkmark")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.gray)
                 }
             }
         }

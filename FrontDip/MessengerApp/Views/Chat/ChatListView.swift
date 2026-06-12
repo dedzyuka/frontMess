@@ -276,15 +276,26 @@ struct ChatRow: View {
 
 struct MessageStatusIcon: View {
     let status: MessageStatusType
+
     var body: some View {
         switch status {
-        case .sending: Image(systemName: "clock").foregroundColor(.gray)
-        case .delivered: Image(systemName: "checkmark").foregroundColor(.gray)
-        case .read: HStack(spacing: 2) {
-            Image(systemName: "checkmark")
-            Image(systemName: "checkmark")
-        }
-        .foregroundColor(.blue)
+        case .sending:
+            Image(systemName: "clock")
+                .foregroundColor(.gray)
+
+        case .delivered:
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark")
+                Image(systemName: "checkmark")
+            }
+            .foregroundColor(.gray)
+
+        case .read:
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark")
+                Image(systemName: "checkmark")
+            }
+            .foregroundColor(.blue)
         }
     }
 }

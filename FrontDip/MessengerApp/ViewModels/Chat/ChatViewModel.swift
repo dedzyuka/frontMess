@@ -770,7 +770,8 @@ class ChatViewModel: ObservableObject {
                 responseType: SendMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            let realMsg = response.message.sendMessage
+            var realMsg = response.message.sendMessage
+            realMsg.deliveredAt = Date()
             
             await MainActor.run {
                 // Проверяем, не добавлено ли уже сообщение через WebSocket

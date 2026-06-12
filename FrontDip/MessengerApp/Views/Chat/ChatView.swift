@@ -15,6 +15,9 @@ struct ChatView: View {
     @State private var showingDocumentPicker = false
     @State private var isUploading = false
     @State private var isSending = false
+    
+    @State private var shouldAutoScrollToBottom = false
+    private let bottomAnchorId = "CHAT_BOTTOM_ANCHOR"
 
     @State private var selectedMessage: Message?
     @State private var editText = ""
@@ -377,26 +380,35 @@ struct ChatView: View {
                 LazyVStack(spacing: 12) {
                     ForEach(viewModel.messages) { message in
                         messageView(for: message, proxy: proxy)
-                            .padding(.horizontal)
                     }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomAnchorId)
                 }
+                .padding(.horizontal)
                 .padding(.vertical, 12)
             }
             .onAppear {
                 scrollProxy = proxy
+
+                DispatchQueue.main.async {
+                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+                }
             }
             .onDisappear {
                 scrollProxy = nil
             }
-            .onChange(of: viewModel.messages.count) { _ in
-                if let last = viewModel.messages.last {
-                    withAnimation {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+            .onChange(of: viewModel.messages.last?.messageId) { _ in
+                guard shouldAutoScrollToBottom else { return }
+                shouldAutoScrollToBottom = false
+
+                DispatchQueue.main.async {
+                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                 }
             }
-            .background(Color(.systemGroupedBackground))
         }
+        .background(Color(.systemGroupedBackground))
     }
 
     @ViewBuilder
@@ -496,6 +508,10 @@ struct ChatView: View {
                     .frame(width: 32, height: 32)
             } else if shouldShowSend {
                 Button {
+                    print("🟢 SEND BUTTON TAP",
+                          "shouldShowSend:", shouldShowSend,
+                          "isSending:", isSending,
+                          "isUploading:", isUploading)
                     sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
                     replyingToMessage = nil
                 } label: {
@@ -554,9 +570,18 @@ struct ChatView: View {
     }
 
     private func sendMessageWithAttachment(replyToId: Int64? = nil) {
+        print("🟡 ENTER sendMessageWithAttachment",
+              "selectedImage:", selectedImage != nil,
+              "selectedVideoURL:", selectedVideoURL != nil,
+              "selectedDocumentURL:", selectedDocumentURL != nil,
+              "pendingForward:", viewModel.pendingForward != nil,
+              "text:", viewModel.newMessageText)
         Task {
-            isSending = true
-            isUploading = true
+            print("🔵 ENTER Task in sendMessageWithAttachment")
+            await MainActor.run {
+                isSending = true
+                isUploading = true
+            }
 
             var attachmentId: UUID? = nil
             var storagePath: String? = nil
@@ -582,7 +607,9 @@ struct ChatView: View {
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Upload error: \(error.localizedDescription)")
                     }
+                    print("❌ Attachment upload failed: \(error)")
                     return
                 }
             } else if let videoURL = selectedVideoURL {
@@ -599,12 +626,21 @@ struct ChatView: View {
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Upload error: \(error.localizedDescription)")
                     }
+                    print("❌ Attachment upload failed: \(error)")
                     return
                 }
             } else if let documentURL = selectedDocumentURL {
+                print("📄 document branch entered")
+                print("📄 documentURL:", documentURL)
+                print("📄 file exists:", FileManager.default.fileExists(atPath: documentURL.path))
+
                 do {
+                    print("📄 before uploadFile")
                     let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
+                    print("✅ after uploadFile, attachmentId:", result.attachmentId)
+
                     attachmentId = result.attachmentId
                     storagePath = result.storagePath
                     fileName = documentURL.lastPathComponent
@@ -613,9 +649,11 @@ struct ChatView: View {
                     fileSize = attributes[.size] as? Int
                     mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
                 } catch {
+                    print("❌ document upload catch:", error)
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Document upload error: \(error.localizedDescription)")
                     }
                     return
                 }
@@ -624,6 +662,10 @@ struct ChatView: View {
             let contentToSend = viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
             let forwardUserId = viewModel.pendingForward?.forwardedFromUserId
             let forwardNickname = viewModel.pendingForward?.forwardedFromNickname
+
+            await MainActor.run {
+                shouldAutoScrollToBottom = true
+            }
 
             let success = await viewModel.sendMessage(
                 attachmentId: attachmentId,
@@ -648,6 +690,7 @@ struct ChatView: View {
                 if success {
                     viewModel.newMessageText = ""
                 } else {
+                    shouldAutoScrollToBottom = false
                     NotificationService.shared.showError("Не удалось отправить сообщение")
                 }
             }
