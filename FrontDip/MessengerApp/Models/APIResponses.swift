@@ -292,3 +292,21 @@ private struct ProtobufTimestampCodingKeys: CodingKey {
     static let nanos = ProtobufTimestampCodingKeys(stringValue: "nanos")
 }
 
+import Foundation
+
+struct TranslateTextResponse: Decodable {
+    let translation: TranslationMutationWrapper
+}
+
+struct TranslationMutationWrapper: Decodable {
+    let translate: TranslationPayload
+}
+
+struct TranslationPayload: Decodable {
+    let originalText: String
+    let translatedText: String
+    let sourceLanguage: String
+    let targetLanguage: String
+    let provider: String
+    let isEphemeral: Bool
+}

@@ -477,6 +477,20 @@ struct GraphQLQueries {
         }
     }
     """
+    static let translateText = """
+    mutation TranslateText($input: TranslateTextInput!) {
+      translation {
+        translate(input: $input) {
+          originalText
+          translatedText
+          sourceLanguage
+          targetLanguage
+          provider
+          isEphemeral
+        }
+      }
+    }
+    """
     static let getMessage = """
     query GetMessage($messageId: Int!, $chatId: String!) {
         message {

@@ -20,6 +20,8 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var showEditAlert = false
     @State private var showDeleteConfirmation = false
+    
+    @StateObject private var translationController = ChatMessageTranslationController()
 
     @State private var typingTimer: Timer?
     @State private var isTyping = false
@@ -256,7 +258,9 @@ struct ChatView: View {
             }
         }
         .onDisappear {
+            typingTimer?.invalidate()
             viewModel.clearPendingForward()
+            translationController.clear()
         }
     }
 
@@ -402,6 +406,7 @@ struct ChatView: View {
             isCurrentUser: viewModel.isCurrentUser(senderId: message.senderId),
             senderUser: viewModel.getUser(for: message.senderId),
             viewModel: viewModel,
+            translationController: translationController,
             onEdit: {
                 selectedMessage = message
                 editText = message.content ?? ""
