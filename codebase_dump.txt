@@ -9224,15 +9224,11 @@ struct ContactSelectionRow: View {
 
 ./FrontDip/MessengerApp/Views/Chat/ChatListView.swift
 
-//
-//  ChatListView.swift
-//  FrontDip
-//
-
 import SwiftUI
 
 struct ChatListView: View {
     @StateObject private var viewModel = ChatListViewModel()
+
     @State private var showMenu = false
     @State private var showCreateChat = false
     @State private var showJoinChat = false
@@ -9246,19 +9242,29 @@ struct ChatListView: View {
             NavigationStack {
                 mainContent
                     .navigationTitle("Чаты")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .navigationBarLeading) {
                             Button {
-                                withAnimation(.spring()) { showMenu.toggle() }
+                                withAnimation(.spring()) {
+                                    showMenu.toggle()
+                                }
+                                AppState.shared.isSidebarOpen = showMenu
                             } label: {
                                 Image(systemName: "line.horizontal.3")
                                     .font(.title2)
                             }
                         }
+
                         ToolbarItem(placement: .navigationBarTrailing) {
                             Menu {
-                                Button("Новый чат") { showCreateChat = true }
-                                Button("Присоединиться") { showJoinChat = true }
+                                Button("Создать чат") {
+                                    showCreateChat = true
+                                }
+
+                                Button("Присоединиться") {
+                                    showJoinChat = true
+                                }
                             } label: {
                                 Image(systemName: "plus")
                             }
@@ -9288,44 +9294,45 @@ struct ChatListView: View {
             Task { await viewModel.loadChats() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openChat)) { notification in
-            if let chat = notification.object as? Chat {
-                selectedChat = chat
-                showChat = true
-                if !viewModel.chats.contains(where: { $0.id == chat.id }) {
-                    viewModel.addChat(chat)
-                }
-            }
+            guard let chat = notification.object as? Chat else { return }
+            openChat(chat)
         }
         .sheet(isPresented: $showJoinChat) {
             JoinChatView()
         }
         .alert("Новый чат", isPresented: $showCreateChat) {
-            TextField("Название", text: $newChatName)
+            TextField("Название чата", text: $newChatName)
+
             Button("Отмена", role: .cancel) {
                 newChatName = ""
                 isCreating = false
             }
+
             Button("Создать") {
                 isCreating = true
                 Task {
                     await viewModel.createChat(name: newChatName)
-                    isCreating = false
-                    showCreateChat = false
+                    await MainActor.run {
+                        isCreating = false
+                        showCreateChat = false
+                        newChatName = ""
+                    }
                 }
             }
-            .disabled(newChatName.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
+            .disabled(newChatName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCreating)
         } message: {
-            Text("Введите название группового чата")
+            Text("Введите название чата")
         }
-        .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
-            Button("OK") { viewModel.errorMessage = nil }
+        .alert("", isPresented: .constant(viewModel.errorMessage != nil)) {
+            Button("OK") {
+                viewModel.errorMessage = nil
+            }
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
         .onAppear {
             Task { await viewModel.loadChats() }
         }
-        
     }
 
     @ViewBuilder
@@ -9337,33 +9344,53 @@ struct ChatListView: View {
                 Image(systemName: "bubble.left.and.bubble.right")
                     .font(.system(size: 60))
                     .foregroundColor(.gray)
-                Text("Нет чатов")
+
+                Text("Чатов пока нет")
                     .font(.title2)
-                Text("Создайте первый чат или присоединитесь по приглашению")
+
+                Text("Создай новый чат или присоединись по ссылке.")
                     .multilineTextAlignment(.center)
                     .foregroundColor(.secondary)
                     .padding(.horizontal)
+
                 Button("Создать чат") {
                     showCreateChat = true
                 }
                 .buttonStyle(.borderedProminent)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(viewModel.chats) { chat in
-                ChatRow(chat: chat, currentUserId: AppState.shared.currentUser?.userId)
-                    .onTapGesture {
-                        // Убрана проверка AppState.shared.isSidebarOpen – она не нужна,
-                        // так как при открытом меню весь контент заблокирован через .disabled(showMenu)
-                        selectedChat = chat
-                        showChat = true
-                    }
-                    .id(chat.id)
+                ChatRow(
+                    chat: chat,
+                    currentUserId: AppState.shared.currentUser?.userId
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    openChat(chat)
+                }
+                .id(chat.id)
             }
-            .listStyle(PlainListStyle())
+            .listStyle(.plain)
             .refreshable {
                 await viewModel.loadChats()
             }
         }
+    }
+
+    private func openChat(_ chat: Chat) {
+        withAnimation(.spring()) {
+            showMenu = false
+        }
+
+        AppState.shared.isSidebarOpen = false
+
+        if !viewModel.chats.contains(where: { $0.id == chat.id }) {
+            viewModel.addChat(chat)
+        }
+
+        selectedChat = chat
+        showChat = true
     }
 }
 
