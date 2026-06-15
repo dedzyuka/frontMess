@@ -5866,14 +5866,27 @@ final class WebSocketService: NSObject, ObservableObject, URLSessionWebSocketDel
 import Foundation
 import UIKit
 
-enum UploadError: Error {
+enum UploadError: Error, LocalizedError {
     case invalidImage
     case notAuthenticated
     case invalidResponse
     case networkError(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage:
+            return "Invalid image"
+        case .notAuthenticated:
+            return "Not authenticated"
+        case .invalidResponse:
+            return "Invalid server response"
+        case .networkError(let message):
+            return message
+        }
+    }
 }
 
-class AttachmentUploader {
+final class AttachmentUploader {
     static let shared = AttachmentUploader()
     private let baseURL = AppConfig.baseURL
 
@@ -5885,19 +5898,40 @@ class AttachmentUploader {
     }
 
     func uploadFile(url: URL, mimeType: String? = nil) async throws -> (attachmentId: UUID, storagePath: String) {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        print("⬆️ uploadFile url:", url)
+        print("⬆️ uploadFile exists:", FileManager.default.fileExists(atPath: url.path))
+
         let data = try Data(contentsOf: url)
         let fileName = url.lastPathComponent
         let finalMimeType = mimeType ?? guessMimeType(from: fileName)
+
+        print("⬆️ fileName:", fileName)
+        print("⬆️ mimeType:", finalMimeType)
+        print("⬆️ size:", data.count)
+
         return try await upload(data: data, mimeType: finalMimeType, fileName: fileName)
     }
 
-    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String){
-        guard let token = TokenManager.shared.accessToken else {
+    private func upload(data: Data, mimeType: String, fileName: String) async throws -> (attachmentId: UUID, storagePath: String) {
+        guard let token = TokenManager.shared.accessToken, !token.isEmpty else {
+            print("❌ No access token for upload")
             throw UploadError.notAuthenticated
         }
-        
+
         let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string: "\(baseURL)/upload/")!)
+        let url = URL(string: "\(baseURL)/upload/")!
+
+        print("⬆️ Upload start:", url.absoluteString)
+        print("⬆️ Token prefix:", String(token.prefix(20)))
+
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -5908,24 +5942,32 @@ class AttachmentUploader {
         body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
         body.append(data)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-
         request.httpBody = body
 
         let (responseData, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse {
+            print("⬇️ Upload status:", httpResponse.statusCode)
+        }
+
+        if let text = String(data: responseData, encoding: .utf8) {
+            print("⬇️ Upload response:", text)
+        }
+
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw UploadError.networkError("Server error")
         }
 
-        // Парсим ответ, который может содержать только attachment_id
         struct Response: Decodable {
             let attachment_id: String
         }
+
         let decoded = try JSONDecoder().decode(Response.self, from: responseData)
+
         guard let uuid = UUID(uuidString: decoded.attachment_id) else {
             throw UploadError.invalidResponse
         }
-        
-        // Формируем storagePath сами
+
         let ext = (fileName as NSString).pathExtension
         let storagePath = "attachments/\(uuid.uuidString).\(ext)"
         return (uuid, storagePath)
@@ -5940,11 +5982,14 @@ class AttachmentUploader {
         case "mp4": return "video/mp4"
         case "mov": return "video/quicktime"
         case "mp3": return "audio/mpeg"
-        case "m4a": return "audio/m4a"          // <-- добавить
+        case "m4a": return "audio/m4a"
         case "pdf": return "application/pdf"
-        case "doc", "docx": return "application/msword"
-        case "xls", "xlsx": return "application/vnd.ms-excel"
-        case "zip", "rar": return "application/zip"
+        case "doc": return "application/msword"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xls": return "application/vnd.ms-excel"
+        case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "zip": return "application/zip"
+        case "rar": return "application/vnd.rar"
         case "txt": return "text/plain"
         default: return "application/octet-stream"
         }
@@ -5977,30 +6022,72 @@ import UniformTypeIdentifiers
 
 struct DocumentPicker: UIViewControllerRepresentable {
     @Binding var selectedURL: URL?
-    
+
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let supportedTypes: [UTType] = [
             .data, .pdf, .text, .plainText, .rtf,
             .spreadsheet, .presentation, .archive,
-            .audio, .video, .image, .pdf, .xml, .json
+            .audio, .video, .image, .xml, .json
         ]
+
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: supportedTypes)
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker
     }
-    
+
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
-    
-    class Coordinator: NSObject, UIDocumentPickerDelegate {
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let parent: DocumentPicker
-        init(_ parent: DocumentPicker) { self.parent = parent }
+
+        init(_ parent: DocumentPicker) {
+            self.parent = parent
+        }
+
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            parent.selectedURL = urls.first
+            guard let sourceURL = urls.first else { return }
+
+            do {
+                let persistedURL = try Self.copyToTemporaryDirectory(from: sourceURL)
+                DispatchQueue.main.async {
+                    self.parent.selectedURL = persistedURL
+                    print("📄 Document copied to temp:", persistedURL)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.parent.selectedURL = nil
+                    NotificationService.shared.showError("Не удалось открыть документ: \(error.localizedDescription)")
+                }
+                print("❌ DocumentPicker copy failed:", error)
+            }
+        }
+
+        private static func copyToTemporaryDirectory(from sourceURL: URL) throws -> URL {
+            let didAccess = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if didAccess {
+                    sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let tempDir = FileManager.default.temporaryDirectory
+            let fileName = sourceURL.lastPathComponent
+            let ext = sourceURL.pathExtension
+            let baseName = (fileName as NSString).deletingPathExtension
+            let uniqueName = "\(baseName)_\(UUID().uuidString).\(ext)"
+            let destinationURL = tempDir.appendingPathComponent(uniqueName)
+
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            return destinationURL
         }
     }
 }
@@ -8005,7 +8092,8 @@ class ChatViewModel: ObservableObject {
                 responseType: SendMessageResponse.self,
                 authToken: TokenManager.shared.accessToken
             )
-            let realMsg = response.message.sendMessage
+            var realMsg = response.message.sendMessage
+            realMsg.deliveredAt = Date()
             
             await MainActor.run {
                 // Проверяем, не добавлено ли уже сообщение через WebSocket
@@ -9651,15 +9739,26 @@ struct ChatRow: View {
 
 struct MessageStatusIcon: View {
     let status: MessageStatusType
+
     var body: some View {
         switch status {
-        case .sending: Image(systemName: "clock").foregroundColor(.gray)
-        case .delivered: Image(systemName: "checkmark").foregroundColor(.gray)
-        case .read: HStack(spacing: 2) {
-            Image(systemName: "checkmark")
-            Image(systemName: "checkmark")
-        }
-        .foregroundColor(.blue)
+        case .sending:
+            Image(systemName: "clock")
+                .foregroundColor(.gray)
+
+        case .delivered:
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark")
+                Image(systemName: "checkmark")
+            }
+            .foregroundColor(.gray)
+
+        case .read:
+            HStack(spacing: 2) {
+                Image(systemName: "checkmark")
+                Image(systemName: "checkmark")
+            }
+            .foregroundColor(.blue)
         }
     }
 }
@@ -10242,6 +10341,9 @@ struct ChatView: View {
     @State private var showingDocumentPicker = false
     @State private var isUploading = false
     @State private var isSending = false
+    
+    @State private var shouldAutoScrollToBottom = false
+    private let bottomAnchorId = "CHAT_BOTTOM_ANCHOR"
 
     @State private var selectedMessage: Message?
     @State private var editText = ""
@@ -10604,26 +10706,35 @@ struct ChatView: View {
                 LazyVStack(spacing: 12) {
                     ForEach(viewModel.messages) { message in
                         messageView(for: message, proxy: proxy)
-                            .padding(.horizontal)
                     }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomAnchorId)
                 }
+                .padding(.horizontal)
                 .padding(.vertical, 12)
             }
             .onAppear {
                 scrollProxy = proxy
+
+                DispatchQueue.main.async {
+                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+                }
             }
             .onDisappear {
                 scrollProxy = nil
             }
-            .onChange(of: viewModel.messages.count) { _ in
-                if let last = viewModel.messages.last {
-                    withAnimation {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+            .onChange(of: viewModel.messages.last?.messageId) { _ in
+                guard shouldAutoScrollToBottom else { return }
+                shouldAutoScrollToBottom = false
+
+                DispatchQueue.main.async {
+                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                 }
             }
-            .background(Color(.systemGroupedBackground))
         }
+        .background(Color(.systemGroupedBackground))
     }
 
     @ViewBuilder
@@ -10723,6 +10834,10 @@ struct ChatView: View {
                     .frame(width: 32, height: 32)
             } else if shouldShowSend {
                 Button {
+                    print("🟢 SEND BUTTON TAP",
+                          "shouldShowSend:", shouldShowSend,
+                          "isSending:", isSending,
+                          "isUploading:", isUploading)
                     sendMessageWithAttachment(replyToId: replyingToMessage?.messageId)
                     replyingToMessage = nil
                 } label: {
@@ -10781,9 +10896,18 @@ struct ChatView: View {
     }
 
     private func sendMessageWithAttachment(replyToId: Int64? = nil) {
+        print("🟡 ENTER sendMessageWithAttachment",
+              "selectedImage:", selectedImage != nil,
+              "selectedVideoURL:", selectedVideoURL != nil,
+              "selectedDocumentURL:", selectedDocumentURL != nil,
+              "pendingForward:", viewModel.pendingForward != nil,
+              "text:", viewModel.newMessageText)
         Task {
-            isSending = true
-            isUploading = true
+            print("🔵 ENTER Task in sendMessageWithAttachment")
+            await MainActor.run {
+                isSending = true
+                isUploading = true
+            }
 
             var attachmentId: UUID? = nil
             var storagePath: String? = nil
@@ -10809,7 +10933,9 @@ struct ChatView: View {
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Upload error: \(error.localizedDescription)")
                     }
+                    print("❌ Attachment upload failed: \(error)")
                     return
                 }
             } else if let videoURL = selectedVideoURL {
@@ -10826,12 +10952,21 @@ struct ChatView: View {
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Upload error: \(error.localizedDescription)")
                     }
+                    print("❌ Attachment upload failed: \(error)")
                     return
                 }
             } else if let documentURL = selectedDocumentURL {
+                print("📄 document branch entered")
+                print("📄 documentURL:", documentURL)
+                print("📄 file exists:", FileManager.default.fileExists(atPath: documentURL.path))
+
                 do {
+                    print("📄 before uploadFile")
                     let result = try await AttachmentUploader.shared.uploadFile(url: documentURL)
+                    print("✅ after uploadFile, attachmentId:", result.attachmentId)
+
                     attachmentId = result.attachmentId
                     storagePath = result.storagePath
                     fileName = documentURL.lastPathComponent
@@ -10840,9 +10975,11 @@ struct ChatView: View {
                     fileSize = attributes[.size] as? Int
                     mimeType = AttachmentUploader.shared.guessMimeType(from: fileName ?? "")
                 } catch {
+                    print("❌ document upload catch:", error)
                     await MainActor.run {
                         isSending = false
                         isUploading = false
+                        NotificationService.shared.showError("Document upload error: \(error.localizedDescription)")
                     }
                     return
                 }
@@ -10851,6 +10988,10 @@ struct ChatView: View {
             let contentToSend = viewModel.newMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
             let forwardUserId = viewModel.pendingForward?.forwardedFromUserId
             let forwardNickname = viewModel.pendingForward?.forwardedFromNickname
+
+            await MainActor.run {
+                shouldAutoScrollToBottom = true
+            }
 
             let success = await viewModel.sendMessage(
                 attachmentId: attachmentId,
@@ -10875,6 +11016,7 @@ struct ChatView: View {
                 if success {
                     viewModel.newMessageText = ""
                 } else {
+                    shouldAutoScrollToBottom = false
                     NotificationService.shared.showError("Не удалось отправить сообщение")
                 }
             }
@@ -15442,9 +15584,12 @@ struct MessageBubbleView: View {
                     .font(.caption2)
                     .foregroundColor(.blue)
                 } else if message.deliveredAt != nil {
-                    Image(systemName: "checkmark")
-                        .font(.caption2)
-                        .foregroundColor(.gray)
+                    HStack(spacing: 2) {
+                        Image(systemName: "checkmark")
+                        Image(systemName: "checkmark")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(.gray)
                 }
             }
         }
