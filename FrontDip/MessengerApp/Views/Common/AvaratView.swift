@@ -1,67 +1,64 @@
-//
-//  AvatarView.swift
-//  FrontDip
-//
-
 import SwiftUI
 
 struct AvatarView: View {
     let urlString: String?
     let size: CGFloat
+
     @State private var image: UIImage?
-    
+
     private var fullURL: URL? {
         guard let urlString, !urlString.isEmpty, urlString != "null" else { return nil }
-        // Приводим к нижнему регистру, чтобы избежать проблем с регистром в MinIO
-        let lowerPath = urlString.lowercased()
-        if lowerPath.hasPrefix("http") {
-            return URL(string: lowerPath)
+
+        if urlString.lowercased().hasPrefix("http") {
+            return URL(string: urlString)
         }
+
         let base = AppConfig.baseURL
-        let path = lowerPath.hasPrefix("/") ? String(lowerPath.dropFirst()) : lowerPath
-        return URL(string: base + "/media/" + path)
+        let path = urlString.hasPrefix("/") ? String(urlString.dropFirst()) : urlString
+        return URL(string: "\(base)/media/\(path)")
     }
-    
+
     var body: some View {
-        Group {
-            if let image = image {
+        ZStack {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            MessengerTheme.accent.opacity(0.22),
+                            MessengerTheme.secondarySurface
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
+                    .scaledToFill()
             } else {
-                placeholderView
-                    .onAppear {
-                        loadImage()
-                    }
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.36, weight: .medium))
+                    .foregroundStyle(.secondary)
             }
         }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(MessengerTheme.accent.opacity(0.65), lineWidth: 1)
+        )
+        .onAppear(perform: loadImage)
     }
-    
+
     private func loadImage() {
-        guard let url = fullURL else { return }
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            if let error = error {
-                print("❌ Avatar load error: \(error.localizedDescription)")
-                return
-            }
-            guard let data = data, let uiImage = UIImage(data: data) else {
-                print("❌ Failed to decode image from data")
-                return
-            }
+        guard image == nil, let url = fullURL else { return }
+
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data, let uiImage = UIImage(data: data) else { return }
             DispatchQueue.main.async {
                 self.image = uiImage
             }
         }.resume()
-    }
-    
-    private var placeholderView: some View {
-        Circle()
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: "person")
-                    .foregroundColor(.gray)
-            )
     }
 }

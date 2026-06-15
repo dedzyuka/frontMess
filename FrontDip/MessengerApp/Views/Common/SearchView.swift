@@ -1,104 +1,187 @@
-// ./FrontDip/MessengerApp/Views/Common/SearchView.swift
 import SwiftUI
 
 struct SearchView: View {
-    @Environment(\.dismiss) var dismiss
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var contactService: ContactService
+
     @StateObject private var viewModel = SearchViewModel()
-    
+
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                HStack {
-                    TextField("Введите никнейм", text: $viewModel.searchQuery)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .onSubmit {
-                            viewModel.search()
+            VStack(spacing: 12) {
+                searchBar
+
+                Group {
+                    if viewModel.isLoading {
+                        VStack(spacing: 14) {
+                            ProgressView()
+                            Text("Ищем пользователей…")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
                         }
-                    
-                    Button(action: {
-                        viewModel.search()
-                    }) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.blue)
-                    }
-                }
-                .padding()
-                
-                if viewModel.isLoading {
-                    Spacer()
-                    ProgressView()
-                    Spacer()
-                } else if viewModel.searchResults.isEmpty && !viewModel.searchQuery.isEmpty {
-                    Spacer()
-                    Text("Пользователи не найдены")
-                        .foregroundColor(.secondary)
-                    Spacer()
-                } else {
-                    List(viewModel.searchResults) { user in
-                        SearchResultRow(user: user) {
-                            viewModel.sendContactRequest(to: user)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.searchResults.isEmpty, !viewModel.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .font(.system(size: 32, weight: .medium))
+                                .foregroundStyle(.secondary)
+
+                            Text("Ничего не найдено")
+                                .font(.system(size: 18, weight: .semibold))
+
+                            Text("Попробуй изменить запрос или используй точный никнейм.")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if viewModel.searchResults.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 30, weight: .medium))
+                                .foregroundStyle(.secondary)
+
+                            Text("Начни поиск")
+                                .font(.system(size: 18, weight: .semibold))
+
+                            Text("Введи никнейм или часть имени пользователя.")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView(showsIndicators: false) {
+                            LazyVStack(spacing: 10) {
+                                ForEach(viewModel.searchResults) { user in
+                                    SearchResultRow(user: user) {
+                                        viewModel.sendContactRequest(to: user)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 18)
                         }
                     }
-                    .listStyle(PlainListStyle())
                 }
             }
-            .navigationTitle("Поиск пользователей")
+            .messengerBackground()
+            .navigationTitle("Поиск")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Закрыть") {
                         dismiss()
                     }
                 }
             }
+            .alert("Ошибка", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") {
+                    viewModel.errorMessage = nil
+                }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
         }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Никнейм или имя", text: $viewModel.searchQuery)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit {
+                    viewModel.search()
+                }
+
+            if !viewModel.searchQuery.isEmpty {
+                Button {
+                    viewModel.searchQuery = ""
+                    viewModel.searchResults = []
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                viewModel.search()
+            } label: {
+                Image(systemName: "arrow.right.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(MessengerTheme.accent)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .background(MessengerTheme.elevatedBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(MessengerTheme.divider, lineWidth: 0.8)
+        )
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
     }
 }
 
 struct SearchResultRow: View {
     let user: UserPublicResponse
     let onAdd: () -> Void
+
     @State private var showingAlert = false
-    
+
     var body: some View {
         NavigationLink(destination: UserProfileView(userId: user.userId)) {
-            HStack {
-                // ✅ ИСПРАВЛЕНО: используем AvatarView вместо Circle с текстом
-                AvatarView(urlString: user.avatarUrl, size: 40)
-                
-                VStack(alignment: .leading) {
+            HStack(spacing: 12) {
+                AvatarView(urlString: user.avatarUrl, size: 46)
+
+                VStack(alignment: .leading, spacing: 4) {
                     Text(user.nickName)
-                        .font(.headline)
-                    Text("ID: \(user.userId.uuidString.prefix(8))...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("ID \(user.userId.uuidString.prefix(8))…")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
                 }
-                
-                Spacer()
-                
-                Button(action: {
+
+                Spacer(minLength: 0)
+
+                Button {
                     showingAlert = true
-                }) {
+                } label: {
                     Image(systemName: "person.badge.plus")
-                        .foregroundColor(.blue)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(MessengerTheme.accent)
+                        .frame(width: 36, height: 36)
+                        .background(MessengerTheme.secondarySurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .alert("Добавить в контакты?", isPresented: $showingAlert) {
+                    Button("Отмена", role: .cancel) {}
+                    Button("Отправить") {
+                        onAdd()
+                    }
+                } message: {
+                    Text(user.nickName)
                 }
             }
-            .padding(.vertical, 8)
-            .alert("Добавить в контакты", isPresented: $showingAlert) {
-                Button("Отмена", role: .cancel) { }
-                Button("Добавить", role: .none) {
-                    onAdd()
-                }
-            } message: {
-                Text("Отправить запрос на добавление в контакты пользователю \(user.nickName)?")
-            }
+            .padding(14)
+            .background(MessengerTheme.elevatedBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(MessengerTheme.divider, lineWidth: 0.8)
+            )
         }
-        .buttonStyle(PlainButtonStyle())
-        .swipeActions {
-            Button("Добавить") { onAdd() }
-        }
+        .buttonStyle(.plain)
     }
 }

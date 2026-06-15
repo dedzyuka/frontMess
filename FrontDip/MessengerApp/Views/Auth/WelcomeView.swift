@@ -1,4 +1,3 @@
-
 import SwiftUI
 
 struct WelcomeView: View {
@@ -7,70 +6,70 @@ struct WelcomeView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                gradient: Gradient(colors: [Color.blue.opacity(0.7), Color.purple.opacity(0.9)]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            MessengerTheme.appBackground.ignoresSafeArea()
 
-            VStack(spacing: 50) {
-                Spacer()
+            VStack(spacing: 0) {
+                Spacer(minLength: 40)
 
-                VStack(spacing: 16) {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 80))
-                        .foregroundColor(.white)
-                    Text("SocketUp")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
-                    Text("Защищённый мессенджер")
-                        .font(.headline)
-                        .foregroundColor(.white.opacity(0.9))
+                VStack(spacing: 22) {
+                    ZStack {
+                        Circle()
+                            .fill(MessengerTheme.accentSoft.opacity(0.55))
+                            .frame(width: 112, height: 112)
+
+                        Circle()
+                            .stroke(MessengerTheme.accent.opacity(0.22), lineWidth: 1)
+                            .frame(width: 132, height: 132)
+
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 42, weight: .semibold))
+                            .foregroundStyle(MessengerTheme.accent)
+                    }
+
+                    VStack(spacing: 10) {
+                        Text("SocketUp")
+                            .font(.system(size: 34, weight: .semibold, design: .rounded))
+
+
+                    }
                 }
 
                 Spacer()
 
-                VStack(spacing: 20) {
+                VStack(spacing: 14) {
                     Button {
-                        withAnimation(.spring()) {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                             showLogin = true
                         }
                     } label: {
-                        Text("Вход")
-                            .font(.title3)
-                            .fontWeight(.semibold)
+                        Text("Войти")
+                            .font(.system(size: 17, weight: .semibold))
                             .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.white)
-                            .foregroundColor(.blue)
-                            .cornerRadius(30)
-                            .shadow(color: .black.opacity(0.1), radius: 5)
+                            .padding(.vertical, 18)
+                            .background(MessengerTheme.selfBubbleGradient)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     }
 
                     Button {
-                        withAnimation(.spring()) {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                             showRegister = true
                         }
                     } label: {
-                        Text("Регистрация")
-                            .font(.title3)
-                            .fontWeight(.semibold)
+                        Text("Создать аккаунт")
+                            .font(.system(size: 17, weight: .semibold))
                             .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.white.opacity(0.3))
-                            .foregroundColor(.white)
-                            .cornerRadius(30)
+                            .padding(.vertical, 18)
+                            .background(MessengerTheme.elevatedBackground)
                             .overlay(
-                                RoundedRectangle(cornerRadius: 30)
-                                    .stroke(Color.white, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .stroke(MessengerTheme.divider, lineWidth: 1)
                             )
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     }
                 }
-                .padding(.horizontal, 32)
-
-                Spacer()
+                .padding(.horizontal, 22)
+                .padding(.bottom, 32)
             }
         }
         .fullScreenCover(isPresented: $showLogin) {

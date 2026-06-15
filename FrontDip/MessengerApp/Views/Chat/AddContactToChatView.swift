@@ -1,61 +1,75 @@
-//
-//  AddContactToChatView.swift
-//  FrontDip
-//
-
 import SwiftUI
 
 struct AddContactToChatView: View {
     let chat: Chat
     @ObservedObject var viewModel: ChatSidebarViewModel
-    @Environment(\.dismiss) var dismiss
+
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var contactService: ContactService
-    
-    @State private var selectedContacts: Set<String> = []  // ← изменено на Set<String>
+
+    @State private var selectedContacts: Set<String> = []
     @State private var isLoading = false
-    
+
     var body: some View {
         NavigationView {
-            VStack {
+            Group {
                 if contactService.contacts.isEmpty {
-                    Spacer()
-                    VStack(spacing: 20) {
+                    VStack(spacing: 16) {
                         Image(systemName: "person.2.slash")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray.opacity(0.5))
-                        
-                        Text("Нет контактов")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                        
-                        Text("Добавьте контакты через поиск")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(.system(size: 34, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        Text("Контакты не найдены")
+                            .font(.system(size: 18, weight: .semibold))
+
+                        Text("Сначала добавь пользователей в контакты, а затем пригласи их в чат.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 26)
                     }
-                    Spacer()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List {
-                        ForEach(contactService.contacts) { contact in
-                            ContactSelectionRow(
-                                contact: contact,
-                                isSelected: selectedContacts.contains(contact.id),
-                                isAlreadyInChat: viewModel.isUserInChat(contact.contactUserId),
-                                onToggle: { toggleContactSelection(contact.id) }
-                            )
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(spacing: 10) {
+                            ForEach(contactService.contacts) { contact in
+                                ContactSelectionRow(
+                                    contact: contact,
+                                    isSelected: selectedContacts.contains(contact.id),
+                                    isAlreadyInChat: viewModel.isUserInChat(contact.contactUserId),
+                                    onToggle: {
+                                        toggleContactSelection(contact.id)
+                                    }
+                                )
+                            }
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 18)
                     }
-                    .listStyle(PlainListStyle())
                 }
             }
-            .navigationTitle("Добавить в чат")
+            .messengerBackground()
+            .navigationTitle("Добавить участников")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Отмена") { dismiss() }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Отмена") {
+                        dismiss()
+                    }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Добавить") { addSelectedContacts() }
-                        .disabled(selectedContacts.isEmpty || isLoading)
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        addSelectedContacts()
+                    } label: {
+                        if isLoading {
+                            ProgressView()
+                        } else {
+                            Text("Добавить")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
+                    }
+                    .disabled(selectedContacts.isEmpty || isLoading)
                 }
             }
             .onAppear {
@@ -63,7 +77,7 @@ struct AddContactToChatView: View {
             }
         }
     }
-    
+
     private func toggleContactSelection(_ contactId: String) {
         if selectedContacts.contains(contactId) {
             selectedContacts.remove(contactId)
@@ -71,30 +85,35 @@ struct AddContactToChatView: View {
             selectedContacts.insert(contactId)
         }
     }
-    
+
     private func addSelectedContacts() {
+        guard !isLoading else { return }
+
         isLoading = true
-        
-        // Найти выбранные контакты по их строковому id
+
         let selectedContactItems = contactService.contacts.filter { selectedContacts.contains($0.id) }
-        
+
         Task {
             var addedCount = 0
             var failedCount = 0
-            
+
             for contact in selectedContactItems {
                 let success = await viewModel.addUserToChat(contact.contactUserId)
-                if success { addedCount += 1 } else { failedCount += 1 }
+                if success {
+                    addedCount += 1
+                } else {
+                    failedCount += 1
+                }
             }
-            
+
             await MainActor.run {
                 isLoading = false
                 dismiss()
-                let message = "Добавлено: \(addedCount), не удалось: \(failedCount)"
+
                 if addedCount > 0 {
-                    NotificationService.shared.showSuccess(message)
+                    NotificationService.shared.showSuccess("Добавлено: \(addedCount), ошибок: \(failedCount)")
                 } else {
-                    NotificationService.shared.showError(message)
+                    NotificationService.shared.showError("Не удалось добавить участников")
                 }
             }
         }
@@ -106,36 +125,49 @@ struct ContactSelectionRow: View {
     let isSelected: Bool
     let isAlreadyInChat: Bool
     let onToggle: () -> Void
-    
+
     var body: some View {
-        HStack {
-            AvatarView(urlString: contact.contactUser?.avatarUrl, size: 40)
-            
-            VStack(alignment: .leading) {
-                Text(contact.contactUser?.nickName ?? "Неизвестный")
-                    .font(.headline)
+        HStack(spacing: 12) {
+            AvatarView(urlString: contact.contactUser?.avatarUrl, size: 46)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(contact.contactUser?.nickName ?? "Unknown")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+
                 if isAlreadyInChat {
                     Text("Уже в чате")
-                        .font(.caption)
-                        .foregroundColor(.green)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.green)
+                } else {
+                    Text(contact.contactUser?.isOnline == true ? "в сети" : "не в сети")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
             }
-            
-            Spacer()
-            
+
+            Spacer(minLength: 0)
+
             if isAlreadyInChat {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
+                    .font(.system(size: 22))
+                    .foregroundStyle(.green)
             } else {
                 Button(action: onToggle) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(isSelected ? .blue : .gray)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(isSelected ? MessengerTheme.accent : .secondary)
                 }
-                .buttonStyle(PlainButtonStyle())
+                .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 8)
-        .opacity(isAlreadyInChat ? 0.6 : 1.0)
-        .disabled(isAlreadyInChat)
+        .padding(14)
+        .background(MessengerTheme.elevatedBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(MessengerTheme.divider, lineWidth: 0.8)
+        )
+        .opacity(isAlreadyInChat ? 0.72 : 1.0)
     }
 }
